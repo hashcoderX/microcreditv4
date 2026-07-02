@@ -22,6 +22,7 @@ class LoanRequest extends Model
         'customer_address',
         'principal',
         'annual_rate',
+        'interest_rate_type',
         'tenure_months',
         'installment_frequency',
         'installments',

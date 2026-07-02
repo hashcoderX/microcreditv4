@@ -48,29 +48,19 @@ type GuarantorDetails = {
   monthlyIncome: string;
 };
 
-const DEFAULT_LOAN_PRODUCTS: LoanProduct[] = [
-  {
-    key: "business_loan",
-    name: "Business Loan",
-    description: "Working capital and enterprise lending operations.",
-    icon: "\ud83c\udfe2",
-    color: "from-cyan-500 to-blue-500",
-  },
-  {
-    key: "personal_loan",
-    name: "Personal Loan",
-    description: "Individual loan issuing and repayment monitoring.",
-    icon: "\ud83e\uddd1",
-    color: "from-teal-500 to-cyan-500",
-  },
-  {
-    key: "sme_loan",
-    name: "SME Loan",
-    description: "Small and medium enterprise growth financing.",
-    icon: "\ud83d\udecd",
-    color: "from-emerald-500 to-cyan-500",
-  },
-];
+type ConfirmationModalState = {
+  open: boolean;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  tone: "danger" | "primary";
+  action:
+    | {
+        type: "delete-loan-product";
+        productKey: string;
+      }
+    | null;
+};
 
 const PRODUCT_COLORS = [
   "from-cyan-500 to-blue-500",
@@ -147,8 +137,8 @@ export default function NewLoanRequestPage() {
   const widgetPrefix = "loan_create_widget_";
   const [token, setToken] = useState("");
   const router = useRouter();
-  const [loanProducts, setLoanProducts] = useState<LoanProduct[]>(DEFAULT_LOAN_PRODUCTS);
-  const [loanProduct, setLoanProduct] = useState<string>(DEFAULT_LOAN_PRODUCTS[0].key);
+  const [loanProducts, setLoanProducts] = useState<LoanProduct[]>([]);
+  const [loanProduct, setLoanProduct] = useState<string>("");
   const [newProductName, setNewProductName] = useState("");
   const [newProductInterestRate, setNewProductInterestRate] = useState("18");
   const [newProductDescription, setNewProductDescription] = useState("");
@@ -158,8 +148,20 @@ export default function NewLoanRequestPage() {
   const [loanProductsError, setLoanProductsError] = useState("");
   const [addProductLoading, setAddProductLoading] = useState(false);
   const [addProductError, setAddProductError] = useState("");
+  const [editingProductKey, setEditingProductKey] = useState<string | null>(null);
+  const [deletingProductKey, setDeletingProductKey] = useState<string | null>(null);
+  const [manageProductError, setManageProductError] = useState("");
+  const [confirmationModal, setConfirmationModal] = useState<ConfirmationModalState>({
+    open: false,
+    title: "",
+    message: "",
+    confirmLabel: "Confirm",
+    tone: "primary",
+    action: null,
+  });
   const [principal, setPrincipal] = useState("1000000");
   const [annualRate, setAnnualRate] = useState("18");
+  const [interestRateType, setInterestRateType] = useState<"fixed" | "reducing">("fixed");
   const [tenureMonths, setTenureMonths] = useState("36");
   const [frequency, setFrequency] = useState<"monthly" | "weekly">("monthly");
   const [customerDetails, setCustomerDetails] = useState<CustomerDetails>({
@@ -198,10 +200,10 @@ export default function NewLoanRequestPage() {
   const [widgetNotice, setWidgetNotice] = useState("");
 
   const generateCustomerNumber = useCallback(() => {
-    const product = loanProducts.find((item) => item.key === loanProduct) || loanProducts[0];
+    const product = loanProducts.find((item) => item.key === loanProduct);
     return buildCustomerNumber(
       branchName,
-      product?.key || loanProduct,
+      product?.key || loanProduct || "loan",
       product?.name || "Loan"
     );
   }, [branchName, loanProduct, loanProducts]);
@@ -287,6 +289,24 @@ export default function NewLoanRequestPage() {
     };
   }, []);
 
+  const getPersistedProductId = useCallback((key: string): number | null => {
+    if (!key.startsWith("loan_product_")) return null;
+
+    const numericId = Number(key.replace("loan_product_", ""));
+    if (!Number.isInteger(numericId) || numericId <= 0) return null;
+
+    return numericId;
+  }, []);
+
+  const resetProductForm = useCallback(() => {
+    setNewProductName("");
+    setNewProductInterestRate("18");
+    setNewProductDescription("");
+    setNewProductIcon(PRODUCT_ICONS[0]);
+    setEditingProductKey(null);
+    setAddProductError("");
+  }, []);
+
   const loadLoanProductsFromDatabase = useCallback(
     async (authToken: string) => {
       setLoanProductsLoading(true);
@@ -306,28 +326,12 @@ export default function NewLoanRequestPage() {
           .map((item, index) => mapPersistedProduct(item, index))
           .filter((item): item is LoanProduct => item !== null);
 
-        setLoanProducts((prev) => {
-          const merged = [...DEFAULT_LOAN_PRODUCTS];
-          const existingByName = new Set(merged.map((item) => item.name.trim().toLowerCase()));
-
-          for (const item of dbProducts) {
-            const normalizedName = item.name.trim().toLowerCase();
-            if (!existingByName.has(normalizedName)) {
-              merged.push(item);
-              existingByName.add(normalizedName);
-            }
+        setLoanProducts(dbProducts);
+        setLoanProduct((prev) => {
+          if (dbProducts.some((item) => item.key === prev)) {
+            return prev;
           }
-
-          // Keep any locally created items shown until a full refresh, while preventing duplicates.
-          for (const item of prev) {
-            const normalizedName = item.name.trim().toLowerCase();
-            if (!existingByName.has(normalizedName)) {
-              merged.push(item);
-              existingByName.add(normalizedName);
-            }
-          }
-
-          return merged;
+          return dbProducts[0]?.key || "";
         });
       } catch {
         setLoanProductsError("Failed to load loan products from database.");
@@ -402,7 +406,7 @@ export default function NewLoanRequestPage() {
   }, [activeStep, loanProduct, branchName, applyGeneratedCustomerNumber]);
 
   const selectedProduct = useMemo(
-    () => loanProducts.find((item) => item.key === loanProduct) || loanProducts[0],
+    () => loanProducts.find((item) => item.key === loanProduct) || null,
     [loanProducts, loanProduct]
   );
 
@@ -442,8 +446,15 @@ export default function NewLoanRequestPage() {
       return;
     }
 
+    const editingId = editingProductKey ? getPersistedProductId(editingProductKey) : null;
+    if (editingProductKey && editingId === null) {
+      setAddProductError("Selected product cannot be edited.");
+      return;
+    }
+
     setAddProductLoading(true);
     setAddProductError("");
+    setManageProductError("");
 
     try {
       const payload = {
@@ -454,11 +465,14 @@ export default function NewLoanRequestPage() {
         is_active: true,
       };
 
-      const response = await axios.post(`${apiBase}/loan-products`, payload, {
+      const response = await axios({
+        method: editingId ? "put" : "post",
+        url: editingId ? `${apiBase}/loan-products/${editingId}` : `${apiBase}/loan-products`,
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: "application/json",
         },
+        data: payload,
       });
 
       const saved = response.data as PersistedLoanProduct;
@@ -473,6 +487,10 @@ export default function NewLoanRequestPage() {
       };
 
       setLoanProducts((prev) => {
+        if (editingProductKey) {
+          return prev.map((item) => (item.key === editingProductKey ? nextProduct : item));
+        }
+
         const existingByName = new Set(prev.map((item) => item.name.trim().toLowerCase()));
         if (existingByName.has(nextProduct.name.trim().toLowerCase())) {
           return prev;
@@ -486,6 +504,7 @@ export default function NewLoanRequestPage() {
       setNewProductDescription("");
       setNewProductIcon(PRODUCT_ICONS[(loanProducts.length + 1) % PRODUCT_ICONS.length]);
       setShowAddProduct(false);
+      setEditingProductKey(null);
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const message =
@@ -498,6 +517,109 @@ export default function NewLoanRequestPage() {
     } finally {
       setAddProductLoading(false);
     }
+  };
+
+  const handleEditLoanProduct = (product: LoanProduct) => {
+    const productId = getPersistedProductId(product.key);
+    if (!productId) {
+      setManageProductError("Only saved custom products can be edited.");
+      return;
+    }
+
+    setManageProductError("");
+    setShowAddProduct(true);
+    setEditingProductKey(product.key);
+    setNewProductName(product.name);
+    setNewProductInterestRate(String(product.interestRate ?? 0));
+    setNewProductDescription(product.description);
+    setNewProductIcon(product.icon || PRODUCT_ICONS[0]);
+  };
+
+  const performDeleteLoanProduct = async (product: LoanProduct) => {
+    if (!token) {
+      setManageProductError("Authentication is required to delete a loan product.");
+      return;
+    }
+
+    const productId = getPersistedProductId(product.key);
+    if (!productId) {
+      setManageProductError("Only saved custom products can be deleted.");
+      return;
+    }
+
+    setDeletingProductKey(product.key);
+    setManageProductError("");
+
+    try {
+      await axios.delete(`${apiBase}/loan-products/${productId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+      });
+
+      const nextProducts = loanProducts.filter((item) => item.key !== product.key);
+      setLoanProducts(nextProducts);
+
+      if (loanProduct === product.key) {
+        setLoanProduct(nextProducts[0]?.key || "");
+      }
+
+      if (editingProductKey === product.key) {
+        resetProductForm();
+      }
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const message =
+          (typeof error.response?.data?.message === "string" && error.response.data.message) ||
+          "Failed to delete loan product.";
+        setManageProductError(message);
+      } else {
+        setManageProductError("Failed to delete loan product.");
+      }
+    } finally {
+      setDeletingProductKey(null);
+    }
+  };
+
+  const openDeleteLoanProductConfirmation = (product: LoanProduct) => {
+    setConfirmationModal({
+      open: true,
+      title: "Delete loan product",
+      message: `Are you sure you want to delete \"${product.name}\"? This action cannot be undone.`,
+      confirmLabel: "Delete",
+      tone: "danger",
+      action: {
+        type: "delete-loan-product",
+        productKey: product.key,
+      },
+    });
+  };
+
+  const closeConfirmationModal = () => {
+    setConfirmationModal((prev) => ({
+      ...prev,
+      open: false,
+      action: null,
+    }));
+  };
+
+  const handleConfirmationAction = async () => {
+    if (!confirmationModal.action) {
+      closeConfirmationModal();
+      return;
+    }
+
+    if (confirmationModal.action.type === "delete-loan-product") {
+      const target = loanProducts.find((item) => item.key === confirmationModal.action?.productKey);
+      closeConfirmationModal();
+      if (target) {
+        await performDeleteLoanProduct(target);
+      }
+      return;
+    }
+
+    closeConfirmationModal();
   };
 
   const calculation = useMemo(() => {
@@ -642,6 +764,7 @@ export default function NewLoanRequestPage() {
       const months = Number(tenureMonths);
       if (!Number.isFinite(principalAmount) || principalAmount <= 0) return "Enter a valid principal amount.";
       if (!Number.isFinite(rate) || rate < 0) return "Enter a valid yearly interest rate.";
+      if (!["fixed", "reducing"].includes(interestRateType)) return "Select an interest rate type.";
       if (!Number.isFinite(months) || months <= 0) return "Enter a valid tenure in months.";
       return null;
     }
@@ -738,6 +861,7 @@ export default function NewLoanRequestPage() {
       payload.append("loan_product", selectedProduct?.name || loanProduct);
       payload.append("principal", String(Number(principal)));
       payload.append("annual_rate", String(Number(annualRate)));
+      payload.append("interest_rate_type", interestRateType);
       payload.append("tenure_months", String(Number(tenureMonths)));
       payload.append("installment_frequency", frequency);
       payload.append("installments", String(calculation.installments));
@@ -795,6 +919,9 @@ export default function NewLoanRequestPage() {
   const isActiveStepWidgetVisible = !hiddenWidgetKeys.includes(activeStepWidgetKey);
   const showAnyWidget =
     showHeaderWidget || showStepNavigatorWidget || showStepContentWidget || showActionBarWidget || showPreviewWidget;
+  const isConfirmationBusy =
+    confirmationModal.action?.type === "delete-loan-product" &&
+    deletingProductKey === confirmationModal.action.productKey;
 
   if (!token) {
     return (
@@ -938,37 +1065,71 @@ export default function NewLoanRequestPage() {
                 <div className="mt-2 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {loanProducts.map((item) => {
                     const active = loanProduct === item.key;
+                    const isPersisted = item.key.startsWith("loan_product_");
+                    const isDeleting = deletingProductKey === item.key;
+
                     return (
-                      <button
-                        key={item.key}
-                        type="button"
-                        onClick={() => setLoanProduct(item.key)}
-                        className={`text-left rounded-xl border p-4 transition-all ${
-                          active
-                            ? "border-cyan-300 bg-cyan-50 shadow-sm"
-                            : "border-cyan-100 bg-white hover:bg-cyan-50/60"
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className={`w-11 h-11 bg-gradient-to-r ${item.color} rounded-lg flex items-center justify-center text-xl text-white`}>
-                            {item.icon}
+                      <div key={item.key} className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => setLoanProduct(item.key)}
+                          className={`w-full text-left rounded-xl border p-4 transition-all ${
+                            active
+                              ? "border-cyan-300 bg-cyan-50 shadow-sm"
+                              : "border-cyan-100 bg-white hover:bg-cyan-50/60"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className={`w-11 h-11 bg-gradient-to-r ${item.color} rounded-lg flex items-center justify-center text-xl text-white`}>
+                              {item.icon}
+                            </div>
+                            <div>
+                              <p className="font-bold text-slate-900">{item.name}</p>
+                              <p className="text-xs text-slate-600">{item.description}</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="font-bold text-slate-900">{item.name}</p>
-                            <p className="text-xs text-slate-600">{item.description}</p>
+                        </button>
+
+                        {isPersisted ? (
+                          <div className="flex items-center gap-2 px-1">
+                            <button
+                              type="button"
+                              onClick={() => handleEditLoanProduct(item)}
+                              className="px-3 py-1.5 rounded-md border border-cyan-200 bg-white text-xs font-semibold text-cyan-800 hover:bg-cyan-50"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openDeleteLoanProductConfirmation(item)}
+                              disabled={isDeleting}
+                              className="px-3 py-1.5 rounded-md border border-rose-200 bg-white text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                            >
+                              {isDeleting ? "Deleting..." : "Delete"}
+                            </button>
                           </div>
-                        </div>
-                      </button>
+                        ) : null}
+                      </div>
                     );
                   })}
                 </div>
+                {loanProducts.length === 0 ? (
+                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                    No loan products found. Add a custom loan product to continue.
+                  </div>
+                ) : null}
+                {manageProductError ? (
+                  <p className="mt-2 text-xs text-rose-700">{manageProductError}</p>
+                ) : null}
 
                 <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50/60 overflow-hidden">
                   <div className="flex items-center justify-between gap-4 px-4 py-3">
                     <div>
-                      <p className="text-sm font-semibold text-slate-800">Add custom loan product</p>
+                      <p className="text-sm font-semibold text-slate-800">
+                        {editingProductKey ? "Edit custom loan product" : "Add custom loan product"}
+                      </p>
                       <p className="text-xs text-slate-500 mt-0.5">
-                        Optional — turn on only when the product is not listed above.
+                        Manage saved loan products without leaving this page.
                       </p>
                     </div>
                     <button
@@ -1050,15 +1211,13 @@ export default function NewLoanRequestPage() {
                           disabled={!newProductName.trim() || !newProductInterestRate.trim() || addProductLoading}
                           className="px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 text-white text-sm font-semibold hover:from-cyan-700 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          {addProductLoading ? "Saving..." : "Add product"}
+                          {addProductLoading ? "Saving..." : editingProductKey ? "Update product" : "Add product"}
                         </button>
                         <button
                           type="button"
                           onClick={() => {
                             setShowAddProduct(false);
-                            setNewProductName("");
-                            setNewProductInterestRate("18");
-                            setNewProductDescription("");
+                            resetProductForm();
                           }}
                           className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50"
                         >
@@ -1422,6 +1581,18 @@ export default function NewLoanRequestPage() {
                     />
                   </div>
                   <div>
+                    <FieldLabel htmlFor="loan-rate-type">Interest rate type *</FieldLabel>
+                    <select
+                      id="loan-rate-type"
+                      value={interestRateType}
+                      onChange={(e) => setInterestRateType(e.target.value as "fixed" | "reducing")}
+                      className={fieldClass}
+                    >
+                      <option value="fixed">Fixed</option>
+                      <option value="reducing">Reducing</option>
+                    </select>
+                  </div>
+                  <div>
                     <FieldLabel htmlFor="loan-tenure">Loan tenure (months) *</FieldLabel>
                     <input
                       id="loan-tenure"
@@ -1476,7 +1647,9 @@ export default function NewLoanRequestPage() {
                   </p>
                   <p>
                     <span className="font-semibold text-cyan-900">Interest:</span>{" "}
-                    <span className="font-medium text-slate-900">{annualRate || "0"}%</span>
+                    <span className="font-medium text-slate-900">
+                      {annualRate || "0"}% ({interestRateType === "reducing" ? "Reducing" : "Fixed"})
+                    </span>
                   </p>
                   <p>
                     <span className="font-semibold text-cyan-900">Tenure:</span>{" "}
@@ -1680,6 +1853,38 @@ export default function NewLoanRequestPage() {
           )}
         </div>
       </div>
+
+      {confirmationModal.open ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/45 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+            <h3 className="text-lg font-bold text-slate-900">{confirmationModal.title}</h3>
+            <p className="mt-2 text-sm text-slate-600">{confirmationModal.message}</p>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeConfirmationModal}
+                disabled={isConfirmationBusy}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmationAction}
+                disabled={isConfirmationBusy}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 disabled:cursor-not-allowed ${
+                  confirmationModal.tone === "danger"
+                    ? "bg-rose-600 hover:bg-rose-700"
+                    : "bg-cyan-600 hover:bg-cyan-700"
+                }`}
+              >
+                {isConfirmationBusy ? "Processing..." : confirmationModal.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
