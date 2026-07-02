@@ -12,6 +12,16 @@ type LoanProduct = {
   description: string;
   icon: string;
   color: string;
+  interestRate?: number;
+};
+
+type PersistedLoanProduct = {
+  id: number;
+  name: string;
+  interest_rate?: number | string;
+  description?: string;
+  icon?: string;
+  is_active?: boolean;
 };
 
 type CustomerDetails = {
@@ -140,9 +150,14 @@ export default function NewLoanRequestPage() {
   const [loanProducts, setLoanProducts] = useState<LoanProduct[]>(DEFAULT_LOAN_PRODUCTS);
   const [loanProduct, setLoanProduct] = useState<string>(DEFAULT_LOAN_PRODUCTS[0].key);
   const [newProductName, setNewProductName] = useState("");
+  const [newProductInterestRate, setNewProductInterestRate] = useState("18");
   const [newProductDescription, setNewProductDescription] = useState("");
   const [newProductIcon, setNewProductIcon] = useState(PRODUCT_ICONS[0]);
   const [showAddProduct, setShowAddProduct] = useState(false);
+  const [loanProductsLoading, setLoanProductsLoading] = useState(false);
+  const [loanProductsError, setLoanProductsError] = useState("");
+  const [addProductLoading, setAddProductLoading] = useState(false);
+  const [addProductError, setAddProductError] = useState("");
   const [principal, setPrincipal] = useState("1000000");
   const [annualRate, setAnnualRate] = useState("18");
   const [tenureMonths, setTenureMonths] = useState("36");
@@ -254,6 +269,75 @@ export default function NewLoanRequestPage() {
     [saveWidgetPreference]
   );
 
+  const mapPersistedProduct = useCallback((item: PersistedLoanProduct, index: number): LoanProduct | null => {
+    const productName = String(item.name || "").trim();
+    if (!productName) return null;
+
+    const numericRate = Number(item.interest_rate ?? 0);
+    const interestRate = Number.isFinite(numericRate) ? Number(numericRate.toFixed(4)) : 0;
+    const fallbackDescription = `${interestRate}% annual interest`;
+
+    return {
+      key: `loan_product_${item.id}`,
+      name: productName,
+      description: String(item.description || fallbackDescription),
+      icon: String(item.icon || PRODUCT_ICONS[index % PRODUCT_ICONS.length]),
+      color: PRODUCT_COLORS[index % PRODUCT_COLORS.length],
+      interestRate,
+    };
+  }, []);
+
+  const loadLoanProductsFromDatabase = useCallback(
+    async (authToken: string) => {
+      setLoanProductsLoading(true);
+      setLoanProductsError("");
+
+      try {
+        const response = await axios.get(`${apiBase}/loan-products`, {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            Accept: "application/json",
+          },
+        });
+
+        const rows: PersistedLoanProduct[] = Array.isArray(response.data) ? response.data : [];
+        const dbProducts = rows
+          .filter((item) => item && typeof item === "object" && item.is_active !== false)
+          .map((item, index) => mapPersistedProduct(item, index))
+          .filter((item): item is LoanProduct => item !== null);
+
+        setLoanProducts((prev) => {
+          const merged = [...DEFAULT_LOAN_PRODUCTS];
+          const existingByName = new Set(merged.map((item) => item.name.trim().toLowerCase()));
+
+          for (const item of dbProducts) {
+            const normalizedName = item.name.trim().toLowerCase();
+            if (!existingByName.has(normalizedName)) {
+              merged.push(item);
+              existingByName.add(normalizedName);
+            }
+          }
+
+          // Keep any locally created items shown until a full refresh, while preventing duplicates.
+          for (const item of prev) {
+            const normalizedName = item.name.trim().toLowerCase();
+            if (!existingByName.has(normalizedName)) {
+              merged.push(item);
+              existingByName.add(normalizedName);
+            }
+          }
+
+          return merged;
+        });
+      } catch {
+        setLoanProductsError("Failed to load loan products from database.");
+      } finally {
+        setLoanProductsLoading(false);
+      }
+    },
+    [apiBase, mapPersistedProduct]
+  );
+
   useEffect(() => {
     const storedToken = localStorage.getItem("token");
     if (!storedToken) {
@@ -308,44 +392,27 @@ export default function NewLoanRequestPage() {
   }, [token, fetchWidgetPreferences]);
 
   useEffect(() => {
+    if (!token) return;
+    loadLoanProductsFromDatabase(token);
+  }, [token, loadLoanProductsFromDatabase]);
+
+  useEffect(() => {
     if (activeStep !== 2) return;
     applyGeneratedCustomerNumber();
   }, [activeStep, loanProduct, branchName, applyGeneratedCustomerNumber]);
-
-  useEffect(() => {
-    const raw = localStorage.getItem("loan_products_custom");
-    if (!raw) return;
-
-    try {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return;
-
-      const customProducts: LoanProduct[] = parsed
-        .filter((item) => item && typeof item === "object")
-        .map((item, index) => ({
-          key: String(item.key || `custom_product_${index + 1}`),
-          name: String(item.name || `Custom Product ${index + 1}`),
-          description: String(item.description || "Custom loan product."),
-          icon: String(item.icon || PRODUCT_ICONS[index % PRODUCT_ICONS.length]),
-          color: String(item.color || PRODUCT_COLORS[index % PRODUCT_COLORS.length]),
-        }));
-
-      if (customProducts.length > 0) {
-        setLoanProducts((prev) => {
-          const existing = new Set(prev.map((item) => item.key));
-          const appendable = customProducts.filter((item) => !existing.has(item.key));
-          return [...prev, ...appendable];
-        });
-      }
-    } catch {
-      // Ignore invalid local storage data for custom products.
-    }
-  }, []);
 
   const selectedProduct = useMemo(
     () => loanProducts.find((item) => item.key === loanProduct) || loanProducts[0],
     [loanProducts, loanProduct]
   );
+
+  useEffect(() => {
+    if (!selectedProduct) return;
+    if (typeof selectedProduct.interestRate !== "number") return;
+    if (!Number.isFinite(selectedProduct.interestRate)) return;
+
+    setAnnualRate(String(selectedProduct.interestRate));
+  }, [selectedProduct]);
 
   const steps = useMemo(
     () => [
@@ -360,39 +427,77 @@ export default function NewLoanRequestPage() {
   );
   const progressPercent = (activeStep / steps.length) * 100;
 
-  const addLoanProduct = () => {
+  const addLoanProduct = async () => {
+    if (!token) {
+      setAddProductError("Authentication is required to create a loan product.");
+      return;
+    }
+
     const name = newProductName.trim();
     const description = newProductDescription.trim() || "Custom loan product.";
+    const parsedInterestRate = Number(newProductInterestRate);
     if (!name) return;
+    if (!Number.isFinite(parsedInterestRate) || parsedInterestRate < 0) {
+      setAddProductError("Interest rate must be a valid number (0 or higher).");
+      return;
+    }
 
-    const slug = name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "");
+    setAddProductLoading(true);
+    setAddProductError("");
 
-    const uniqueKey = `${slug || "custom_loan"}_${Date.now()}`;
-    const color = PRODUCT_COLORS[loanProducts.length % PRODUCT_COLORS.length];
+    try {
+      const payload = {
+        name,
+        interest_rate: Number(parsedInterestRate.toFixed(4)),
+        description,
+        icon: newProductIcon,
+        is_active: true,
+      };
 
-    const nextProduct: LoanProduct = {
-      key: uniqueKey,
-      name,
-      description,
-      icon: newProductIcon,
-      color,
-    };
+      const response = await axios.post(`${apiBase}/loan-products`, payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+      });
 
-    setLoanProducts((prev) => {
-      const next = [...prev, nextProduct];
-      const custom = next.filter((item) => !DEFAULT_LOAN_PRODUCTS.some((defaultItem) => defaultItem.key === item.key));
-      localStorage.setItem("loan_products_custom", JSON.stringify(custom));
-      return next;
-    });
+      const saved = response.data as PersistedLoanProduct;
+      const savedRate = Number(saved.interest_rate ?? parsedInterestRate);
+      const nextProduct: LoanProduct = {
+        key: `loan_product_${saved.id}`,
+        name: String(saved.name || name),
+        description: String(saved.description || description),
+        icon: String(saved.icon || newProductIcon),
+        color: PRODUCT_COLORS[loanProducts.length % PRODUCT_COLORS.length],
+        interestRate: Number.isFinite(savedRate) ? Number(savedRate.toFixed(4)) : Number(parsedInterestRate.toFixed(4)),
+      };
 
-    setLoanProduct(uniqueKey);
-    setNewProductName("");
-    setNewProductDescription("");
-    setNewProductIcon(PRODUCT_ICONS[(loanProducts.length + 1) % PRODUCT_ICONS.length]);
-    setShowAddProduct(false);
+      setLoanProducts((prev) => {
+        const existingByName = new Set(prev.map((item) => item.name.trim().toLowerCase()));
+        if (existingByName.has(nextProduct.name.trim().toLowerCase())) {
+          return prev;
+        }
+        return [...prev, nextProduct];
+      });
+
+      setLoanProduct(nextProduct.key);
+      setNewProductName("");
+      setNewProductInterestRate("18");
+      setNewProductDescription("");
+      setNewProductIcon(PRODUCT_ICONS[(loanProducts.length + 1) % PRODUCT_ICONS.length]);
+      setShowAddProduct(false);
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const message =
+          (typeof error.response?.data?.message === "string" && error.response.data.message) ||
+          "Failed to save loan product in database.";
+        setAddProductError(message);
+      } else {
+        setAddProductError("Failed to save loan product in database.");
+      }
+    } finally {
+      setAddProductLoading(false);
+    }
   };
 
   const calculation = useMemo(() => {
@@ -824,6 +929,12 @@ export default function NewLoanRequestPage() {
                 <p className="text-sm text-slate-600 mt-1">Choose a product for this loan request.</p>
 
                 <p className="mt-4 text-xs font-semibold text-slate-700">Select loan product *</p>
+                {loanProductsLoading ? (
+                  <p className="mt-2 text-xs text-cyan-700">Loading loan products from database...</p>
+                ) : null}
+                {loanProductsError ? (
+                  <p className="mt-2 text-xs text-amber-700">{loanProductsError}</p>
+                ) : null}
                 <div className="mt-2 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {loanProducts.map((item) => {
                     const active = loanProduct === item.key;
@@ -880,7 +991,7 @@ export default function NewLoanRequestPage() {
 
                   {showAddProduct && (
                     <div className="border-t border-slate-200 bg-white p-4 space-y-3">
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
                         <div>
                           <FieldLabel htmlFor="new-product-name">Product name</FieldLabel>
                           <input
@@ -888,6 +999,19 @@ export default function NewLoanRequestPage() {
                             value={newProductName}
                             onChange={(e) => setNewProductName(e.target.value)}
                             placeholder="e.g. Agriculture Loan"
+                            className={fieldClass}
+                          />
+                        </div>
+                        <div>
+                          <FieldLabel htmlFor="new-product-interest-rate">Interest rate (%)</FieldLabel>
+                          <input
+                            id="new-product-interest-rate"
+                            type="number"
+                            min="0"
+                            step="0.0001"
+                            value={newProductInterestRate}
+                            onChange={(e) => setNewProductInterestRate(e.target.value)}
+                            placeholder="e.g. 18"
                             className={fieldClass}
                           />
                         </div>
@@ -923,16 +1047,17 @@ export default function NewLoanRequestPage() {
                         <button
                           type="button"
                           onClick={addLoanProduct}
-                          disabled={!newProductName.trim()}
+                          disabled={!newProductName.trim() || !newProductInterestRate.trim() || addProductLoading}
                           className="px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 text-white text-sm font-semibold hover:from-cyan-700 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          Add product
+                          {addProductLoading ? "Saving..." : "Add product"}
                         </button>
                         <button
                           type="button"
                           onClick={() => {
                             setShowAddProduct(false);
                             setNewProductName("");
+                            setNewProductInterestRate("18");
                             setNewProductDescription("");
                           }}
                           className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50"
@@ -940,6 +1065,9 @@ export default function NewLoanRequestPage() {
                           Cancel
                         </button>
                       </div>
+                      {addProductError ? (
+                        <p className="text-xs text-rose-700">{addProductError}</p>
+                      ) : null}
                     </div>
                   )}
                 </div>

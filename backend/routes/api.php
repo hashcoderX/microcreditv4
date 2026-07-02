@@ -39,6 +39,7 @@ use App\Http\Controllers\Api\Microfinance\LoanRequestController as MicrofinanceL
 use App\Http\Controllers\Api\Microfinance\LoanCollectionController as MicrofinanceLoanCollectionController;
 use App\Http\Controllers\Api\FinanceController;
 use App\Http\Controllers\Api\FinanceProductTypeController;
+use App\Http\Controllers\Api\LoanProductController as LoanModuleProductController;
 use App\Http\Controllers\Api\LoanRequestController;
 use App\Http\Controllers\Api\OfficeCollectionController;
 use App\Http\Controllers\Api\AiAssistantController;
@@ -338,6 +339,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::post('office-collections/collect', [OfficeCollectionController::class, 'collect']);
 
     // Loan Requests (step-by-step loan module)
+    Route::apiResource('loan-products', LoanModuleProductController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
     Route::get('loan-requests', [LoanRequestController::class, 'index']);
     Route::post('loan-requests', [LoanRequestController::class, 'store']);
     Route::get('loan-requests/{id}', [LoanRequestController::class, 'show']);
