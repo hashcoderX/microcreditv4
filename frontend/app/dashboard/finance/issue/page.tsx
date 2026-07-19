@@ -141,6 +141,12 @@ type CustomerDetail = {
   credit_score?: number | string | null;
 };
 
+function isCustomerDetail(value: unknown): value is CustomerDetail {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { id?: unknown };
+  return typeof candidate.id === 'number';
+}
+
 export default function IssueFinancePage() {
   const router = useRouter();
   const [token, setToken] = useState('');
@@ -178,6 +184,8 @@ export default function IssueFinancePage() {
   const [regVehicleYear, setRegVehicleYear] = useState('');
   const [regAssetRef, setRegAssetRef] = useState('');
   const [regAmount, setRegAmount] = useState('');
+  const [regLoanAmount, setRegLoanAmount] = useState('');
+  const [regLoanDetails, setRegLoanDetails] = useState('');
   const [regDraftValue, setRegDraftValue] = useState('');
   const [regDownPayment, setRegDownPayment] = useState('');
   const [regValuationAmount, setRegValuationAmount] = useState('');
@@ -225,14 +233,20 @@ export default function IssueFinancePage() {
   const [showNewProductInterestTerms, setShowNewProductInterestTerms] = useState(false);
   const [savingProductType, setSavingProductType] = useState(false);
 
+  const wizardStep3Label = regFinanceType === 'other'
+    ? 'Loan'
+    : regFinanceType === 'equipment'
+      ? 'Equipment'
+      : 'Vehicle';
+
   const wizardSteps = [
     { id: 1, label: 'Basic', hint: 'Product setup and finance terms' },
     { id: 2, label: 'Customer', hint: 'Load and verify customer profile' },
-    { id: 3, label: 'Vehicle', hint: 'Vehicle and valuation details' },
+    { id: 3, label: wizardStep3Label, hint: `${wizardStep3Label} and valuation details` },
     { id: 4, label: 'Guarantor', hint: 'Security party details' },
     { id: 5, label: 'Repayment', hint: 'Repayment plan and scheduling' },
     { id: 6, label: 'Documents', hint: 'Supporting files upload' },
-  ] as const;
+  ];
 
   const activeWizardStep = useMemo(
     () => wizardSteps.find((s) => s.id === registerStep) ?? wizardSteps[0],
@@ -247,6 +261,15 @@ export default function IssueFinancePage() {
 
     return normalized.includes('draft');
   }, [regProductType]);
+  const isLoanProductSelected = useMemo(() => {
+    const normalized = String(regProductType || '')
+      .toLowerCase()
+      .replace(/[_-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return normalized.includes('loan');
+  }, [regProductType]);
   const visibleWizardSteps = useMemo(
     () => wizardSteps.filter((step) => !(isDraftLoanSelected && step.id === 5)),
     [wizardSteps, isDraftLoanSelected],
@@ -259,13 +282,16 @@ export default function IssueFinancePage() {
     () => ((activeWizardIndex + 1) / Math.max(visibleWizardSteps.length, 1)) * 100,
     [activeWizardIndex, visibleWizardSteps.length],
   );
+  const isVehicleFinanceSelected = regFinanceType === 'vehicle';
+  const isOtherFinanceSelected = regFinanceType === 'other';
+  const effectiveAmountInput = isOtherFinanceSelected ? regLoanAmount : regAmount;
   const financedPreview = useMemo(() => {
-    const asset = Number(regAmount);
+    const asset = Number(effectiveAmountInput);
     const down = Number(regDownPayment || 0);
     if (!Number.isFinite(asset) || asset <= 0) return null;
     if (!Number.isFinite(down) || down < 0) return null;
     return Math.max(asset - down, 0);
-  }, [regAmount, regDownPayment]);
+  }, [effectiveAmountInput, regDownPayment]);
 
   useEffect(() => {
     if (isDraftLoanSelected && registerStep === 5) {
@@ -442,7 +468,7 @@ export default function IssueFinancePage() {
   };
 
   const calculateBaseInstallmentFromLeaseTerms = (): number | null => {
-    const assetAmount = Number(regAmount);
+    const assetAmount = Number(effectiveAmountInput);
     const downPayment = Number(regDownPayment || 0);
     const annualRatePercent = toAnnualRatePercent(Number(regInterestRate), regInterestRatePeriod);
     const tenureMonths = Number(regTenureMonths);
@@ -476,7 +502,7 @@ export default function IssueFinancePage() {
 
   const calculatedBaseInstallment = useMemo(
     () => calculateBaseInstallmentFromLeaseTerms(),
-    [regAmount, regDownPayment, regInterestRate, regInterestRatePeriod, regTenureMonths, regFrequency, regInterestType],
+    [effectiveAmountInput, regDownPayment, regInterestRate, regInterestRatePeriod, regTenureMonths, regFrequency, regInterestType],
   );
   const interestRateSummary = useMemo(() => {
     const entered = Number(regInterestRate);
@@ -503,6 +529,21 @@ export default function IssueFinancePage() {
 
     return Math.round(monthlyInterest * 100) / 100;
   }, [isDraftLoanSelected, regDraftValue, regInterestRate, regInterestRatePeriod]);
+  const shouldShowLoanMonthlyInterest = isOtherFinanceSelected || (isLoanProductSelected && !isDraftLoanSelected);
+  const calculatedLoanMonthlyInterest = useMemo(() => {
+    if (!shouldShowLoanMonthlyInterest) return null;
+
+    const principal = Number(effectiveAmountInput);
+    const monthlyRatePercent = toMonthlyRatePercent(Number(regInterestRate), regInterestRatePeriod);
+
+    if (!Number.isFinite(principal) || principal <= 0) return null;
+    if (!Number.isFinite(monthlyRatePercent) || monthlyRatePercent < 0) return null;
+
+    const monthlyInterest = principal * (monthlyRatePercent / 100);
+    if (!Number.isFinite(monthlyInterest) || monthlyInterest < 0) return null;
+
+    return Math.round(monthlyInterest * 100) / 100;
+  }, [shouldShowLoanMonthlyInterest, effectiveAmountInput, regInterestRate, regInterestRatePeriod]);
 
   const applicationSummary = useMemo(
     () => ({
@@ -512,6 +553,7 @@ export default function IssueFinancePage() {
       financedAmount: financedPreview,
       installmentPreview: calculatedBaseInstallment,
       draftMonthlyInterest: calculatedSpeedDraftMonthlyInterest,
+      loanMonthlyInterest: calculatedLoanMonthlyInterest,
     }),
     [
       regCustomerNo,
@@ -520,6 +562,7 @@ export default function IssueFinancePage() {
       financedPreview,
       calculatedBaseInstallment,
       calculatedSpeedDraftMonthlyInterest,
+      calculatedLoanMonthlyInterest,
     ],
   );
 
@@ -713,7 +756,24 @@ export default function IssueFinancePage() {
         },
       });
 
-      const customer = response.data as CustomerDetail;
+      const payload = response.data as
+        | { found?: boolean; data?: unknown; message?: string }
+        | unknown;
+
+      const hasEnvelope = Boolean(payload && typeof payload === 'object' && 'data' in (payload as Record<string, unknown>));
+      const envelope = hasEnvelope ? (payload as { found?: boolean; data?: unknown }) : null;
+      const customerCandidate = hasEnvelope ? envelope?.data : payload;
+      const customer = isCustomerDetail(customerCandidate) ? customerCandidate : null;
+
+      const found = hasEnvelope
+        ? envelope?.found === true
+        : customer !== null;
+
+      if (!found || !customer) {
+        setRegCustomerDetail(null);
+        return false;
+      }
+
       setRegCustomerDetail(customer);
       setRegCustomerFirstName(String(customer.first_name || ''));
       setRegCustomerLastName(String(customer.last_name || ''));
@@ -853,7 +913,7 @@ export default function IssueFinancePage() {
   const submitRegister = async () => {
     if (!token) return;
 
-    const amount = Number(regAmount);
+    const amount = Number(effectiveAmountInput);
     const down = regDownPayment ? Number(regDownPayment) : 0;
     const draftValue = regDraftValue ? Number(regDraftValue) : NaN;
     const rate = toAnnualRatePercent(Number(regInterestRate), regInterestRatePeriod);
@@ -892,7 +952,12 @@ export default function IssueFinancePage() {
       }
     }
     if (!Number.isFinite(amount) || amount <= 0) {
-      setErrorMessage('Asset value must be a valid amount.');
+      setErrorMessage(isOtherFinanceSelected ? 'Loan amount must be a valid amount.' : 'Asset value must be a valid amount.');
+      setRegisterStep(3);
+      return;
+    }
+    if (isOtherFinanceSelected && !regLoanDetails.trim()) {
+      setErrorMessage('Loan details are required for Other finance type.');
       setRegisterStep(3);
       return;
     }
@@ -918,7 +983,7 @@ export default function IssueFinancePage() {
     }
 
     if (isDraftLoanSelected && Number.isFinite(draftValue) && draftValue > amount) {
-      setErrorMessage('Draft Value cannot be greater than Vehicle Value.');
+      setErrorMessage(isOtherFinanceSelected ? 'Draft Value cannot be greater than Loan Amount.' : 'Draft Value cannot be greater than Vehicle Value.');
       setRegisterStep(3);
       return;
     }
@@ -952,7 +1017,9 @@ export default function IssueFinancePage() {
           customer_no: regCustomerNo.trim(),
           finance_type: regFinanceType,
           product_type: regProductType,
-          asset_reference: regAssetRef || regVehicleNo || undefined,
+          asset_reference: isOtherFinanceSelected
+            ? (regAssetRef || undefined)
+            : (regAssetRef || regVehicleNo || undefined),
           amount,
           down_payment: effectiveDownPayment,
           interest_rate: rate,
@@ -964,18 +1031,29 @@ export default function IssueFinancePage() {
             : undefined,
           start_date: regStartDate || undefined,
           status: regSubmissionMode,
-          vehicle_details: {
-            vehicle_no: regVehicleNo || null,
-            chassis_no: regChassisNo || null,
-            engine_no: regEngineNo || null,
-            make_model: regMakeModel || null,
-            year: regVehicleYear || null,
-          },
-          valuation_details: {
-            valuation_amount: regValuationAmount || null,
-            valuation_date: regValuationDate || null,
-            valuer_name: regValuerName || null,
-          },
+          vehicle_details: isVehicleFinanceSelected
+            ? {
+              vehicle_no: regVehicleNo || null,
+              chassis_no: regChassisNo || null,
+              engine_no: regEngineNo || null,
+              make_model: regMakeModel || null,
+              year: regVehicleYear || null,
+            }
+            : isOtherFinanceSelected
+              ? {
+                loan_details: regLoanDetails || null,
+              }
+              : {
+                make_model: regMakeModel || null,
+                year: regVehicleYear || null,
+              },
+          valuation_details: isOtherFinanceSelected
+            ? null
+            : {
+              valuation_amount: regValuationAmount || null,
+              valuation_date: regValuationDate || null,
+              valuer_name: regValuerName || null,
+            },
           guarantor_details: regGuarantors
             .filter((g) => g.name.trim() !== '' || g.nic.trim() !== '' || g.phone.trim() !== '' || g.address.trim() !== '')
             .map((g) => ({
@@ -1030,7 +1108,18 @@ export default function IssueFinancePage() {
     } catch (error: unknown) {
       const fallback = 'Failed to register finance agreement.';
       if (axios.isAxiosError(error)) {
-        setErrorMessage(String(error.response?.data?.message || fallback));
+        const responseData = error.response?.data as {
+          message?: string;
+          errors?: Record<string, string[] | string>;
+        } | undefined;
+
+        const firstValidationMessage = responseData?.errors
+          ? Object.values(responseData.errors)
+            .flatMap((entry) => Array.isArray(entry) ? entry : [entry])
+            .find((entry) => typeof entry === 'string' && entry.trim() !== '')
+          : undefined;
+
+        setErrorMessage(String(firstValidationMessage || responseData?.message || fallback));
       } else {
         setErrorMessage(fallback);
       }
@@ -1159,7 +1248,7 @@ export default function IssueFinancePage() {
                     >
                       {isDone ? <Check className="h-3.5 w-3.5" /> : step.id}
                     </span>
-                    <span className="block text-[10px] sm:text-[11px] font-bold uppercase tracking-wide">{step.label}</span>
+                    <span className="block text-[10px] sm:text-[11px] font-bold uppercase tracking-wide text-black">{step.label}</span>
                   </button>
                 );
               })}
@@ -1302,6 +1391,11 @@ export default function IssueFinancePage() {
                         {isDraftLoanSelected && (
                           <p className="mt-1 text-xs font-medium text-amber-800">
                             Draft loan monthly interest = Draft Value × monthly rate%.
+                          </p>
+                        )}
+                        {shouldShowLoanMonthlyInterest && (
+                          <p className="mt-1 text-xs font-medium text-cyan-800">
+                            Monthly interest estimate = Principal Amount × monthly rate%.
                           </p>
                         )}
                       </div>
@@ -1538,86 +1632,119 @@ export default function IssueFinancePage() {
               <div className="space-y-4">
                 <SectionHeader
                   icon={Car}
-                  title="Vehicle & valuation"
-                  description="Capture vehicle identity, asset value, and professional valuation figures."
+                  title={isVehicleFinanceSelected ? 'Vehicle & valuation' : isOtherFinanceSelected ? 'Loan details' : 'Equipment & valuation'}
+                  description={
+                    isVehicleFinanceSelected
+                      ? 'Capture vehicle identity, asset value, and professional valuation figures.'
+                      : isOtherFinanceSelected
+                        ? 'Capture loan amount and loan details for Other finance type.'
+                        : 'Capture equipment value and supporting valuation figures.'
+                  }
                 />
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Vehicle No</label>
-                    <input value={regVehicleNo} onChange={(e) => setRegVehicleNo(e.target.value)} className={inputClass} placeholder="e.g. CAB-1234" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Chassis No</label>
-                    <input value={regChassisNo} onChange={(e) => setRegChassisNo(e.target.value)} className={inputClass} />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Engine No</label>
-                    <input value={regEngineNo} onChange={(e) => setRegEngineNo(e.target.value)} className={inputClass} />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Make / Model</label>
-                    <input value={regMakeModel} onChange={(e) => setRegMakeModel(e.target.value)} className={inputClass} placeholder="e.g. Toyota Axio" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Year</label>
-                    <input value={regVehicleYear} onChange={(e) => setRegVehicleYear(e.target.value)} className={inputClass} placeholder="e.g. 2020" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Asset Reference</label>
-                    <input value={regAssetRef} onChange={(e) => setRegAssetRef(e.target.value)} className={inputClass} placeholder="Optional ref" />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Vehicle Value</label>
-                    <input value={regAmount} onChange={(e) => setRegAmount(e.target.value)} className={inputClass} placeholder="Total value" />
-                  </div>
-                  {isDraftLoanSelected && (
+                {isVehicleFinanceSelected && (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Draft Value</label>
-                      <input value={regDraftValue} onChange={(e) => setRegDraftValue(e.target.value)} className={inputClass} placeholder="Draft value to issue" />
-                      {Number.isFinite(calculatedSpeedDraftMonthlyInterest || NaN) && (calculatedSpeedDraftMonthlyInterest || 0) >= 0 && (
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Vehicle No</label>
+                      <input value={regVehicleNo} onChange={(e) => setRegVehicleNo(e.target.value)} className={inputClass} placeholder="e.g. CAB-1234" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Chassis No</label>
+                      <input value={regChassisNo} onChange={(e) => setRegChassisNo(e.target.value)} className={inputClass} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Engine No</label>
+                      <input value={regEngineNo} onChange={(e) => setRegEngineNo(e.target.value)} className={inputClass} />
+                    </div>
+                  </div>
+                )}
+
+                {isOtherFinanceSelected ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Loan Amount</label>
+                      <input value={regLoanAmount} onChange={(e) => setRegLoanAmount(e.target.value)} className={inputClass} placeholder="Enter loan amount" />
+                      {calculatedLoanMonthlyInterest !== null && (
                         <p className="mt-1 text-[11px] font-semibold text-cyan-700">
-                          Estimated Monthly Interest: {(calculatedSpeedDraftMonthlyInterest as number).toFixed(2)}
+                          Estimated Monthly Interest: {calculatedLoanMonthlyInterest.toFixed(2)}
                         </p>
                       )}
                     </div>
-                  )}
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Down Payment</label>
-                    <input
-                      value={isDraftLoanSelected && Number.isFinite(Number(regDraftValue)) && Number(regDraftValue) > 0 && Number(regAmount) >= Number(regDraftValue)
-                        ? String((Number(regAmount) - Number(regDraftValue)).toFixed(2))
-                        : regDownPayment}
-                      onChange={(e) => setRegDownPayment(e.target.value)}
-                      className={inputClass}
-                      placeholder="Customer contribution"
-                      readOnly={isDraftLoanSelected && Number.isFinite(Number(regDraftValue)) && Number(regDraftValue) > 0}
-                    />
-                    {isDraftLoanSelected && (
-                      <p className="mt-1 text-[11px] text-slate-500">For Speed Draft, Down Payment is auto-derived as Vehicle Value - Draft Value.</p>
-                    )}
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Loan Details</label>
+                      <textarea
+                        value={regLoanDetails}
+                        onChange={(e) => setRegLoanDetails(e.target.value)}
+                        className={`${inputClass} min-h-[108px]`}
+                        placeholder="Enter loan purpose/details"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Valuation Amount</label>
-                    <input value={regValuationAmount} onChange={(e) => setRegValuationAmount(e.target.value)} className={inputClass} placeholder="Valued amount" />
-                  </div>
-                </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Make / Model</label>
+                        <input value={regMakeModel} onChange={(e) => setRegMakeModel(e.target.value)} className={inputClass} placeholder="e.g. Toyota Axio" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Year</label>
+                        <input value={regVehicleYear} onChange={(e) => setRegVehicleYear(e.target.value)} className={inputClass} placeholder="e.g. 2020" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Asset Reference</label>
+                        <input value={regAssetRef} onChange={(e) => setRegAssetRef(e.target.value)} className={inputClass} placeholder="Optional ref" />
+                      </div>
+                    </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Valuation Date</label>
-                    <input type="date" value={regValuationDate} onChange={(e) => setRegValuationDate(e.target.value)} className={inputClass} />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Valuer Name</label>
-                    <input value={regValuerName} onChange={(e) => setRegValuerName(e.target.value)} className={inputClass} placeholder="Valuer" />
-                  </div>
-                </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">{isVehicleFinanceSelected ? 'Vehicle Value' : 'Equipment Value'}</label>
+                        <input value={regAmount} onChange={(e) => setRegAmount(e.target.value)} className={inputClass} placeholder="Total value" />
+                      </div>
+                      {isDraftLoanSelected && (
+                        <div>
+                          <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Draft Value</label>
+                          <input value={regDraftValue} onChange={(e) => setRegDraftValue(e.target.value)} className={inputClass} placeholder="Draft value to issue" />
+                          {Number.isFinite(calculatedSpeedDraftMonthlyInterest || NaN) && (calculatedSpeedDraftMonthlyInterest || 0) >= 0 && (
+                            <p className="mt-1 text-[11px] font-semibold text-cyan-700">
+                              Estimated Monthly Interest: {(calculatedSpeedDraftMonthlyInterest as number).toFixed(2)}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Down Payment</label>
+                        <input
+                          value={isDraftLoanSelected && Number.isFinite(Number(regDraftValue)) && Number(regDraftValue) > 0 && Number(regAmount) >= Number(regDraftValue)
+                            ? String((Number(regAmount) - Number(regDraftValue)).toFixed(2))
+                            : regDownPayment}
+                          onChange={(e) => setRegDownPayment(e.target.value)}
+                          className={inputClass}
+                          placeholder="Customer contribution"
+                          readOnly={isDraftLoanSelected && Number.isFinite(Number(regDraftValue)) && Number(regDraftValue) > 0}
+                        />
+                        {isDraftLoanSelected && (
+                          <p className="mt-1 text-[11px] text-slate-500">For Speed Draft, Down Payment is auto-derived as Vehicle Value - Draft Value.</p>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Valuation Amount</label>
+                        <input value={regValuationAmount} onChange={(e) => setRegValuationAmount(e.target.value)} className={inputClass} placeholder="Valued amount" />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Valuation Date</label>
+                        <input type="date" value={regValuationDate} onChange={(e) => setRegValuationDate(e.target.value)} className={inputClass} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Valuer Name</label>
+                        <input value={regValuerName} onChange={(e) => setRegValuerName(e.target.value)} className={inputClass} placeholder="Valuer" />
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -1986,6 +2113,14 @@ export default function IssueFinancePage() {
                     <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Draft monthly interest</p>
                     <p className="font-semibold text-amber-800 mt-0.5 tabular-nums">
                       LKR {formatAmount(applicationSummary.draftMonthlyInterest)}
+                    </p>
+                  </div>
+                )}
+                {shouldShowLoanMonthlyInterest && applicationSummary.loanMonthlyInterest !== null && (
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Monthly interest</p>
+                    <p className="font-semibold text-cyan-800 mt-0.5 tabular-nums">
+                      LKR {formatAmount(applicationSummary.loanMonthlyInterest)}
                     </p>
                   </div>
                 )}

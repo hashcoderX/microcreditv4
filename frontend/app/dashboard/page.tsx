@@ -873,7 +873,7 @@ export default function Dashboard() {
 
     try {
       setFixWidgetsModal((prev) => ({ ...prev, verifying: true }));
-      await axios.post(
+      const approvalResponse = await axios.post(
         `${apiBaseUrl}/dashboard/widgets/authorize-admin`,
         {
           admin_email: adminEmail,
@@ -886,6 +886,18 @@ export default function Dashboard() {
           },
         }
       );
+
+      if (approvalResponse?.data?.approved !== true) {
+        setWalletNotice({
+          open: true,
+          title: 'Approval Failed',
+          message:
+            typeof approvalResponse?.data?.message === 'string'
+              ? approvalResponse.data.message
+              : 'Admin approval failed. Please verify credentials and try again.',
+        });
+        return;
+      }
 
       const isFixing = fixWidgetsModal.action === 'fix';
       toggleWidgetsFixed();

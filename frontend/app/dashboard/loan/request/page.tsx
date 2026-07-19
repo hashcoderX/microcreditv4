@@ -5,6 +5,19 @@ import { getApiBaseUrl } from "@/lib/api";
 import { WidgetCloseGate } from "@/lib/useWidgetsFixed";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  AlertCircle,
+  CalendarDays,
+  CheckCircle2,
+  CircleDollarSign,
+  Clock3,
+  CreditCard,
+  FileCheck2,
+  Info,
+  ShieldCheck,
+  Sparkles,
+  Wallet,
+} from "lucide-react";
 
 type LoanProduct = {
   key: string;
@@ -88,6 +101,62 @@ function FieldLabel({
       {optional ? <span className="font-normal text-slate-500"> (optional)</span> : null}
     </label>
   );
+}
+
+function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <div className={`rounded-xl border bg-white shadow-sm ${className}`}>{children}</div>;
+}
+
+function Badge({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${className}`}>{children}</span>;
+}
+
+function Separator({ className = "" }: { className?: string }) {
+  return <div className={`h-px w-full bg-slate-200 ${className}`}></div>;
+}
+
+function ProgressBar({ value }: { value: number }) {
+  const safeValue = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
+  return (
+    <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+      <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all" style={{ width: `${safeValue}%` }}></div>
+    </div>
+  );
+}
+
+function AlertBox({ children }: { children: React.ReactNode }) {
+  return <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">{children}</div>;
+}
+
+function AvatarChip({ label }: { label: string }) {
+  const display = label.trim();
+  const initials = display
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("") || "NA";
+
+  return (
+    <div className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-cyan-200 bg-cyan-50 text-xs font-bold text-cyan-800">
+      {initials}
+    </div>
+  );
+}
+
+function TooltipText({ text, children }: { text: string; children: React.ReactNode }) {
+  return (
+    <span className="group relative inline-flex items-center">
+      {children}
+      <span className="pointer-events-none absolute -top-9 left-1/2 z-20 hidden -translate-x-1/2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[11px] font-medium text-white group-hover:block">
+        {text}
+      </span>
+    </span>
+  );
+}
+
+function SkeletonBox({ className = "" }: { className?: string }) {
+  return <div className={`animate-pulse rounded-md bg-slate-200 ${className}`}></div>;
 }
 
 const fieldClass =
@@ -922,6 +991,50 @@ export default function NewLoanRequestPage() {
   const isConfirmationBusy =
     confirmationModal.action?.type === "delete-loan-product" &&
     deletingProductKey === confirmationModal.action.productKey;
+
+  const totalInterest = useMemo(() => {
+    const principalAmount = Number(principal);
+    const totalPayable = Number(calculation.totalPayable);
+    if (!Number.isFinite(principalAmount) || !Number.isFinite(totalPayable)) return 0;
+    return Number(Math.max(totalPayable - principalAmount, 0).toFixed(2));
+  }, [principal, calculation.totalPayable]);
+
+  const progressStep = useMemo(() => {
+    if (isSubmitted) return 5;
+    if (activeStep >= 6) return 3;
+    if (activeStep >= 5) return 4;
+    if (activeStep >= 4) return 2;
+    return 1;
+  }, [activeStep, isSubmitted]);
+
+  const progressPercentDashboard = ((progressStep - 1) / 4) * 100;
+
+  const handleContinueApplication = () => {
+    if (isSubmitted) return;
+    if (activeStep < steps.length) {
+      handleNextStep();
+      return;
+    }
+    void handleSubmitLoanRequest();
+  };
+
+  const handleSaveDraft = () => {
+    const payload = {
+      activeStep,
+      loanProduct,
+      principal,
+      annualRate,
+      interestRateType,
+      tenureMonths,
+      frequency,
+      customerDetails,
+      guarantors,
+      savedAt: new Date().toISOString(),
+    };
+
+    localStorage.setItem("loan_request_draft", JSON.stringify(payload));
+    setStepNotice("Draft saved locally.");
+  };
 
   if (!token) {
     return (
@@ -1797,54 +1910,208 @@ export default function NewLoanRequestPage() {
                   ×
                 </button>
               </WidgetCloseGate>
-              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-700">Calculation Preview</p>
-              <h3 className="mt-1 text-xl font-extrabold text-slate-900">Shared Formula</h3>
-              <p className="text-sm text-slate-600 mt-1">All selected loan products use this same calculation.</p>
-
-              <div className="mt-4 space-y-3 text-sm">
-                <div className="rounded-lg border border-cyan-100 bg-cyan-50/50 p-3">
-                  <p className="text-slate-500">Installments</p>
-                  <p className="text-lg font-bold text-slate-900">{calculation.installments}</p>
-                </div>
-                <div className="rounded-lg border border-cyan-100 bg-cyan-50/50 p-3">
-                  <p className="text-slate-500">Installment Amount</p>
-                  <p className="text-lg font-bold text-slate-900">{formatAmount(calculation.installmentAmount)}</p>
-                </div>
-                <div className="rounded-lg border border-cyan-100 bg-cyan-50/50 p-3">
-                  <p className="text-slate-500">Total Payable</p>
-                  <p className="text-lg font-bold text-slate-900">{formatAmount(calculation.totalPayable)}</p>
-                </div>
-                <div className="rounded-lg border border-cyan-100 bg-cyan-50/50 p-3">
-                  <p className="text-slate-500">Customer Details</p>
-                  <p
-                    className={`text-sm font-bold ${
-                      customerInfoComplete ? "text-emerald-700" : "text-amber-700"
-                    }`}
-                  >
-                    {customerInfoComplete ? "Completed" : "Missing required fields"}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-cyan-100 bg-cyan-50/50 p-3">
-                  <p className="text-slate-500">Guarantor Details</p>
-                  <p
-                    className={`text-sm font-bold ${
-                      guarantorInfoComplete ? "text-emerald-700" : "text-amber-700"
-                    }`}
-                  >
-                    {guarantorInfoComplete
-                      ? guarantorHasAnyData
-                        ? `Completed (${guarantors.length})`
-                        : "Optional (Not provided)"
-                      : "Missing required guarantor fields"}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-cyan-100 bg-cyan-50/50 p-3">
-                  <p className="text-slate-500">Documents</p>
-                  <p className={`text-sm font-bold ${documents.length > 0 ? "text-emerald-700" : "text-amber-700"}`}>
-                    {documents.length > 0 ? `Uploaded (${documents.length})` : "Upload required"}
-                  </p>
-                </div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-700">Draft Dashboard</p>
+              <div className="mt-1 flex items-center justify-between gap-3">
+                <h3 className="text-xl font-extrabold text-slate-900">TD Speed Draft Summary</h3>
+                <AvatarChip label={customerDetails.fullName || selectedProduct?.name || "TD"} />
               </div>
+              <p className="text-sm text-slate-600 mt-1">Review your draft facility before submitting your application.</p>
+
+              {loanProductsLoading ? (
+                <div className="mt-4 space-y-3">
+                  <SkeletonBox className="h-16 w-full" />
+                  <SkeletonBox className="h-16 w-full" />
+                  <SkeletonBox className="h-16 w-full" />
+                </div>
+              ) : (
+                <>
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <Card className="p-3 bg-gradient-to-br from-cyan-50 to-blue-50 border-cyan-200">
+                      <div className="flex items-start justify-between">
+                        <p className="text-xs font-semibold text-cyan-800">Loan Amount</p>
+                        <CircleDollarSign className="h-4 w-4 text-cyan-700" />
+                      </div>
+                      <p className="mt-2 text-2xl font-extrabold text-cyan-900">LKR {formatAmount(Number(principal || 0))}</p>
+                      <Badge className="mt-2 border-cyan-200 bg-cyan-100 text-cyan-800">Primary</Badge>
+                    </Card>
+
+                    <Card className="p-3">
+                      <div className="flex items-start justify-between">
+                        <p className="text-xs font-semibold text-slate-700">Loan Period</p>
+                        <CalendarDays className="h-4 w-4 text-slate-500" />
+                      </div>
+                      <p className="mt-2 text-lg font-bold text-slate-900">{tenureMonths || "0"} Months</p>
+                    </Card>
+
+                    <Card className="p-3 border-emerald-200 bg-emerald-50">
+                      <div className="flex items-start justify-between">
+                        <p className="text-xs font-semibold text-emerald-800">Monthly Installment</p>
+                        <Wallet className="h-4 w-4 text-emerald-700" />
+                      </div>
+                      <p className="mt-2 text-2xl font-extrabold text-emerald-900">LKR {formatAmount(calculation.installmentAmount)}</p>
+                    </Card>
+
+                    <Card className="p-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold text-slate-700">Interest Rate</p>
+                        <TooltipText text="Effective rate is shown when provided by product configuration.">
+                          <Info className="h-4 w-4 text-slate-500" />
+                        </TooltipText>
+                      </div>
+                      <p className="mt-2 text-lg font-bold text-slate-900">{annualRate || "0"}% / year</p>
+                      <p className="text-xs text-slate-500">Effective: Not available</p>
+                    </Card>
+
+                    <Card className="p-3">
+                      <p className="text-xs font-semibold text-slate-700">Processing Fee</p>
+                      <p className="mt-2 text-lg font-bold text-slate-900">Not available</p>
+                    </Card>
+
+                    <Card className="p-3">
+                      <p className="text-xs font-semibold text-slate-700">Total Interest</p>
+                      <p className="mt-2 text-lg font-bold text-slate-900">LKR {formatAmount(totalInterest)}</p>
+                    </Card>
+
+                    <Card className="p-3">
+                      <p className="text-xs font-semibold text-slate-700">Total Amount Payable</p>
+                      <p className="mt-2 text-lg font-bold text-slate-900">LKR {formatAmount(calculation.totalPayable)}</p>
+                    </Card>
+
+                    <Card className="p-3">
+                      <p className="text-xs font-semibold text-slate-700">Available Credit Limit</p>
+                      <p className="mt-2 text-lg font-bold text-slate-900">Not available</p>
+                    </Card>
+                  </div>
+
+                  <Separator className="my-4" />
+
+                  <div>
+                    <p className="text-sm font-bold text-slate-900">Eligibility Status</p>
+                    <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <Card className="p-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold text-slate-700">Customer Profile</p>
+                          <CheckCircle2 className={`h-4 w-4 ${customerInfoComplete ? "text-emerald-600" : "text-amber-500"}`} />
+                        </div>
+                        <Badge className={`mt-2 ${customerInfoComplete ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+                          {customerInfoComplete ? "Completed" : "Missing"}
+                        </Badge>
+                      </Card>
+
+                      <Card className="p-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold text-slate-700">Guarantor</p>
+                          <FileCheck2 className={`h-4 w-4 ${guarantorInfoComplete ? "text-emerald-600" : "text-amber-500"}`} />
+                        </div>
+                        <Badge className={`mt-2 ${guarantorInfoComplete ? "border-slate-200 bg-slate-50 text-slate-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+                          {guarantorHasAnyData ? (guarantorInfoComplete ? "Completed" : "Required") : "Optional"}
+                        </Badge>
+                      </Card>
+
+                      <Card className="p-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold text-slate-700">Documents</p>
+                          <CreditCard className={`h-4 w-4 ${documents.length > 0 ? "text-emerald-600" : "text-amber-500"}`} />
+                        </div>
+                        <Badge className={`mt-2 ${documents.length > 0 ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+                          {documents.length > 0 ? "Completed" : "Pending Upload"}
+                        </Badge>
+                      </Card>
+
+                      <Card className="p-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold text-slate-700">Credit Verification</p>
+                          <Clock3 className="h-4 w-4 text-blue-500" />
+                        </div>
+                        <Badge className="mt-2 border-blue-200 bg-blue-50 text-blue-700">Pending</Badge>
+                      </Card>
+                    </div>
+                  </div>
+
+                  <Separator className="my-4" />
+
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-bold text-slate-900">Application Progress</p>
+                      <Badge className="border-cyan-200 bg-cyan-50 text-cyan-700">Step {progressStep} / 5</Badge>
+                    </div>
+                    <div className="mt-2">
+                      <ProgressBar value={progressPercentDashboard} />
+                    </div>
+                    <div className="mt-3 grid grid-cols-1 gap-2">
+                      {[
+                        "Customer Details",
+                        "Loan Details",
+                        "Documents",
+                        "Verification",
+                        "Approval",
+                      ].map((label, index) => {
+                        const stepIndex = index + 1;
+                        const isCurrent = progressStep === stepIndex;
+                        const isComplete = progressStep > stepIndex;
+
+                        return (
+                          <div key={label} className={`rounded-lg border px-3 py-2 text-xs font-semibold ${isCurrent ? "border-cyan-300 bg-cyan-50 text-cyan-800" : isComplete ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-slate-200 bg-white text-slate-600"}`}>
+                            {stepIndex}. {label}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <Separator className="my-4" />
+
+                  <div>
+                    <p className="text-sm font-bold text-slate-900">Speed Draft Features</p>
+                    <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <Card className="p-3"><p className="text-xs font-semibold text-slate-700 inline-flex items-center gap-2"><Sparkles className="h-4 w-4 text-yellow-500" /> Fast Approval</p></Card>
+                      <Card className="p-3"><p className="text-xs font-semibold text-slate-700 inline-flex items-center gap-2"><CircleDollarSign className="h-4 w-4 text-emerald-600" /> Instant Disbursement</p></Card>
+                      <Card className="p-3"><p className="text-xs font-semibold text-slate-700 inline-flex items-center gap-2"><FileCheck2 className="h-4 w-4 text-cyan-600" /> Minimum Documentation</p></Card>
+                      <Card className="p-3"><p className="text-xs font-semibold text-slate-700 inline-flex items-center gap-2"><CalendarDays className="h-4 w-4 text-indigo-600" /> Flexible Repayment</p></Card>
+                      <Card className="p-3 md:col-span-2"><p className="text-xs font-semibold text-slate-700 inline-flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-blue-600" /> Secure Processing</p></Card>
+                    </div>
+                  </div>
+
+                  <Separator className="my-4" />
+
+                  <AlertBox>
+                    <div className="inline-flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 mt-0.5 text-blue-600" />
+                      <p>
+                        Your monthly installment and total payable are estimated based on the selected loan amount and repayment period. Final approval is subject to verification.
+                      </p>
+                    </div>
+                  </AlertBox>
+
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={handleContinueApplication}
+                      disabled={submitLoading}
+                      className="rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 px-4 py-2 text-sm font-semibold text-white hover:from-cyan-700 hover:to-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      Continue Application
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveDraft}
+                      className="rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-800 hover:bg-cyan-100"
+                    >
+                      Save Draft
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveStep((prev) => Math.max(prev - 1, 1));
+                        setStepNotice("");
+                      }}
+                      className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      Back
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div className="rounded-2xl border border-cyan-200 bg-cyan-50 px-4 py-4 text-sm font-medium text-cyan-900">

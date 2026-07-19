@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class AuthController extends Controller
 {
@@ -87,64 +88,74 @@ class AuthController extends Controller
 
     public function login(Request $request)
     {
-        $request->validate([
-            'email' => 'required|string|max:255',
-            'password' => 'required|string',
-        ]);
+        try {
+            $request->validate([
+                'email' => 'required|string|max:255',
+                'password' => 'required|string',
+            ]);
 
-        $emailInput = trim((string) $request->input('email'));
-        $passwordInput = (string) $request->input('password');
+            $emailInput = trim((string) $request->input('email'));
+            $passwordInput = (string) $request->input('password');
 
-        // API-first auth: resolve user + verify password directly (no session guard dependency).
-        $user = $this->resolveLoginUserByEmail($emailInput);
-        if (!$user || !Hash::check($passwordInput, (string) $user->password)) {
-            // Emergency local fallback for development:
-            // - if user exists, normalize default password
-            // - if user is missing (e.g. wrong DB), bootstrap super admin account
-            if (app()->environment('local') && $passwordInput === 'password') {
-                if ($user) {
-                    if (!Hash::check('password', (string) $user->password)) {
-                        $user->password = Hash::make('password');
-                        $user->save();
+            // API-first auth: resolve user + verify password directly (no session guard dependency).
+            $user = $this->resolveLoginUserByEmail($emailInput);
+            if (!$user || !Hash::check($passwordInput, (string) $user->password)) {
+                // Emergency local fallback for development:
+                // - if user exists, normalize default password
+                // - if user is missing (e.g. wrong DB), bootstrap super admin account
+                if (app()->environment('local') && $passwordInput === 'password') {
+                    if ($user) {
+                        if (!Hash::check('password', (string) $user->password)) {
+                            $user->password = Hash::make('password');
+                            $user->save();
+                        }
+                    } else {
+                        $seedEmail = strtolower(trim((string) env('SYSTEM_SUPER_ADMIN_EMAIL', 'superadmin@softcodelk.com')));
+                        $user = User::query()->firstOrCreate(
+                            ['email' => $seedEmail],
+                            [
+                                'name' => 'Super Admin',
+                                'password' => Hash::make('password'),
+                            ]
+                        );
+                    }
+
+                    // Re-check against the provided password after normalization/bootstrap.
+                    if (!Hash::check($passwordInput, (string) $user->password)) {
+                        $user = null;
                     }
                 } else {
-                    $seedEmail = strtolower(trim((string) env('SYSTEM_SUPER_ADMIN_EMAIL', 'superadmin@softcodelk.com')));
-                    $user = User::query()->firstOrCreate(
-                        ['email' => $seedEmail],
-                        [
-                            'name' => 'Super Admin',
-                            'password' => Hash::make('password'),
-                        ]
-                    );
-                }
-
-                // Re-check against the provided password after normalization/bootstrap.
-                if (!Hash::check($passwordInput, (string) $user->password)) {
                     $user = null;
                 }
-            } else {
-                $user = null;
             }
-        }
 
-        if (!$user) {
-            throw ValidationException::withMessages([
-                'email' => ['The provided credentials are incorrect.'],
+            if (!$user) {
+                throw ValidationException::withMessages([
+                    'email' => ['The provided credentials are incorrect.'],
+                ]);
+            }
+
+            if (!$this->isSystemOnline() && !$user->isSystemAdmin()) {
+                throw ValidationException::withMessages([
+                    'email' => ['System is currently offline. Only admins can log in at this time.'],
+                ]);
+            }
+
+            $token = $user->createToken('API Token')->plainTextToken;
+
+            return response()->json([
+                'user' => $this->loadAuthUser($user),
+                'token' => $token,
             ]);
+        } catch (ValidationException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return response()->json([
+                'message' => 'Login is temporarily unavailable. Please check database connectivity and try again.',
+            ], 503);
         }
-
-        if (!$this->isSystemOnline() && !$user->isSystemAdmin()) {
-            throw ValidationException::withMessages([
-                'email' => ['System is currently offline. Only admins can log in at this time.'],
-            ]);
-        }
-
-        $token = $user->createToken('API Token')->plainTextToken;
-
-        return response()->json([
-            'user' => $this->loadAuthUser($user),
-            'token' => $token,
-        ]);
     }
 
     public function logout(Request $request)
@@ -156,32 +167,42 @@ class AuthController extends Controller
 
     public function forgotPassword(Request $request)
     {
-        $validated = $request->validate([
-            'email' => ['required', 'string', 'email', 'max:255'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
-        ]);
-
-        $email = strtolower(trim((string) $validated['email']));
-        $user = User::query()
-            ->whereRaw('LOWER(email) = ?', [$email])
-            ->first();
-
-        if (!$user) {
-            throw ValidationException::withMessages([
-                'email' => ['No account found for this email address.'],
+        try {
+            $validated = $request->validate([
+                'email' => ['required', 'string', 'email', 'max:255'],
+                'password' => ['required', 'string', 'min:8', 'confirmed'],
             ]);
+
+            $email = strtolower(trim((string) $validated['email']));
+            $user = User::query()
+                ->whereRaw('LOWER(email) = ?', [$email])
+                ->first();
+
+            if (!$user) {
+                throw ValidationException::withMessages([
+                    'email' => ['No account found for this email address.'],
+                ]);
+            }
+
+            $user->password = Hash::make((string) $validated['password']);
+            $user->save();
+
+            DB::table('personal_access_tokens')
+                ->where('tokenable_type', User::class)
+                ->where('tokenable_id', (int) $user->id)
+                ->delete();
+
+            return response()->json([
+                'message' => 'Password reset successful. You can now sign in with your new password.',
+            ]);
+        } catch (ValidationException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            report($exception);
+
+            return response()->json([
+                'message' => 'Password reset is temporarily unavailable. Please check database connectivity and try again.',
+            ], 503);
         }
-
-        $user->password = Hash::make((string) $validated['password']);
-        $user->save();
-
-        DB::table('personal_access_tokens')
-            ->where('tokenable_type', User::class)
-            ->where('tokenable_id', (int) $user->id)
-            ->delete();
-
-        return response()->json([
-            'message' => 'Password reset successful. You can now sign in with your new password.',
-        ]);
     }
 }

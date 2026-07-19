@@ -216,27 +216,53 @@ class UserDashboardWidgetController extends Controller
             return response()->json(['message' => 'Unauthorized.'], 401);
         }
 
+        // If the current authenticated user is already an admin, no extra credentials are required.
+        if ($this->isAdminUser($sessionUser)) {
+            return response()->json([
+                'approved' => true,
+                'message' => 'Admin approval verified from current session.',
+                'approved_by' => [
+                    'id' => (int) $sessionUser->id,
+                    'email' => (string) $sessionUser->email,
+                ],
+            ]);
+        }
+
         $validated = $request->validate([
-            'admin_email' => ['required', 'email', 'max:255'],
-            'admin_password' => ['required', 'string', 'min:1'],
+            'admin_email' => ['nullable', 'email', 'max:255'],
+            'admin_password' => ['nullable', 'string', 'min:1'],
         ]);
 
-        $adminEmail = strtolower(trim((string) $validated['admin_email']));
-        $adminPassword = (string) $validated['admin_password'];
+        $adminEmail = strtolower(trim((string) ($validated['admin_email'] ?? '')));
+        $adminPassword = (string) ($validated['admin_password'] ?? '');
+
+        if ($adminEmail === '' || $adminPassword === '') {
+            return response()->json([
+                'approved' => false,
+                'message' => 'Admin email and password are required for this action.',
+            ]);
+        }
 
         $adminUser = User::query()
             ->whereRaw('LOWER(TRIM(email)) = ?', [$adminEmail])
             ->first();
 
         if (!$adminUser || !Hash::check($adminPassword, (string) $adminUser->password)) {
-            return response()->json(['message' => 'Invalid admin email or password.'], 422);
+            return response()->json([
+                'approved' => false,
+                'message' => 'Invalid admin email or password.',
+            ]);
         }
 
         if (!$this->isAdminUser($adminUser)) {
-            return response()->json(['message' => 'Only admin or super admin credentials are allowed.'], 403);
+            return response()->json([
+                'approved' => false,
+                'message' => 'Only admin or super admin credentials are allowed.',
+            ]);
         }
 
         return response()->json([
+            'approved' => true,
             'message' => 'Admin approval verified.',
             'approved_by' => [
                 'id' => (int) $adminUser->id,

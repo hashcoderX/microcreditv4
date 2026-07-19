@@ -47,14 +47,16 @@ export default function Home() {
         localStorage.setItem('auth_user', JSON.stringify(response.data.user));
       }
       router.push('/dashboard');
-    } catch (error: any) {
-      const backendMessage = error?.response?.data?.message;
-      const backendErrors = error?.response?.data?.errors;
+    } catch (error: unknown) {
+      const responseData = axios.isAxiosError(error) ? error.response?.data : null;
+      const backendMessage = responseData && typeof responseData === 'object' ? (responseData as { message?: unknown }).message : null;
+      const backendErrors = responseData && typeof responseData === 'object' ? (responseData as { errors?: unknown }).errors : null;
 
       let firstValidationError = '';
       if (backendErrors && typeof backendErrors === 'object') {
-        const firstKey = Object.keys(backendErrors)[0];
-        const firstValue = firstKey ? backendErrors[firstKey] : undefined;
+        const errorMap = backendErrors as Record<string, unknown>;
+        const firstKey = Object.keys(errorMap)[0];
+        const firstValue = firstKey ? errorMap[firstKey] : undefined;
         if (Array.isArray(firstValue) && firstValue[0]) {
           firstValidationError = String(firstValue[0]);
         } else if (firstValue) {
@@ -97,11 +99,16 @@ export default function Home() {
       setForgotPasswordConfirm('');
       setModalMessage(String(response?.data?.message || 'Password reset successful.'));
       setShowModal(true);
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const responseData = axios.isAxiosError(error) ? error.response?.data : null;
       const message =
-        error?.response?.data?.message ||
-        error?.response?.data?.errors?.email?.[0] ||
-        error?.response?.data?.errors?.password?.[0] ||
+        (responseData && typeof responseData === 'object' && typeof (responseData as { message?: unknown }).message === 'string'
+          ? (responseData as { message: string }).message
+          : null) ||
+        (responseData && typeof responseData === 'object'
+          ? (responseData as { errors?: { email?: string[]; password?: string[] } }).errors?.email?.[0] ||
+            (responseData as { errors?: { email?: string[]; password?: string[] } }).errors?.password?.[0]
+          : null) ||
         'Failed to reset password.';
       setModalMessage(String(message));
       setShowModal(true);
@@ -137,6 +144,11 @@ export default function Home() {
             <img
               src="/media/company/logo"
               alt="Company logo"
+              onError={(event) => {
+                const target = event.currentTarget;
+                if (target.src.includes('/icons/icon-192.png')) return;
+                target.src = '/icons/icon-192.png';
+              }}
               className="h-44 w-full max-w-md rounded-2xl border border-cyan-100 bg-white object-contain p-3 shadow-lg sm:h-56"
             />
           </div>
