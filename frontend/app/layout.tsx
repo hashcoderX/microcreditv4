@@ -85,6 +85,13 @@ export default function RootLayout({
                   return matchesNoise(value);
                 };
 
+                var stopNoiseEvent = function (event) {
+                  if (!event) return;
+                  if (typeof event.preventDefault === 'function') event.preventDefault();
+                  if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+                  if (typeof event.stopPropagation === 'function') event.stopPropagation();
+                };
+
                 var argsAreNoise = function (args) {
                   var text = Array.prototype.slice.call(args).map(function (arg) {
                     if (arg && typeof arg === 'object' && typeof arg.message === 'string') {
@@ -107,19 +114,46 @@ export default function RootLayout({
                   };
                 });
 
-                window.addEventListener('unhandledrejection', function (event) {
+                var rejectionHandler = function (event) {
                   if (isNoise(event && event.reason)) {
-                    event.preventDefault();
-                    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+                    stopNoiseEvent(event);
+                    return true;
                   }
-                }, true);
+                  return false;
+                };
 
-                window.addEventListener('error', function (event) {
+                var errorHandler = function (event) {
                   if (isNoise((event && event.error) || (event && event.message))) {
-                    event.preventDefault();
-                    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+                    stopNoiseEvent(event);
+                    return true;
                   }
-                }, true);
+                  return false;
+                };
+
+                window.addEventListener('unhandledrejection', rejectionHandler, true);
+                window.addEventListener('error', errorHandler, true);
+                document.addEventListener('unhandledrejection', rejectionHandler, true);
+                document.addEventListener('error', errorHandler, true);
+
+                var previousOnUnhandledRejection = window.onunhandledrejection;
+                window.onunhandledrejection = function (event) {
+                  if (rejectionHandler(event)) return true;
+                  if (typeof previousOnUnhandledRejection === 'function') {
+                    return previousOnUnhandledRejection.call(window, event);
+                  }
+                  return false;
+                };
+
+                var previousOnError = window.onerror;
+                window.onerror = function (message, source, lineno, colno, error) {
+                  if (isNoise(error || message)) {
+                    return true;
+                  }
+                  if (typeof previousOnError === 'function') {
+                    return previousOnError.call(window, message, source, lineno, colno, error);
+                  }
+                  return false;
+                };
               })();
             `,
           }}

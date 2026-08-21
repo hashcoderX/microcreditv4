@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
@@ -48,6 +48,7 @@ type LoanLifecycleRow = {
   status?: string | null;
   refund_option?: 'day' | 'week' | 'month' | string | null;
   installment_amount?: number | string | null;
+  assumed_month_days?: number | null;
   due_date?: string | null;
   next_payment_date?: string | null;
   arrears_balance?: number | string | null;
@@ -56,10 +57,16 @@ type LoanLifecycleRow = {
 type MFLoanProduct = {
   id: number;
   name: string;
+  min_loan_amount?: number | string | null;
+  max_loan_amount?: number | string | null;
+  document_charge_percentage?: number | string | null;
+  stamp_charge_percentage?: number | string | null;
+  insurance_charge_percentage?: number | string | null;
   interest_rate: number;
   interest_type: 'flat' | 'reducing';
   terms_count: number;
   refund_option: 'day' | 'week' | 'month';
+  assumed_month_days?: number;
   is_active: boolean;
 };
 
@@ -71,6 +78,8 @@ const shellCardClass =
   'bg-white/80 backdrop-blur-xl rounded-3xl border border-white/70 shadow-[0_24px_65px_-30px_rgba(14,116,144,0.5)]';
 const inputClass =
   'w-full rounded-xl border border-cyan-100 bg-white/95 px-4 py-2.5 text-sm text-slate-700 shadow-sm outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200';
+const fieldLabelClass = 'text-xs font-semibold uppercase tracking-wide text-slate-600';
+const fieldHintClass = 'text-[11px] text-slate-500';
 
 const tabs: Array<{ key: TabType; label: string; icon: string; desc: string }> = [
   { key: 'routes', label: 'Routes', icon: '🛣️', desc: 'Manage field routes' },
@@ -116,10 +125,16 @@ export default function MicrofinanceSettingsPage() {
   const [loanProductForm, setLoanProductForm] = useState({
     id: 0,
     name: '',
+    min_loan_amount: '',
+    max_loan_amount: '',
+    document_charge_percentage: '',
+    stamp_charge_percentage: '',
+    insurance_charge_percentage: '',
     interest_rate: '',
     interest_type: 'flat' as 'flat' | 'reducing',
     terms_count: '',
     refund_option: 'month' as 'day' | 'week' | 'month',
+    assumed_month_days: '30',
     is_active: true,
   });
   const [penaltyForm, setPenaltyForm] = useState({ id: 0, penalty_rate: '', is_active: true });
@@ -151,13 +166,13 @@ export default function MicrofinanceSettingsPage() {
     loan: null,
   });
 
-  const openModal = (message: string, title = 'Notice') => {
+  const openModal = useCallback((message: string, title = 'Notice') => {
     setModal({ open: true, title, message });
-  };
+  }, []);
 
-  const closeModal = () => {
+  const closeModal = useCallback(() => {
     setModal({ open: false, title: '', message: '' });
-  };
+  }, []);
 
   const widgetPrefix = 'mf_settings_widget_';
 
@@ -233,12 +248,7 @@ export default function MicrofinanceSettingsPage() {
     void fetchWidgetPreferences(storedToken);
   }, [router]);
 
-  useEffect(() => {
-    if (!token) return;
-    loadAll();
-  }, [token]);
-
-  const loadAll = async () => {
+  const loadAll = useCallback(async () => {
     try {
       const [routeRes, groupRes, centerRes, loanProductRes, penaltyRes, loanRes] = await Promise.all([
         axios.get(`${API_BASE}/routes`, { headers }),
@@ -275,7 +285,12 @@ export default function MicrofinanceSettingsPage() {
     } catch {
       openModal('Failed to load microfinance settings.', 'Error');
     }
-  };
+  }, [headers, openModal]);
+
+  useEffect(() => {
+    if (!token) return;
+    void loadAll();
+  }, [token, loadAll]);
 
   const resetRouteForm = () => setRouteForm({ id: 0, name: '', code: '', is_active: true });
   const resetGroupForm = () => setGroupForm({ id: 0, mf_route_id: 0, mf_center_id: 0, name: '', code: '', is_active: true });
@@ -284,10 +299,16 @@ export default function MicrofinanceSettingsPage() {
     setLoanProductForm({
       id: 0,
       name: '',
+      min_loan_amount: '',
+      max_loan_amount: '',
+      document_charge_percentage: '',
+      stamp_charge_percentage: '',
+      insurance_charge_percentage: '',
       interest_rate: '',
       interest_type: 'flat',
       terms_count: '',
       refund_option: 'month',
+      assumed_month_days: '30',
       is_active: true,
     });
   const resetPenaltyForm = () =>
@@ -381,10 +402,19 @@ export default function MicrofinanceSettingsPage() {
     try {
       const payload = {
         name: loanProductForm.name.trim(),
+        min_loan_amount: loanProductForm.min_loan_amount === '' ? null : Number(loanProductForm.min_loan_amount),
+        max_loan_amount: loanProductForm.max_loan_amount === '' ? null : Number(loanProductForm.max_loan_amount),
+        document_charge_percentage:
+          loanProductForm.document_charge_percentage === '' ? null : Number(loanProductForm.document_charge_percentage),
+        stamp_charge_percentage:
+          loanProductForm.stamp_charge_percentage === '' ? null : Number(loanProductForm.stamp_charge_percentage),
+        insurance_charge_percentage:
+          loanProductForm.insurance_charge_percentage === '' ? null : Number(loanProductForm.insurance_charge_percentage),
         interest_rate: loanProductForm.interest_rate.trim(),
         interest_type: loanProductForm.interest_type,
         terms_count: Number(loanProductForm.terms_count || 0),
         refund_option: loanProductForm.refund_option,
+        assumed_month_days: Number(loanProductForm.assumed_month_days || 30),
         is_active: loanProductForm.is_active,
       };
 
@@ -458,8 +488,10 @@ export default function MicrofinanceSettingsPage() {
           : 'Loan has been closed successfully.',
         'Success'
       );
-    } catch (error: any) {
-      const message = error?.response?.data?.message || 'Failed to update loan lifecycle.';
+    } catch (error: unknown) {
+      const message = axios.isAxiosError(error)
+        ? String(error.response?.data?.message || 'Failed to update loan lifecycle.')
+        : 'Failed to update loan lifecycle.';
       openModal(message, 'Error');
     } finally {
       setLifecycleLoading(false);
@@ -475,7 +507,7 @@ export default function MicrofinanceSettingsPage() {
     return new Intl.DateTimeFormat('en-LK', { year: 'numeric', month: 'short', day: '2-digit' }).format(parsed);
   };
 
-  const shiftDateByRefundOption = (date: Date, refundOption?: string | null) => {
+  const shiftDateByRefundOption = (date: Date, refundOption?: string | null, assumedMonthDays?: number | null) => {
     const next = new Date(date);
     if (refundOption === 'day') {
       next.setDate(next.getDate() + 1);
@@ -485,7 +517,8 @@ export default function MicrofinanceSettingsPage() {
       next.setDate(next.getDate() + 7);
       return next;
     }
-    next.setMonth(next.getMonth() + 1);
+    const monthDays = Math.max(Number(assumedMonthDays || 30), 1);
+    next.setDate(next.getDate() + monthDays);
     return next;
   };
 
@@ -508,7 +541,7 @@ export default function MicrofinanceSettingsPage() {
 
     while (dueCursor <= today) {
       balance += installment;
-      dueCursor = shiftDateByRefundOption(dueCursor, loan.refund_option);
+      dueCursor = shiftDateByRefundOption(dueCursor, loan.refund_option, loan.assumed_month_days);
     }
 
     return Math.max(balance, 0);
@@ -701,7 +734,7 @@ export default function MicrofinanceSettingsPage() {
         </div>
         {visibleTabs.length === 0 && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-            All tab widgets are hidden. Use "Restore Hidden Widgets" on dashboard to show them again.
+            All tab widgets are hidden. Use Restore Hidden Widgets on dashboard to show them again.
           </div>
         )}
 
@@ -720,22 +753,32 @@ export default function MicrofinanceSettingsPage() {
             <form onSubmit={submitRoute} className={`${shellCardClass} p-6 md:p-7 space-y-4`}>
               <h2 className="text-lg font-bold text-slate-900">{routeForm.id ? 'Edit Route' : 'Create Route'}</h2>
               <p className="text-xs text-slate-500">Define operational routes used for center and group mapping.</p>
-              <input
-                value={routeForm.name}
-                onChange={(e) => setRouteForm({ ...routeForm, name: e.target.value })}
-                placeholder="Route name"
-                className={inputClass}
-                required
-              />
-              <input
-                value={routeForm.code}
-                onChange={(e) => setRouteForm({ ...routeForm, code: e.target.value })}
-                placeholder="Route code"
-                className={inputClass}
-                required
-              />
-              <label className="flex items-center gap-2 text-sm text-slate-700">
+              <p className={fieldHintClass}>Fields marked with * are required.</p>
+              <div className="space-y-1.5">
+                <label htmlFor="route_name" className={fieldLabelClass}>Route Name *</label>
                 <input
+                  id="route_name"
+                  value={routeForm.name}
+                  onChange={(e) => setRouteForm({ ...routeForm, name: e.target.value })}
+                  placeholder="Enter route name"
+                  className={inputClass}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="route_code" className={fieldLabelClass}>Route Code *</label>
+                <input
+                  id="route_code"
+                  value={routeForm.code}
+                  onChange={(e) => setRouteForm({ ...routeForm, code: e.target.value })}
+                  placeholder="Enter route code"
+                  className={inputClass}
+                  required
+                />
+              </div>
+              <label htmlFor="route_is_active" className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  id="route_is_active"
                   type="checkbox"
                   checked={routeForm.is_active}
                   onChange={(e) => setRouteForm({ ...routeForm, is_active: e.target.checked })}
@@ -792,52 +835,71 @@ export default function MicrofinanceSettingsPage() {
             <form onSubmit={submitGroup} className={`${shellCardClass} p-6 md:p-7 space-y-4`}>
               <h2 className="text-lg font-bold text-slate-900">{groupForm.id ? 'Edit Group' : 'Create Group'}</h2>
               <p className="text-xs text-slate-500">Attach groups under a route and center for field operations.</p>
-              <select
-                value={groupForm.mf_route_id}
-                onChange={(e) =>
-                  setGroupForm({
-                    ...groupForm,
-                    mf_route_id: Number(e.target.value),
-                    mf_center_id: 0,
-                  })
-                }
-                className={inputClass}
-                required
-              >
-                <option value={0}>Select route</option>
-                {routes.map((route) => (
-                  <option key={route.id} value={route.id}>{route.name} ({route.code})</option>
-                ))}
-              </select>
-              <select
-                value={groupForm.mf_center_id}
-                onChange={(e) => setGroupForm({ ...groupForm, mf_center_id: Number(e.target.value) })}
-                className={inputClass}
-                required
-              >
-                <option value={0}>Select center</option>
-                {centers
-                  .filter((center) => center.mf_route_id === groupForm.mf_route_id)
-                  .map((center) => (
-                    <option key={center.id} value={center.id}>{center.name} ({center.code})</option>
+              <p className={fieldHintClass}>Fields marked with * are required.</p>
+              <div className="space-y-1.5">
+                <label htmlFor="group_route" className={fieldLabelClass}>Route *</label>
+                <select
+                  id="group_route"
+                  value={groupForm.mf_route_id}
+                  onChange={(e) =>
+                    setGroupForm({
+                      ...groupForm,
+                      mf_route_id: Number(e.target.value),
+                      mf_center_id: 0,
+                    })
+                  }
+                  className={inputClass}
+                  required
+                >
+                  <option value={0}>Select route</option>
+                  {routes.map((route) => (
+                    <option key={route.id} value={route.id}>{route.name} ({route.code})</option>
                   ))}
-              </select>
-              <input
-                value={groupForm.name}
-                onChange={(e) => setGroupForm({ ...groupForm, name: e.target.value })}
-                placeholder="Group name"
-                className={inputClass}
-                required
-              />
-              <input
-                value={groupForm.code}
-                onChange={(e) => setGroupForm({ ...groupForm, code: e.target.value })}
-                placeholder="Group code"
-                className={inputClass}
-                required
-              />
-              <label className="flex items-center gap-2 text-sm text-slate-700">
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="group_center" className={fieldLabelClass}>Center *</label>
+                <select
+                  id="group_center"
+                  value={groupForm.mf_center_id}
+                  onChange={(e) => setGroupForm({ ...groupForm, mf_center_id: Number(e.target.value) })}
+                  className={inputClass}
+                  disabled={!groupForm.mf_route_id}
+                  required
+                >
+                  <option value={0}>{groupForm.mf_route_id ? 'Select center' : 'Select route first'}</option>
+                  {centers
+                    .filter((center) => center.mf_route_id === groupForm.mf_route_id)
+                    .map((center) => (
+                      <option key={center.id} value={center.id}>{center.name} ({center.code})</option>
+                    ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="group_name" className={fieldLabelClass}>Group Name *</label>
                 <input
+                  id="group_name"
+                  value={groupForm.name}
+                  onChange={(e) => setGroupForm({ ...groupForm, name: e.target.value })}
+                  placeholder="Enter group name"
+                  className={inputClass}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="group_code" className={fieldLabelClass}>Group Code *</label>
+                <input
+                  id="group_code"
+                  value={groupForm.code}
+                  onChange={(e) => setGroupForm({ ...groupForm, code: e.target.value })}
+                  placeholder="Enter group code"
+                  className={inputClass}
+                  required
+                />
+              </div>
+              <label htmlFor="group_is_active" className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  id="group_is_active"
                   type="checkbox"
                   checked={groupForm.is_active}
                   onChange={(e) => setGroupForm({ ...groupForm, is_active: e.target.checked })}
@@ -892,46 +954,64 @@ export default function MicrofinanceSettingsPage() {
             <form onSubmit={submitCenter} className={`${shellCardClass} p-6 md:p-7 space-y-4`}>
               <h2 className="text-lg font-bold text-slate-900">{centerForm.id ? 'Edit Center' : 'Create Center'}</h2>
               <p className="text-xs text-slate-500">Set center details and meeting cycle under a selected route.</p>
-              <select
-                value={centerForm.mf_route_id}
-                onChange={(e) => setCenterForm({ ...centerForm, mf_route_id: Number(e.target.value) })}
-                className={inputClass}
-                required
-              >
-                <option value={0}>Select route</option>
-                {routes.map((route) => (
-                  <option key={route.id} value={route.id}>{route.name} ({route.code})</option>
-                ))}
-              </select>
-              <input
-                value={centerForm.name}
-                onChange={(e) => setCenterForm({ ...centerForm, name: e.target.value })}
-                placeholder="Center name"
-                className={inputClass}
-                required
-              />
-              <input
-                value={centerForm.code}
-                onChange={(e) => setCenterForm({ ...centerForm, code: e.target.value })}
-                placeholder="Center code"
-                className={inputClass}
-                required
-              />
-              <select
-                value={centerForm.meeting_day}
-                onChange={(e) => setCenterForm({ ...centerForm, meeting_day: e.target.value })}
-                className={inputClass}
-                required
-              >
-                <option value="">Select center day</option>
-                {CENTER_DAYS.map((day) => (
-                  <option key={day} value={day}>
-                    {formatCenterDay(day)}
-                  </option>
-                ))}
-              </select>
-              <label className="flex items-center gap-2 text-sm text-slate-700">
+              <p className={fieldHintClass}>Fields marked with * are required.</p>
+              <div className="space-y-1.5">
+                <label htmlFor="center_route" className={fieldLabelClass}>Route *</label>
+                <select
+                  id="center_route"
+                  value={centerForm.mf_route_id}
+                  onChange={(e) => setCenterForm({ ...centerForm, mf_route_id: Number(e.target.value) })}
+                  className={inputClass}
+                  required
+                >
+                  <option value={0}>Select route</option>
+                  {routes.map((route) => (
+                    <option key={route.id} value={route.id}>{route.name} ({route.code})</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="center_name" className={fieldLabelClass}>Center Name *</label>
                 <input
+                  id="center_name"
+                  value={centerForm.name}
+                  onChange={(e) => setCenterForm({ ...centerForm, name: e.target.value })}
+                  placeholder="Enter center name"
+                  className={inputClass}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="center_code" className={fieldLabelClass}>Center Code *</label>
+                <input
+                  id="center_code"
+                  value={centerForm.code}
+                  onChange={(e) => setCenterForm({ ...centerForm, code: e.target.value })}
+                  placeholder="Enter center code"
+                  className={inputClass}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="center_meeting_day" className={fieldLabelClass}>Meeting Day *</label>
+                <select
+                  id="center_meeting_day"
+                  value={centerForm.meeting_day}
+                  onChange={(e) => setCenterForm({ ...centerForm, meeting_day: e.target.value })}
+                  className={inputClass}
+                  required
+                >
+                  <option value="">Select center day</option>
+                  {CENTER_DAYS.map((day) => (
+                    <option key={day} value={day}>
+                      {formatCenterDay(day)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <label htmlFor="center_is_active" className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  id="center_is_active"
                   type="checkbox"
                   checked={centerForm.is_active}
                   onChange={(e) => setCenterForm({ ...centerForm, is_active: e.target.checked })}
@@ -986,56 +1066,168 @@ export default function MicrofinanceSettingsPage() {
             <form onSubmit={submitLoanProduct} className={`${shellCardClass} p-6 md:p-7 space-y-4`}>
               <h2 className="text-lg font-bold text-slate-900">{loanProductForm.id ? 'Edit Loan Product' : 'Create Loan Product'}</h2>
               <p className="text-xs text-slate-500">Define product terms used during microfinance loan request setup.</p>
+              <p className={fieldHintClass}>Fields marked with * are required.</p>
 
-              <input
-                value={loanProductForm.name}
-                onChange={(e) => setLoanProductForm({ ...loanProductForm, name: e.target.value })}
-                placeholder="Product name"
-                className={inputClass}
-                required
-              />
-              <input
-                type="number"
-                min="0"
-                step="any"
-                value={loanProductForm.interest_rate}
-                onChange={(e) => setLoanProductForm({ ...loanProductForm, interest_rate: e.target.value })}
-                placeholder="Interest Rate (%)"
-                className={inputClass}
-                required
-              />
-              <select
-                value={loanProductForm.interest_type}
-                onChange={(e) => setLoanProductForm({ ...loanProductForm, interest_type: e.target.value as 'flat' | 'reducing' })}
-                className={inputClass}
-                required
-              >
-                <option value="flat">Flat</option>
-                <option value="reducing">Reducing</option>
-              </select>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                value={loanProductForm.terms_count}
-                onChange={(e) => setLoanProductForm({ ...loanProductForm, terms_count: e.target.value })}
-                placeholder="Repayment Terms Count"
-                className={inputClass}
-                required
-              />
-              <select
-                value={loanProductForm.refund_option}
-                onChange={(e) => setLoanProductForm({ ...loanProductForm, refund_option: e.target.value as 'day' | 'week' | 'month' })}
-                className={inputClass}
-                required
-              >
-                <option value="day">Day</option>
-                <option value="week">Week</option>
-                <option value="month">Month</option>
-              </select>
-
-              <label className="flex items-center gap-2 text-sm text-slate-700">
+              <div className="space-y-1.5">
+                <label htmlFor="loan_product_name" className={fieldLabelClass}>Product Name *</label>
                 <input
+                  id="loan_product_name"
+                  value={loanProductForm.name}
+                  onChange={(e) => setLoanProductForm({ ...loanProductForm, name: e.target.value })}
+                  placeholder="Enter product name"
+                  className={inputClass}
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label htmlFor="loan_product_min_loan_amount" className={fieldLabelClass}>Minimum Loan Amount (LKR)</label>
+                  <input
+                    id="loan_product_min_loan_amount"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={loanProductForm.min_loan_amount}
+                    onChange={(e) => setLoanProductForm({ ...loanProductForm, min_loan_amount: e.target.value })}
+                    placeholder="Enter minimum amount"
+                    className={inputClass}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="loan_product_max_loan_amount" className={fieldLabelClass}>Maximum Loan Amount (LKR)</label>
+                  <input
+                    id="loan_product_max_loan_amount"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={loanProductForm.max_loan_amount}
+                    onChange={(e) => setLoanProductForm({ ...loanProductForm, max_loan_amount: e.target.value })}
+                    placeholder="Enter maximum amount"
+                    className={inputClass}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="space-y-1.5">
+                  <label htmlFor="loan_product_document_charge_percentage" className={fieldLabelClass}>Document Charge (%)</label>
+                  <input
+                    id="loan_product_document_charge_percentage"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={loanProductForm.document_charge_percentage}
+                    onChange={(e) => setLoanProductForm({ ...loanProductForm, document_charge_percentage: e.target.value })}
+                    placeholder="Enter %"
+                    className={inputClass}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="loan_product_stamp_charge_percentage" className={fieldLabelClass}>Stamp Charge (%)</label>
+                  <input
+                    id="loan_product_stamp_charge_percentage"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={loanProductForm.stamp_charge_percentage}
+                    onChange={(e) => setLoanProductForm({ ...loanProductForm, stamp_charge_percentage: e.target.value })}
+                    placeholder="Enter %"
+                    className={inputClass}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="loan_product_insurance_charge_percentage" className={fieldLabelClass}>Insurance Charge (%)</label>
+                  <input
+                    id="loan_product_insurance_charge_percentage"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={loanProductForm.insurance_charge_percentage}
+                    onChange={(e) => setLoanProductForm({ ...loanProductForm, insurance_charge_percentage: e.target.value })}
+                    placeholder="Enter %"
+                    className={inputClass}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="loan_product_interest_rate" className={fieldLabelClass}>Interest Rate (%) *</label>
+                <input
+                  id="loan_product_interest_rate"
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={loanProductForm.interest_rate}
+                  onChange={(e) => setLoanProductForm({ ...loanProductForm, interest_rate: e.target.value })}
+                  placeholder="Enter interest rate"
+                  className={inputClass}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="loan_product_interest_type" className={fieldLabelClass}>Interest Type *</label>
+                <select
+                  id="loan_product_interest_type"
+                  value={loanProductForm.interest_type}
+                  onChange={(e) => setLoanProductForm({ ...loanProductForm, interest_type: e.target.value as 'flat' | 'reducing' })}
+                  className={inputClass}
+                  required
+                >
+                  <option value="flat">Flat</option>
+                  <option value="reducing">Reducing</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="loan_product_terms_count" className={fieldLabelClass}>Repayment Terms Count *</label>
+                <input
+                  id="loan_product_terms_count"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={loanProductForm.terms_count}
+                  onChange={(e) => setLoanProductForm({ ...loanProductForm, terms_count: e.target.value })}
+                  placeholder="Enter terms count"
+                  className={inputClass}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="loan_product_refund_option" className={fieldLabelClass}>Refund Option *</label>
+                <select
+                  id="loan_product_refund_option"
+                  value={loanProductForm.refund_option}
+                  onChange={(e) => setLoanProductForm({ ...loanProductForm, refund_option: e.target.value as 'day' | 'week' | 'month' })}
+                  className={inputClass}
+                  required
+                >
+                  <option value="day">Day</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                </select>
+              </div>
+              {loanProductForm.refund_option === 'day' && (
+                <div className="space-y-1.5">
+                  <label htmlFor="loan_product_assumed_month_days" className={fieldLabelClass}>Assumed Month Days *</label>
+                  <select
+                    id="loan_product_assumed_month_days"
+                    value={loanProductForm.assumed_month_days}
+                    onChange={(e) => setLoanProductForm({ ...loanProductForm, assumed_month_days: e.target.value })}
+                    className={inputClass}
+                    required
+                  >
+                    <option value="24">Assume Month = 24 days</option>
+                    <option value="25">Assume Month = 25 days</option>
+                    <option value="26">Assume Month = 26 days</option>
+                    <option value="30">Assume Month = 30 days</option>
+                    <option value="31">Assume Month = 31 days</option>
+                  </select>
+                </div>
+              )}
+
+              <label htmlFor="loan_product_is_active" className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  id="loan_product_is_active"
                   type="checkbox"
                   checked={loanProductForm.is_active}
                   onChange={(e) => setLoanProductForm({ ...loanProductForm, is_active: e.target.checked })}
@@ -1061,6 +1253,17 @@ export default function MicrofinanceSettingsPage() {
                       <p className="font-semibold text-slate-900">{item.name}</p>
                       <p className="text-xs text-slate-500 mt-1">
                         Interest: {formatRate(item.interest_rate)}% ({item.interest_type}) • Terms: {item.terms_count} • Refund: {item.refund_option}
+                        {item.refund_option === 'month' ? ` (${Number(item.assumed_month_days || 30)} days)` : ''}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Loan Range: {item.min_loan_amount !== null && item.min_loan_amount !== undefined && String(item.min_loan_amount) !== '' ? Number(item.min_loan_amount).toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}
+                        {' '}to{' '}
+                        {item.max_loan_amount !== null && item.max_loan_amount !== undefined && String(item.max_loan_amount) !== '' ? Number(item.max_loan_amount).toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Charges (%): D {item.document_charge_percentage !== null && item.document_charge_percentage !== undefined && String(item.document_charge_percentage) !== '' ? Number(item.document_charge_percentage).toFixed(2) : '0.00'}%
+                        {' '}| S {item.stamp_charge_percentage !== null && item.stamp_charge_percentage !== undefined && String(item.stamp_charge_percentage) !== '' ? Number(item.stamp_charge_percentage).toFixed(2) : '0.00'}%
+                        {' '}| I {item.insurance_charge_percentage !== null && item.insurance_charge_percentage !== undefined && String(item.insurance_charge_percentage) !== '' ? Number(item.insurance_charge_percentage).toFixed(2) : '0.00'}%
                       </p>
                       <span className={`mt-2 inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${getStatusBadgeClass(item.is_active ? 'active' : 'inactive')}`}>
                         {item.is_active ? 'Active' : 'Inactive'}
@@ -1072,10 +1275,25 @@ export default function MicrofinanceSettingsPage() {
                           setLoanProductForm({
                             id: item.id,
                             name: item.name,
+                            min_loan_amount: item.min_loan_amount === null || item.min_loan_amount === undefined ? '' : String(item.min_loan_amount),
+                            max_loan_amount: item.max_loan_amount === null || item.max_loan_amount === undefined ? '' : String(item.max_loan_amount),
+                            document_charge_percentage:
+                              item.document_charge_percentage === null || item.document_charge_percentage === undefined
+                                ? ''
+                                : String(item.document_charge_percentage),
+                            stamp_charge_percentage:
+                              item.stamp_charge_percentage === null || item.stamp_charge_percentage === undefined
+                                ? ''
+                                : String(item.stamp_charge_percentage),
+                            insurance_charge_percentage:
+                              item.insurance_charge_percentage === null || item.insurance_charge_percentage === undefined
+                                ? ''
+                                : String(item.insurance_charge_percentage),
                             interest_rate: String(item.interest_rate ?? ''),
                             interest_type: item.interest_type,
                             terms_count: String(item.terms_count ?? ''),
                             refund_option: item.refund_option,
+                            assumed_month_days: String(item.assumed_month_days ?? 30),
                             is_active: item.is_active,
                           })
                         }
@@ -1115,19 +1333,24 @@ export default function MicrofinanceSettingsPage() {
               <p className="text-sm text-slate-600">
                 Create the initial late-payment penalty record first, then update it later when needed.
               </p>
-              <input
-                type="number"
-                min="0"
-                max="100"
-                step="0.01"
-                value={penaltyForm.penalty_rate}
-                onChange={(e) => setPenaltyForm({ ...penaltyForm, penalty_rate: e.target.value })}
-                placeholder="Penalty rate %"
-                className={inputClass}
-                required
-              />
-              <label className="flex items-center gap-2 text-sm text-slate-700">
+              <div className="space-y-1.5">
+                <label htmlFor="penalty_rate" className={fieldLabelClass}>Penalty Rate (%) *</label>
                 <input
+                  id="penalty_rate"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  value={penaltyForm.penalty_rate}
+                  onChange={(e) => setPenaltyForm({ ...penaltyForm, penalty_rate: e.target.value })}
+                  placeholder="Enter penalty rate"
+                  className={inputClass}
+                  required
+                />
+              </div>
+              <label htmlFor="penalty_is_active" className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  id="penalty_is_active"
                   type="checkbox"
                   checked={penaltyForm.is_active}
                   onChange={(e) => setPenaltyForm({ ...penaltyForm, is_active: e.target.checked })}
@@ -1214,32 +1437,44 @@ export default function MicrofinanceSettingsPage() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <input
-                value={lifecycleSearch}
-                onChange={(e) => setLifecycleSearch(e.target.value)}
-                className={inputClass}
-                placeholder="Search loan code, customer, officer"
-              />
-              <select
-                value={lifecycleStatusFilter}
-                onChange={(e) => setLifecycleStatusFilter(e.target.value as 'all' | 'requested' | 'approved' | 'released' | 'hold')}
-                className={inputClass}
-              >
-                <option value="all">All Status</option>
-                <option value="requested">Requested</option>
-                <option value="approved">Approved</option>
-                <option value="released">Released</option>
-                <option value="hold">Hold</option>
-              </select>
-              <select
-                value={lifecycleActionFilter}
-                onChange={(e) => setLifecycleActionFilter(e.target.value as 'all' | 'can_hold' | 'can_close')}
-                className={inputClass}
-              >
-                <option value="all">All Action Types</option>
-                <option value="can_hold">Can Hold</option>
-                <option value="can_close">Can Close</option>
-              </select>
+              <div className="space-y-1.5">
+                <label htmlFor="lifecycle_search" className={fieldLabelClass}>Search Loans</label>
+                <input
+                  id="lifecycle_search"
+                  value={lifecycleSearch}
+                  onChange={(e) => setLifecycleSearch(e.target.value)}
+                  className={inputClass}
+                  placeholder="Loan code, customer, officer"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="lifecycle_status_filter" className={fieldLabelClass}>Status Filter</label>
+                <select
+                  id="lifecycle_status_filter"
+                  value={lifecycleStatusFilter}
+                  onChange={(e) => setLifecycleStatusFilter(e.target.value as 'all' | 'requested' | 'approved' | 'released' | 'hold')}
+                  className={inputClass}
+                >
+                  <option value="all">All Status</option>
+                  <option value="requested">Requested</option>
+                  <option value="approved">Approved</option>
+                  <option value="released">Released</option>
+                  <option value="hold">Hold</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="lifecycle_action_filter" className={fieldLabelClass}>Action Filter</label>
+                <select
+                  id="lifecycle_action_filter"
+                  value={lifecycleActionFilter}
+                  onChange={(e) => setLifecycleActionFilter(e.target.value as 'all' | 'can_hold' | 'can_close')}
+                  className={inputClass}
+                >
+                  <option value="all">All Action Types</option>
+                  <option value="can_hold">Can Hold</option>
+                  <option value="can_close">Can Close</option>
+                </select>
+              </div>
             </div>
 
             <div className="overflow-x-auto rounded-2xl border border-cyan-100 bg-white">
@@ -1436,17 +1671,23 @@ export default function MicrofinanceSettingsPage() {
               <p className="mt-2 text-sm text-slate-600">
                 Loan: {lifecycleModal.loan.loan_code || `LR-${lifecycleModal.loan.id}`} • Customer: {lifecycleModal.loan.customer_name || '-'}
               </p>
-              <textarea
-                className="mt-3 w-full rounded-xl border border-cyan-100 bg-white px-3 py-2.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-200"
-                rows={4}
-                value={lifecycleModal.reason}
-                onChange={(e) => setLifecycleModal((prev) => ({ ...prev, reason: e.target.value }))}
-                placeholder={
-                  lifecycleModal.action === 'hold'
-                    ? 'Reason (e.g. customer accident / emergency)'
-                    : 'Reason (e.g. customer death)'
-                }
-              />
+              <div className="mt-3 space-y-1.5">
+                <label htmlFor="lifecycle_reason" className={fieldLabelClass}>
+                  {lifecycleModal.action === 'hold' ? 'Hold Reason' : 'Close Reason'}
+                </label>
+                <textarea
+                  id="lifecycle_reason"
+                  className="w-full rounded-xl border border-cyan-100 bg-white px-3 py-2.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-200"
+                  rows={4}
+                  value={lifecycleModal.reason}
+                  onChange={(e) => setLifecycleModal((prev) => ({ ...prev, reason: e.target.value }))}
+                  placeholder={
+                    lifecycleModal.action === 'hold'
+                      ? 'Enter reason (for example: customer accident or emergency)'
+                      : 'Enter reason (for example: customer death)'
+                  }
+                />
+              </div>
               <div className="mt-5 flex justify-end gap-2">
                 <button
                   onClick={closeLifecycleModal}

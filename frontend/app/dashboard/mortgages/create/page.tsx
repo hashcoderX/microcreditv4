@@ -28,6 +28,38 @@ const labelClass = "mb-2 block text-xs font-bold uppercase tracking-wide text-sl
 
 const sectionTitleClass = "mb-3 text-xs font-bold uppercase tracking-[0.16em] text-cyan-700";
 
+type CustomerDetail = {
+  id: number;
+  customer_code?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  nic_passport?: string | null;
+  old_nic?: string | null;
+  passport_no?: string | null;
+  date_of_birth?: string | null;
+  gender?: "male" | "female" | "other" | string | null;
+  marital_status?: "single" | "married" | "divorced" | "widowed" | string | null;
+  nationality?: string | null;
+  permanent_address?: string | null;
+  current_address?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  employment_type?: "salaried" | "self_employed" | "business" | string | null;
+  employer_name?: string | null;
+  job_title?: string | null;
+  monthly_income?: string | number | null;
+  other_income_sources?: string | null;
+  existing_loans?: boolean | number | null;
+  monthly_loan_obligations?: string | number | null;
+  credit_score?: string | number | null;
+};
+
+type FinanceCustomerSearchMatch = {
+  customer: CustomerDetail;
+  matched_by?: string[];
+  matched_investment_account_no?: string | null;
+};
+
 type Step =
   | "profile"
   | "financial"
@@ -75,6 +107,12 @@ const generateFileCode = () => {
   return `CUS-${yyyy}${mm}${dd}-${random}`;
 };
 
+const isCustomerDetail = (value: unknown): value is CustomerDetail => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<CustomerDetail>;
+  return typeof candidate.id === "number";
+};
+
 export default function CreateMortgage() {
   const [token, setToken] = useState("");
   const [step, setStep] = useState<Step>("profile");
@@ -85,6 +123,14 @@ export default function CreateMortgage() {
   const [modalMessage, setModalMessage] = useState("");
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [widgetNotice, setWidgetNotice] = useState("");
+  const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
+  const [selectedInvestmentAccountNo, setSelectedInvestmentAccountNo] = useState("");
+  const [searchingCustomer, setSearchingCustomer] = useState(false);
+  const [customerSearchBy, setCustomerSearchBy] = useState<"nic_passport" | "passport" | "investment_account_no">("nic_passport");
+  const [customerSearchValue, setCustomerSearchValue] = useState("");
+  const [loadingCustomerSuggestions, setLoadingCustomerSuggestions] = useState(false);
+  const [customerSuggestions, setCustomerSuggestions] = useState<FinanceCustomerSearchMatch[]>([]);
+  const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
   const widgetPrefix = "mortgages_create_widget_";
   const router = useRouter();
 
@@ -93,14 +139,6 @@ export default function CreateMortgage() {
   const [fileCode, setFileCode] = useState("");
   const [nic, setNic] = useState("");
   const [dateOfBirth, setDateOfBirth] = useState("");
-  const [gender, setGender] = useState<"male" | "female" | "other">("male");
-  const [maritalStatus, setMaritalStatus] = useState<
-    "single" | "married" | "divorced" | "widowed"
-  >("single");
-  const [nationality, setNationality] = useState("");
-  // Contact
-  const [permanentAddress, setPermanentAddress] = useState("");
-  const [currentAddress, setCurrentAddress] = useState("");
   const [mobileNumber, setMobileNumber] = useState("");
   const [email, setEmail] = useState("");
   // Employment & Income
@@ -241,6 +279,180 @@ export default function CreateMortgage() {
     if (idx > 0) setStep(STEP_ORDER[idx - 1]);
   };
 
+  const applyCustomerDetailToForm = useCallback(
+    (customer: CustomerDetail, investmentAccountNo?: string | null) => {
+      const firstName = String(customer.first_name || "").trim();
+      const lastName = String(customer.last_name || "").trim();
+      const joinedName = `${firstName} ${lastName}`.trim();
+      setSelectedCustomerId(Number(customer.id || 0) || null);
+      setSelectedInvestmentAccountNo(String(investmentAccountNo || "").trim());
+      setFullName(joinedName || fullName);
+      setFileCode(String(customer.customer_code || "").trim() || fileCode);
+      setNic(String(customer.nic_passport || customer.passport_no || "").trim() || nic);
+      setDateOfBirth(String(customer.date_of_birth || "").slice(0, 10));
+      setMobileNumber(String(customer.phone || "").trim() || mobileNumber);
+      setEmail(String(customer.email || "").trim() || email);
+
+      const nextEmploymentType = String(customer.employment_type || "").toLowerCase();
+      if (nextEmploymentType === "salaried" || nextEmploymentType === "self_employed" || nextEmploymentType === "business") {
+        setEmploymentType(nextEmploymentType as "salaried" | "self_employed" | "business");
+      }
+
+      setEmployerName(String(customer.employer_name || "").trim() || employerName);
+      setJobTitle(String(customer.job_title || "").trim() || jobTitle);
+      setMonthlyIncome(String(customer.monthly_income ?? "").trim() || monthlyIncome);
+      setOtherIncomeSources(String(customer.other_income_sources || "").trim() || otherIncomeSources);
+      setExistingLoans(Boolean(customer.existing_loans));
+      setMonthlyLoanObligations(String(customer.monthly_loan_obligations ?? "").trim() || monthlyLoanObligations);
+      setCreditScore(String(customer.credit_score ?? "").trim() || creditScore);
+    },
+    [
+      fullName,
+      fileCode,
+      nic,
+      mobileNumber,
+      email,
+      employerName,
+      jobTitle,
+      monthlyIncome,
+      otherIncomeSources,
+      monthlyLoanObligations,
+      creditScore,
+    ]
+  );
+
+  const mapQuickSearchParams = (
+    searchBy: "nic_passport" | "passport" | "investment_account_no",
+    value: string
+  ) => {
+    const keyword = value.trim();
+    if (!keyword) return {};
+    if (searchBy === "passport") return { passport_no: keyword, limit: 8 };
+    if (searchBy === "investment_account_no") return { investment_account_no: keyword, limit: 8 };
+    return { nic_passport: keyword, limit: 8 };
+  };
+
+  const loadCustomerSuggestions = useCallback(
+    async (authToken: string, searchBy: "nic_passport" | "passport" | "investment_account_no", value: string) => {
+      const keyword = value.trim();
+      if (!keyword) {
+        setCustomerSuggestions([]);
+        return;
+      }
+      try {
+        setLoadingCustomerSuggestions(true);
+        const response = await axios.get(`${getApiBaseUrl()}/customers/finance-search`, {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            Accept: "application/json",
+          },
+          params: mapQuickSearchParams(searchBy, keyword),
+        });
+
+        const rows = Array.isArray(response.data?.matches) ? response.data.matches : [];
+        const next = rows.filter((row: unknown) => {
+          if (!row || typeof row !== "object") return false;
+          const candidate = row as { customer?: unknown };
+          return isCustomerDetail(candidate.customer);
+        }) as FinanceCustomerSearchMatch[];
+
+        setCustomerSuggestions(next);
+      } catch {
+        setCustomerSuggestions([]);
+      } finally {
+        setLoadingCustomerSuggestions(false);
+      }
+    },
+    []
+  );
+
+  const selectQuickSuggestion = useCallback(
+    (match: FinanceCustomerSearchMatch) => {
+      if (!match || !isCustomerDetail(match.customer)) return;
+      const matchedAccount = String(match.matched_investment_account_no || "").trim();
+
+      if (customerSearchBy === "investment_account_no" && matchedAccount) {
+        setCustomerSearchValue(matchedAccount);
+      } else if (customerSearchBy === "passport") {
+        setCustomerSearchValue(String(match.customer.passport_no || match.customer.nic_passport || ""));
+      } else {
+        setCustomerSearchValue(String(match.customer.nic_passport || match.customer.customer_code || ""));
+      }
+
+      applyCustomerDetailToForm(match.customer, matchedAccount || null);
+      setShowCustomerSuggestions(false);
+      setCustomerSuggestions([]);
+    },
+    [applyCustomerDetailToForm, customerSearchBy]
+  );
+
+  const searchCustomerForMortgage = useCallback(
+    async (authToken: string) => {
+      const keyword = customerSearchValue.trim();
+      if (!keyword) {
+        openModal("error", "Missing Search Value", "Enter search value to find customer.");
+        return false;
+      }
+
+      try {
+        setSearchingCustomer(true);
+        const response = await axios.get(`${getApiBaseUrl()}/customers/finance-lookup`, {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+            Accept: "application/json",
+          },
+          params: {
+            search_by: customerSearchBy,
+            q: keyword,
+          },
+        });
+
+        const payload = response.data as {
+          found?: boolean;
+          data?: unknown;
+          matched_investment_account_no?: string | null;
+          message?: string;
+        };
+
+        const customer = isCustomerDetail(payload?.data) ? payload.data : null;
+        if (!payload?.found || !customer) {
+          openModal("error", "Customer Not Found", String(payload?.message || "Customer not found."));
+          return false;
+        }
+
+        applyCustomerDetailToForm(customer, payload.matched_investment_account_no || null);
+        setShowCustomerSuggestions(false);
+        setCustomerSuggestions([]);
+        return true;
+      } catch (error: unknown) {
+        if (axios.isAxiosError(error)) {
+          openModal("error", "Customer Search Failed", String(error.response?.data?.message || "Customer search failed."));
+        } else {
+          openModal("error", "Customer Search Failed", "Customer search failed.");
+        }
+        return false;
+      } finally {
+        setSearchingCustomer(false);
+      }
+    },
+    [applyCustomerDetailToForm, customerSearchBy, customerSearchValue]
+  );
+
+  useEffect(() => {
+    if (!token || step !== "profile") return;
+    const keyword = customerSearchValue.trim();
+    if (!keyword) {
+      setCustomerSuggestions([]);
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      void loadCustomerSuggestions(token, customerSearchBy, keyword);
+    }, 250);
+
+    return () => window.clearTimeout(timeout);
+  }, [token, step, customerSearchBy, customerSearchValue, loadCustomerSuggestions]);
+
   const stepTitle = useMemo(() => {
     switch (step) {
       case "profile":
@@ -257,14 +469,8 @@ export default function CreateMortgage() {
   }, [step]);
 
   const isProfileStepComplete = useMemo(() => {
-    return (
-      hasText(fullName) &&
-      hasText(nic) &&
-      hasText(dateOfBirth) &&
-      hasText(permanentAddress) &&
-      hasText(mobileNumber)
-    );
-  }, [fullName, nic, dateOfBirth, permanentAddress, mobileNumber]);
+    return Number(selectedCustomerId || 0) > 0;
+  }, [selectedCustomerId]);
 
   const isFinancialStepComplete = useMemo(() => {
     return hasPositiveNumber(monthlyIncome);
@@ -339,90 +545,10 @@ export default function CreateMortgage() {
     if (!token || isSubmitting) return;
     setIsSubmitting(true);
     try {
-      // Create Customer
-      const nameParts = fullName.trim().split(/\s+/).filter(Boolean);
-      const first = nameParts[0] || fullName.trim();
-      const last = nameParts.slice(1).join(" ") || "N/A";
-      const customerPayload = {
-        customer_code: fileCode.trim() || undefined,
-        first_name: first,
-        last_name: last,
-        email,
-        phone: mobileNumber,
-        nic_passport: nic,
-        date_of_birth: dateOfBirth,
-        gender,
-        marital_status: maritalStatus,
-        nationality,
-        permanent_address: permanentAddress,
-        current_address: currentAddress,
-        employment_type: employmentType,
-        employer_name: employerName,
-        job_title: jobTitle,
-        monthly_income: parseFloat(monthlyIncome || "0"),
-        other_income_sources: otherIncomeSources,
-        existing_loans: existingLoans,
-        monthly_loan_obligations: parseFloat(
-          monthlyLoanObligations || "0"
-        ),
-        credit_score: creditScore ? parseInt(creditScore) : null,
-      };
-      let createdCustomerId: number | null = null;
-
-      try {
-        const custRes = await axios.post(
-          `${getApiBaseUrl()}/customers`,
-          customerPayload,
-          {
-            headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-          }
-        );
-        createdCustomerId = custRes.data.id;
-      } catch (customerError: any) {
-        const backendError = String(
-          customerError?.response?.data?.error || customerError?.response?.data?.message || ""
-        ).toLowerCase();
-        const maybeDuplicate =
-          backendError.includes("duplicate") ||
-          backendError.includes("unique") ||
-          backendError.includes("nic_passport") ||
-          backendError.includes("email");
-
-        if (!maybeDuplicate) {
-          throw customerError;
-        }
-
-        const lookupValue = (nic || email).trim();
-        if (!lookupValue) {
-          throw customerError;
-        }
-
-        const existingRes = await axios.get(`${getApiBaseUrl()}/customers`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-          params: { q: lookupValue, per_page: 100 },
-        });
-
-        const existingRows = Array.isArray(existingRes.data?.data)
-          ? existingRes.data.data
-          : [];
-
-        const existingCustomer = existingRows.find((row: any) => {
-          const rowNic = String(row?.nic_passport || "").trim().toLowerCase();
-          const rowEmail = String(row?.email || "").trim().toLowerCase();
-          const inputNic = String(nic || "").trim().toLowerCase();
-          const inputEmail = String(email || "").trim().toLowerCase();
-          return (inputNic && rowNic === inputNic) || (inputEmail && rowEmail === inputEmail);
-        });
-
-        if (!existingCustomer?.id) {
-          throw customerError;
-        }
-
-        createdCustomerId = existingCustomer.id;
-      }
+      const createdCustomerId: number | null = selectedCustomerId;
 
       if (!createdCustomerId) {
-        throw new Error("Unable to create or resolve customer record.");
+        throw new Error("Select an existing customer before submitting mortgage.");
       }
 
       // Upload selected customer documents
@@ -867,138 +993,128 @@ export default function CreateMortgage() {
           {step === "profile" && isActiveStepWidgetVisible && (
             <>
             <div>
-              <p className={sectionTitleClass}>Customer</p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className={labelClass}>
-                  Full Name
-                </label>
-                <input
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  className={inputClass}
-                  placeholder="e.g. John Doe"
-                />
+              <p className={sectionTitleClass}>Find Existing Customer</p>
+              <div className="rounded-2xl border border-cyan-100 bg-cyan-50/40 p-4">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-[210px_1fr_auto]">
+                  <div>
+                    <label className={labelClass}>Search By</label>
+                    <select
+                      value={customerSearchBy}
+                      onChange={(e) => setCustomerSearchBy(e.target.value as "nic_passport" | "passport" | "investment_account_no")}
+                      className={inputClass}
+                    >
+                      <option value="nic_passport">NIC</option>
+                      <option value="passport">Passport</option>
+                      <option value="investment_account_no">Investment Account No</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className={labelClass}>Search Value</label>
+                    <input
+                      value={customerSearchValue}
+                      onFocus={() => setShowCustomerSuggestions(true)}
+                      onChange={(e) => {
+                        setCustomerSearchValue(e.target.value);
+                        setShowCustomerSuggestions(true);
+                        if (selectedCustomerId) {
+                          setSelectedCustomerId(null);
+                          setSelectedInvestmentAccountNo("");
+                        }
+                      }}
+                      className={inputClass}
+                      placeholder={
+                        customerSearchBy === "investment_account_no"
+                          ? "Enter investment account no"
+                          : customerSearchBy === "passport"
+                            ? "Enter passport number"
+                            : "Enter NIC"
+                      }
+                    />
+                    {showCustomerSuggestions && (loadingCustomerSuggestions || customerSuggestions.length > 0) && (
+                      <div className="relative">
+                        <div className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-cyan-200 bg-white shadow-xl">
+                          {loadingCustomerSuggestions ? (
+                            <div className="px-3 py-2 text-xs text-slate-600">Searching customers...</div>
+                          ) : (
+                            customerSuggestions.map((match) => {
+                              const customer = match.customer;
+                              const full = `${customer.first_name || ""} ${customer.last_name || ""}`.trim() || "N/A";
+                              return (
+                                <button
+                                  key={`mortgage-customer-suggestion-${customer.id}`}
+                                  type="button"
+                                  onClick={() => selectQuickSuggestion(match)}
+                                  className="block w-full border-b border-slate-100 px-3 py-2 text-left text-xs hover:bg-cyan-50"
+                                >
+                                  <p className="font-semibold text-slate-900">{full}</p>
+                                  <p className="mt-0.5 text-slate-600">No: {customer.customer_code || "-"} | NIC: {customer.nic_passport || "-"}</p>
+                                  <p className="mt-0.5 text-slate-500">Investment: {match.matched_investment_account_no || "-"}</p>
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!token) return;
+                      void searchCustomerForMortgage(token);
+                    }}
+                    disabled={searchingCustomer}
+                    className="mt-0 rounded-xl border border-cyan-200 bg-white px-4 py-2.5 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 disabled:opacity-60 md:mt-7"
+                  >
+                    {searchingCustomer ? "Searching..." : "Search Customer"}
+                  </button>
+                </div>
+
+                {selectedCustomerId ? (
+                  <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                    Existing customer selected. Mortgage will be created under this customer account.
+                    {selectedInvestmentAccountNo ? ` Investment Account: ${selectedInvestmentAccountNo}` : ""}
+                  </div>
+                ) : null}
               </div>
-              <div>
-                <label className={labelClass}>
-                  File Code
-                </label>
-                <input
-                  value={fileCode}
-                  onChange={(e) => setFileCode(e.target.value)}
-                  className={inputClass}
-                  placeholder="e.g. CUS-2026-001"
-                />
-              </div>
-              <div>
-                <label className={labelClass}>
-                  NIC / Passport
-                </label>
-                <input
-                  value={nic}
-                  onChange={(e) => setNic(e.target.value)}
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label className={labelClass}>
-                  Date of Birth
-                </label>
-                <input
-                  type="date"
-                  value={dateOfBirth}
-                  onChange={(e) => setDateOfBirth(e.target.value)}
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label className={labelClass}>
-                  Gender
-                </label>
-                <select
-                  value={gender}
-                  onChange={(e) => setGender(e.target.value as any)}
-                  className={inputClass}
-                >
-                  <option value="male">Male</option>
-                  <option value="female">Female</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
-              <div>
-                <label className={labelClass}>
-                  Marital Status
-                </label>
-                <select
-                  value={maritalStatus}
-                  onChange={(e) => setMaritalStatus(e.target.value as any)}
-                  className={inputClass}
-                >
-                  <option value="single">Single</option>
-                  <option value="married">Married</option>
-                  <option value="divorced">Divorced</option>
-                  <option value="widowed">Widowed</option>
-                </select>
-              </div>
-              <div>
-                <label className={labelClass}>
-                  Nationality
-                </label>
-                <input
-                  value={nationality}
-                  onChange={(e) => setNationality(e.target.value)}
-                  className={inputClass}
-                />
-              </div>
-            </div>
             </div>
 
-            <div>
-              <p className={sectionTitleClass}>Contact</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className={labelClass}>
-                    Permanent Address
-                  </label>
-                  <textarea
-                    value={permanentAddress}
-                    onChange={(e) => setPermanentAddress(e.target.value)}
-                    className={inputClass}
-                  />
+            <div className="rounded-2xl border border-emerald-100 bg-emerald-50/40 p-4">
+              <p className={sectionTitleClass}>Selected Customer</p>
+              {selectedCustomerId ? (
+                <div className="grid grid-cols-1 gap-3 text-sm text-emerald-900 md:grid-cols-3">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Full Name</p>
+                    <p className="font-semibold">{fullName || "-"}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Customer Code</p>
+                    <p className="font-semibold">{fileCode || "-"}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">NIC / Passport</p>
+                    <p className="font-semibold">{nic || "-"}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Date of Birth</p>
+                    <p className="font-semibold">{dateOfBirth || "-"}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Phone</p>
+                    <p className="font-semibold">{mobileNumber || "-"}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Email</p>
+                    <p className="font-semibold">{email || "-"}</p>
+                  </div>
                 </div>
-                <div>
-                  <label className={labelClass}>
-                    Current Address
-                  </label>
-                  <textarea
-                    value={currentAddress}
-                    onChange={(e) => setCurrentAddress(e.target.value)}
-                    className={inputClass}
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>
-                    Mobile Number
-                  </label>
-                  <input
-                    value={mobileNumber}
-                    onChange={(e) => setMobileNumber(e.target.value)}
-                    className={inputClass}
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className={inputClass}
-                  />
-                </div>
-              </div>
+              ) : (
+                <p className="text-sm text-amber-800">
+                  Search and select an existing customer to continue.
+                </p>
+              )}
             </div>
             </>
           )}

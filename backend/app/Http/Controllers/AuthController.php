@@ -30,15 +30,30 @@ class AuthController extends Controller
         return $aliases;
     }
 
-    private function resolveLoginUserByEmail(string $email): ?User
+    private function resolveLoginUser(string $identifier): ?User
     {
-        $aliases = $this->normalizedEmailAliases($email);
+        $normalizedIdentifier = strtolower(trim($identifier));
+        if ($normalizedIdentifier === '') {
+            return null;
+        }
 
-        return User::query()
+        $aliases = $this->normalizedEmailAliases($normalizedIdentifier);
+
+        $user = User::query()
             ->where(function ($query) use ($aliases) {
                 foreach ($aliases as $alias) {
                     $query->orWhereRaw('LOWER(TRIM(email)) = ?', [$alias]);
                 }
+            })
+            ->first();
+
+        if ($user) {
+            return $user;
+        }
+
+        return User::query()
+            ->whereHas('employee', function ($query) use ($normalizedIdentifier) {
+                $query->whereRaw('LOWER(TRIM(email)) = ?', [$normalizedIdentifier]);
             })
             ->first();
     }
@@ -89,16 +104,23 @@ class AuthController extends Controller
     public function login(Request $request)
     {
         try {
-            $request->validate([
-                'email' => 'required|string|max:255',
+            $validated = $request->validate([
+                'login' => 'nullable|string|max:255',
+                'email' => 'nullable|string|max:255',
                 'password' => 'required|string',
             ]);
 
-            $emailInput = trim((string) $request->input('email'));
-            $passwordInput = (string) $request->input('password');
+            $loginInput = trim((string) ($validated['login'] ?? $validated['email'] ?? ''));
+            $passwordInput = (string) $validated['password'];
+
+            if ($loginInput === '') {
+                throw ValidationException::withMessages([
+                    'login' => ['User ID or email is required.'],
+                ]);
+            }
 
             // API-first auth: resolve user + verify password directly (no session guard dependency).
-            $user = $this->resolveLoginUserByEmail($emailInput);
+            $user = $this->resolveLoginUser($loginInput);
             if (!$user || !Hash::check($passwordInput, (string) $user->password)) {
                 // Emergency local fallback for development:
                 // - if user exists, normalize default password
@@ -131,13 +153,13 @@ class AuthController extends Controller
 
             if (!$user) {
                 throw ValidationException::withMessages([
-                    'email' => ['The provided credentials are incorrect.'],
+                    'login' => ['The provided credentials are incorrect.'],
                 ]);
             }
 
             if (!$this->isSystemOnline() && !$user->isSystemAdmin()) {
                 throw ValidationException::withMessages([
-                    'email' => ['System is currently offline. Only admins can log in at this time.'],
+                    'login' => ['System is currently offline. Only admins can log in at this time.'],
                 ]);
             }
 

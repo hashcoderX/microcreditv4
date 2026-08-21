@@ -54,6 +54,15 @@ type SavingsAccountRow = {
   customer?: CustomerSummary | null;
 };
 
+type AuthRole = { name?: string | null };
+
+type AuthUser = {
+  email?: string | null;
+  designation?: { name?: string | null } | null;
+  roles?: AuthRole[] | null;
+  is_system_admin?: boolean | null;
+};
+
 const STEPS = [
   { id: 1, label: 'Customer', short: '1' },
   { id: 2, label: 'Account setup', short: '2' },
@@ -91,6 +100,15 @@ function accountTypeBadgeClass(type: string | null | undefined): string {
   return 'bg-amber-100 text-amber-800 border-amber-200';
 }
 
+function accountTypeDisplayLabel(type: string | null | undefined): string {
+  const normalized = String(type || '').toLowerCase();
+  if (normalized === 'fixed_deposit') {
+    return 'Deposit';
+  }
+
+  return formatAccountTypeLabel(type);
+}
+
 export default function SavingsOpenAccountPage() {
   const router = useRouter();
   const [token, setToken] = useState('');
@@ -103,12 +121,22 @@ export default function SavingsOpenAccountPage() {
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [detailsRow, setDetailsRow] = useState<SavingsAccountRow | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [deletingAccountId, setDeletingAccountId] = useState<number | null>(null);
+  const [deleteTargetRow, setDeleteTargetRow] = useState<SavingsAccountRow | null>(null);
+  const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
+  const [editTargetRow, setEditTargetRow] = useState<SavingsAccountRow | null>(null);
+  const [editInterestType, setEditInterestType] = useState<SavingsInterestType>('simple_interest');
+  const [editInterestRate, setEditInterestRate] = useState('0');
+  const [editStatus, setEditStatus] = useState('active');
+  const [editOpenedAt, setEditOpenedAt] = useState('');
 
   const [accounts, setAccounts] = useState<SavingsAccountRow[]>([]);
   const [accountCustomerNo, setAccountCustomerNo] = useState('');
   const [customerSearchText, setCustomerSearchText] = useState('');
   const [searchingCustomers, setSearchingCustomers] = useState(false);
   const [customerResults, setCustomerResults] = useState<CustomerSummary[]>([]);
+  const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
   const [accountType, setAccountType] = useState<SavingsAccountType>('savings');
   const [interestType, setInterestType] = useState<SavingsInterestType>(DEFAULT_INTEREST_BY_ACCOUNT.savings);
   const [openingDeposit, setOpeningDeposit] = useState('0');
@@ -117,6 +145,11 @@ export default function SavingsOpenAccountPage() {
   const [openedAt, setOpenedAt] = useState('');
   const [resolvedCustomer, setResolvedCustomer] = useState<CustomerSummary | null>(null);
   const widgetPrefix = 'savings_accounts_widget_';
+
+  const availableAccountTypes = useMemo(
+    () => SAVINGS_ACCOUNT_TYPES.filter((item) => item.value !== 'fixed_deposit'),
+    []
+  );
 
   const fetchWidgetPreferences = async (authToken: string) => {
     try {
@@ -164,8 +197,8 @@ export default function SavingsOpenAccountPage() {
   };
 
   const selectedAccountMeta = useMemo(
-    () => SAVINGS_ACCOUNT_TYPES.find((item) => item.value === accountType),
-    [accountType]
+    () => availableAccountTypes.find((item) => item.value === accountType),
+    [availableAccountTypes, accountType]
   );
 
   const recommendedInterestTypes = useMemo(
@@ -213,17 +246,157 @@ export default function SavingsOpenAccountPage() {
     Number.isFinite(Number(interestRate)) &&
     Number(interestRate) >= 0;
 
+  const isAdminUser = useMemo(() => {
+    if (authUser?.is_system_admin === true) {
+      return true;
+    }
+
+    const normalize = (value: string) => value.toLowerCase().trim();
+    const designation = normalize(String(authUser?.designation?.name || ''));
+    if (designation.includes('admin')) {
+      return true;
+    }
+
+    const roleNames = Array.isArray(authUser?.roles) ? authUser.roles : [];
+    return roleNames.some((role) => normalize(String(role?.name || '')).includes('admin'));
+  }, [authUser]);
+
+  const isSuperAdminUser = useMemo(() => {
+    if (authUser?.is_system_admin === true) {
+      return true;
+    }
+
+    const normalize = (value: string) => value.toLowerCase().trim();
+    const email = normalize(String(authUser?.email || ''));
+    if (email === 'superadmin@softcodelk.com') {
+      return true;
+    }
+
+    const designation = normalize(String(authUser?.designation?.name || ''));
+    if (designation.includes('super admin')) {
+      return true;
+    }
+
+    const roleNames = Array.isArray(authUser?.roles) ? authUser.roles : [];
+    return roleNames.some((role) => normalize(String(role?.name || '')).includes('super admin'));
+  }, [authUser]);
+
   useEffect(() => {
     const t = localStorage.getItem('token');
     if (!t) {
       router.push('/');
       return;
     }
+
+    const storedUser = localStorage.getItem('auth_user');
+    if (storedUser) {
+      try {
+        setAuthUser(JSON.parse(storedUser) as AuthUser);
+      } catch {
+        setAuthUser(null);
+      }
+    }
+
     setToken(t);
     void fetchWidgetPreferences(t);
     const today = new Date().toISOString().slice(0, 10);
     setOpenedAt(today);
   }, [router]);
+
+  const removeAccount = async (row: SavingsAccountRow) => {
+    if (!token) return;
+
+    const accountId = Number(row.id || 0);
+    if (!Number.isInteger(accountId) || accountId <= 0) {
+      setErrorMessage('Invalid account selected.');
+      return;
+    }
+
+    try {
+      setDeletingAccountId(accountId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      await axios.delete(`/api/savings-accounts/${accountId}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      });
+
+      setAccounts((prev) => prev.filter((item) => Number(item.id) !== accountId));
+      if (Number(detailsRow?.id || 0) === accountId) {
+        setDetailsRow(null);
+      }
+      setDeleteTargetRow(null);
+      setSuccessMessage('Account removed successfully.');
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        const message =
+          typeof error.response?.data?.message === 'string'
+            ? error.response.data.message
+            : 'Failed to remove account.';
+        setErrorMessage(message);
+      } else {
+        setErrorMessage('Failed to remove account.');
+      }
+    } finally {
+      setDeletingAccountId(null);
+    }
+  };
+
+  const openEditModal = (row: SavingsAccountRow) => {
+    setEditTargetRow(row);
+    setEditInterestType((row.interest_type as SavingsInterestType) || 'simple_interest');
+    setEditInterestRate(String(Number(row.interest_rate || 0)));
+    setEditStatus(String(row.status || 'active').toLowerCase());
+    const opened = String((row as unknown as { opened_at?: string | null }).opened_at || '').slice(0, 10);
+    setEditOpenedAt(opened);
+  };
+
+  const saveAccountEdit = async () => {
+    if (!token || !editTargetRow) return;
+
+    const accountId = Number(editTargetRow.id || 0);
+    if (!Number.isInteger(accountId) || accountId <= 0) {
+      setErrorMessage('Invalid account selected for edit.');
+      return;
+    }
+
+    try {
+      setEditingAccountId(accountId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await axios.put(
+        `/api/savings-accounts/${accountId}`,
+        {
+          interest_type: editInterestType,
+          interest_rate: Number(editInterestRate || 0),
+          status: editStatus,
+          opened_at: editOpenedAt || null,
+        },
+        { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+      );
+
+      const updated = (response.data || {}) as SavingsAccountRow;
+      setAccounts((prev) => prev.map((item) => (Number(item.id) === accountId ? { ...item, ...updated } : item)));
+      if (Number(detailsRow?.id || 0) === accountId) {
+        setDetailsRow((prev) => (prev ? { ...prev, ...updated } : prev));
+      }
+      setEditTargetRow(null);
+      setSuccessMessage('Account updated successfully.');
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        const message =
+          typeof error.response?.data?.message === 'string'
+            ? error.response.data.message
+            : 'Failed to update account.';
+        setErrorMessage(message);
+      } else {
+        setErrorMessage('Failed to update account.');
+      }
+    } finally {
+      setEditingAccountId(null);
+    }
+  };
 
   const loadAccounts = async (authToken: string) => {
     setLoadingAccounts(true);
@@ -295,12 +468,15 @@ export default function SavingsOpenAccountPage() {
     }
   };
 
-  const searchCustomersAdvanced = async () => {
+  const searchCustomersAdvanced = async (termOverride?: string, silent = false) => {
     if (!token) return;
-    const term = customerSearchText.trim();
+    const term = (termOverride ?? customerSearchText).trim();
     if (!term) {
       setCustomerResults([]);
-      setErrorMessage('Enter Customer No or NIC to search.');
+      setShowCustomerSuggestions(false);
+      if (!silent) {
+        setErrorMessage('Enter customer number, NIC, name, or phone to search.');
+      }
       return;
     }
 
@@ -334,22 +510,44 @@ export default function SavingsOpenAccountPage() {
         );
       });
 
-      setCustomerResults(narrowed);
-      if (narrowed.length === 0) setErrorMessage('No customers matched your search.');
+      setCustomerResults(narrowed.slice(0, 8));
+      setShowCustomerSuggestions(narrowed.length > 0);
+      if (!silent && narrowed.length === 0) setErrorMessage('No customers matched your search.');
     } catch {
       setCustomerResults([]);
-      setErrorMessage('Customer search failed. Try again.');
+      setShowCustomerSuggestions(false);
+      if (!silent) {
+        setErrorMessage('Customer search failed. Try again.');
+      }
     } finally {
       setSearchingCustomers(false);
     }
   };
 
+  useEffect(() => {
+    if (!token || activeStep !== 1) return;
+
+    const term = customerSearchText.trim();
+    if (term.length < 2) {
+      setCustomerResults([]);
+      setShowCustomerSuggestions(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      void searchCustomersAdvanced(term, true);
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [customerSearchText, token, activeStep]);
+
   const selectCustomer = (customer: CustomerSummary) => {
     const code = String(customer.customer_code || '').trim();
     setResolvedCustomer(customer);
     setAccountCustomerNo(code);
-    setCustomerSearchText(code);
+    setCustomerSearchText(`${code} | ${customer.first_name || ''} ${customer.last_name || ''}`.trim());
     setCustomerResults([]);
+    setShowCustomerSuggestions(false);
     setSuccessMessage('Customer selected.');
     setErrorMessage('');
     setActiveStep(2);
@@ -358,6 +556,9 @@ export default function SavingsOpenAccountPage() {
   const clearCustomer = () => {
     setResolvedCustomer(null);
     setAccountCustomerNo('');
+    setCustomerSearchText('');
+    setCustomerResults([]);
+    setShowCustomerSuggestions(false);
     setActiveStep(1);
   };
 
@@ -487,7 +688,7 @@ export default function SavingsOpenAccountPage() {
                   <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-amber-100">Savings & Deposits</p>
                   <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Open Account</h1>
                   <p className="text-sm text-amber-50/95 mt-1 max-w-xl">
-                    Register savings, current, fixed deposit, or investment accounts with the right interest structure.
+                    Register savings, current, or investment accounts with the right interest structure.
                   </p>
                 </div>
               </div>
@@ -606,17 +807,45 @@ export default function SavingsOpenAccountPage() {
                     <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
                     <input
                       value={customerSearchText}
-                      onChange={(e) => setCustomerSearchText(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && searchCustomersAdvanced()}
+                      onChange={(e) => {
+                        setCustomerSearchText(e.target.value);
+                        setShowCustomerSuggestions(true);
+                      }}
+                      onFocus={() => setShowCustomerSuggestions(customerResults.length > 0)}
+                      onBlur={() => setTimeout(() => setShowCustomerSuggestions(false), 120)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void searchCustomersAdvanced();
+                        }
+                      }}
                       className={`${inputClass} pl-10`}
                       placeholder="Customer No, NIC, name, or phone"
                     />
+
+                    {showCustomerSuggestions && customerResults.length > 0 && (
+                      <div className="absolute z-20 mt-1 w-full rounded-xl border border-orange-200 bg-white shadow-lg overflow-hidden">
+                        {customerResults.map((row) => (
+                          <button
+                            key={row.id}
+                            type="button"
+                            onMouseDown={() => selectCustomer(row)}
+                            className="w-full border-b border-orange-100 px-3.5 py-2.5 text-left hover:bg-orange-50 last:border-b-0"
+                          >
+                            <p className="text-sm font-semibold text-slate-900">{row.first_name} {row.last_name}</p>
+                            <p className="text-xs text-slate-600 mt-0.5">
+                              {row.customer_code || '—'} · {row.nic_passport || '—'} · {row.phone || '—'}
+                            </p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      onClick={searchCustomersAdvanced}
+                      onClick={() => void searchCustomersAdvanced()}
                       disabled={searchingCustomers}
                       className="inline-flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-orange-700 disabled:opacity-60 transition"
                     >
@@ -657,7 +886,7 @@ export default function SavingsOpenAccountPage() {
                     </div>
                   )}
 
-                  {customerResults.length > 0 && (
+                  {customerResults.length > 0 && !showCustomerSuggestions && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       {customerResults.map((row) => (
                         <button
@@ -700,7 +929,7 @@ export default function SavingsOpenAccountPage() {
                   <div>
                     <p className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-3">Account type</p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {SAVINGS_ACCOUNT_TYPES.map((type) => {
+                      {availableAccountTypes.map((type) => {
                         const active = accountType === type.value;
                         const Icon = ACCOUNT_ICONS[type.value];
                         return (
@@ -861,7 +1090,7 @@ export default function SavingsOpenAccountPage() {
                   <dl className="rounded-2xl border border-orange-100 divide-y divide-orange-50 overflow-hidden">
                     {[
                       ['Customer', `${resolvedCustomer?.customer_code} — ${resolvedCustomer?.first_name} ${resolvedCustomer?.last_name}`],
-                      ['Account type', selectedAccountMeta?.label || formatAccountTypeLabel(accountType)],
+                      ['Account type', selectedAccountMeta?.label || accountTypeDisplayLabel(accountType)],
                       ['Interest type', formatInterestTypeLabel(interestType)],
                       ['Interest usage', selectedInterestUsage],
                       ['Interest rate', `${interestRate}%`],
@@ -1066,7 +1295,7 @@ export default function SavingsOpenAccountPage() {
                               <span
                                 className={`inline-flex rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${accountTypeBadgeClass(row.account_type)}`}
                               >
-                                {formatAccountTypeLabel(row.account_type)}
+                                {accountTypeDisplayLabel(row.account_type)}
                               </span>
                             </td>
                           );
@@ -1080,13 +1309,33 @@ export default function SavingsOpenAccountPage() {
                         if (column.key === 'details') {
                           return (
                             <td key={column.key} className="py-3 px-4 text-right">
-                              <button
-                                type="button"
-                                onClick={() => setDetailsRow(row)}
-                                className="inline-flex items-center rounded-lg border border-orange-200 bg-orange-50 px-2.5 py-1 text-xs font-semibold text-orange-800 hover:bg-orange-100"
-                              >
-                                More details
-                              </button>
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setDetailsRow(row)}
+                                  className="inline-flex items-center rounded-lg border border-orange-200 bg-orange-50 px-2.5 py-1 text-xs font-semibold text-orange-800 hover:bg-orange-100"
+                                >
+                                  More details
+                                </button>
+                                {isSuperAdminUser && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditModal(row)}
+                                    className="inline-flex items-center rounded-lg border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-xs font-semibold text-cyan-800 hover:bg-cyan-100"
+                                  >
+                                    Edit
+                                  </button>
+                                )}
+                                {isAdminUser && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setDeleteTargetRow(row)}
+                                    className="inline-flex items-center rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-800 hover:bg-rose-100"
+                                  >
+                                    Remove
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           );
                         }
@@ -1137,7 +1386,7 @@ export default function SavingsOpenAccountPage() {
                 <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {[
                     ['Status', String(detailsRow.status || 'active')],
-                    ['Account type', formatAccountTypeLabel(detailsRow.account_type)],
+                    ['Account type', accountTypeDisplayLabel(detailsRow.account_type)],
                     ['Interest type', formatInterestTypeLabel(detailsRow.interest_type)],
                     ['Interest rate', `${amount(detailsRow.interest_rate)}%`],
                     ['Opening deposit', `LKR ${amount(detailsRow.opening_deposit)}`],
@@ -1151,6 +1400,24 @@ export default function SavingsOpenAccountPage() {
                 </dl>
 
                 <div className="flex justify-end pt-1">
+                  {isSuperAdminUser && (
+                    <button
+                      type="button"
+                      onClick={() => openEditModal(detailsRow)}
+                      className="mr-auto rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-800 hover:bg-cyan-100"
+                    >
+                      Edit account
+                    </button>
+                  )}
+                  {isAdminUser && (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTargetRow(detailsRow)}
+                      className="mr-auto rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100"
+                    >
+                      Remove account
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => setDetailsRow(null)}
@@ -1159,6 +1426,129 @@ export default function SavingsOpenAccountPage() {
                     Close
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {deleteTargetRow ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4"
+            onClick={() => (deletingAccountId ? null : setDeleteTargetRow(null))}
+          >
+            <div
+              className="w-full max-w-md rounded-2xl border border-rose-100 bg-white p-5 shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h3 className="text-base font-bold text-slate-900">Remove account</h3>
+              <p className="mt-2 text-sm text-slate-700">
+                Are you sure you want to remove account{' '}
+                <span className="font-semibold">{deleteTargetRow.account_number || '—'}</span>?
+              </p>
+              <p className="mt-1 text-xs text-slate-500">Only admin can perform this action.</p>
+
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDeleteTargetRow(null)}
+                  disabled={deletingAccountId === Number(deleteTargetRow.id || 0)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void removeAccount(deleteTargetRow)}
+                  disabled={deletingAccountId === Number(deleteTargetRow.id || 0)}
+                  className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
+                >
+                  {deletingAccountId === Number(deleteTargetRow.id || 0) ? 'Removing…' : 'Confirm remove'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {editTargetRow ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4"
+            onClick={() => (editingAccountId ? null : setEditTargetRow(null))}
+          >
+            <div
+              className="w-full max-w-lg rounded-2xl border border-cyan-100 bg-white p-5 shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h3 className="text-base font-bold text-slate-900">Edit account</h3>
+              <p className="mt-1 text-xs text-slate-500">Only superadmin can edit account details.</p>
+
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2 rounded-xl border border-cyan-100 bg-cyan-50/50 px-3 py-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-cyan-700">Account</p>
+                  <p className="text-sm font-semibold text-slate-900 mt-0.5">{editTargetRow.account_number || '—'}</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-600 mb-2">Interest type</label>
+                  <select
+                    value={editInterestType}
+                    onChange={(e) => setEditInterestType(e.target.value as SavingsInterestType)}
+                    className={inputClass}
+                  >
+                    {SAVINGS_INTEREST_TYPES.map((item) => (
+                      <option key={item.value} value={item.value}>{item.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-600 mb-2">Interest rate (%)</label>
+                  <input
+                    value={editInterestRate}
+                    onChange={(e) => setEditInterestRate(e.target.value)}
+                    className={inputClass}
+                    type="number"
+                    min="0"
+                    step="0.0001"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-600 mb-2">Status</label>
+                  <select value={editStatus} onChange={(e) => setEditStatus(e.target.value)} className={inputClass}>
+                    <option value="active">Active</option>
+                    <option value="dormant">Dormant</option>
+                    <option value="closed">Closed</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-600 mb-2">Opened date</label>
+                  <input
+                    value={editOpenedAt}
+                    onChange={(e) => setEditOpenedAt(e.target.value)}
+                    className={inputClass}
+                    type="date"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditTargetRow(null)}
+                  disabled={editingAccountId === Number(editTargetRow.id || 0)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveAccountEdit()}
+                  disabled={editingAccountId === Number(editTargetRow.id || 0)}
+                  className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700 disabled:opacity-60"
+                >
+                  {editingAccountId === Number(editTargetRow.id || 0) ? 'Saving…' : 'Save changes'}
+                </button>
               </div>
             </div>
           </div>

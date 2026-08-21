@@ -99,15 +99,21 @@ export default function ReportsHubPage() {
   );
 
   const saveWidgetPreference = useCallback(
-    async (widgetKey: string, isVisible: boolean) => {
+    async (widgetKey: string, isVisible: boolean, hiddenRoutePath?: string) => {
       if (!token) return false;
       const normalizedKey = String(widgetKey || '').trim();
       if (!normalizedKey || normalizedKey.length > 120) return false;
+      const normalizedHiddenRoutePath = String(hiddenRoutePath || '').trim();
 
       try {
         await axios.patch(
           `${apiBase}/dashboard/widgets`,
-          { widget_key: normalizedKey, is_visible: Boolean(isVisible) },
+          {
+            widget_key: normalizedKey,
+            is_visible: Boolean(isVisible),
+            hidden_route_path:
+              !isVisible && normalizedHiddenRoutePath.startsWith('/dashboard') ? normalizedHiddenRoutePath : null,
+          },
           {
             headers: {
               Authorization: `Bearer ${token}`,
@@ -124,13 +130,13 @@ export default function ReportsHubPage() {
   );
 
   const hideWidget = useCallback(
-    async (widgetKey: string) => {
+    async (widgetKey: string, hiddenRoutePath?: string) => {
       const previous = new Set(hiddenWidgetKeys);
       const next = new Set(hiddenWidgetKeys);
       next.add(widgetKey);
       setHiddenWidgetKeys(next);
 
-      const ok = await saveWidgetPreference(widgetKey, false);
+      const ok = await saveWidgetPreference(widgetKey, false, hiddenRoutePath);
       if (!ok) {
         setHiddenWidgetKeys(previous);
       }
@@ -739,7 +745,7 @@ export default function ReportsHubPage() {
                                   onClick={(event) => {
                                     event.preventDefault();
                                     event.stopPropagation();
-                                    void hideWidget(getReportWidgetKey(category.key, report.title));
+                                    void hideWidget(getReportWidgetKey(category.key, report.title), report.path);
                                   }}
                                   className="absolute right-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-600 shadow-sm hover:border-rose-300 hover:text-rose-700"
                                   aria-label={`Hide ${report.title} report card`}

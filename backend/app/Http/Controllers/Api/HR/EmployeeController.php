@@ -15,6 +15,7 @@ use App\Http\Requests\StoreEmployeeRequest;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -196,7 +197,7 @@ class EmployeeController extends Controller
         $tenantId = $request->input('tenant_id');
         $branchId = $request->input('branch_id');
 
-        $query = Employee::with(['department', 'designation', 'branch', 'wallet']);
+        $query = Employee::with(['department', 'designation', 'branch', 'wallet', 'user:id,employee_id,email']);
 
         if ($tenantId) {
             $query->where('tenant_id', $tenantId);
@@ -230,7 +231,7 @@ class EmployeeController extends Controller
             'email' => $validated['email'],
             'mobile' => $validated['phone'] ?? '',
             'reporting_person' => $validated['reporting_person'] ?? null,
-            'nic_passport' => 'TEMP' . time(), // Temporary NIC for demo
+            'nic_passport' => $validated['nic_passport'],
             'address' => $validated['address'] ?? '',
             'photo_path' => $validated['photo_path'] ?? null,
             'date_of_birth' => $validated['date_of_birth'] ?? null,
@@ -241,6 +242,7 @@ class EmployeeController extends Controller
             'basic_salary' => $validated['basic_salary'],
             'commission' => $validated['commission'] ?? null,
             'commission_base' => $validated['commission_base'] ?? null,
+            'monthly_target' => $validated['monthly_target'] ?? null,
             'overtime_payment_per_hour' => $validated['overtime_payment_per_hour'] ?? null,
             'deduction_late_hour' => $validated['deduction_late_hour'] ?? null,
             'epf_employee_contribution' => $validated['epf_employee_contribution'] ?? 8.00,
@@ -281,7 +283,7 @@ class EmployeeController extends Controller
             // Create user account for the employee.
             $createdUser = User::create([
                 'name' => $validated['first_name'] . ' ' . $validated['last_name'],
-                'email' => $validated['email'],
+                'email' => trim((string) $validated['user_id']),
                 'password' => Hash::make($validated['password']),
                 'employee_id' => $employee->id,
                 'branch_id' => $validated['branch_id'],
@@ -309,7 +311,7 @@ class EmployeeController extends Controller
             return $employee;
         });
 
-        return response()->json($employee->load(['department', 'designation', 'branch', 'wallet']), 201);
+        return response()->json($employee->load(['department', 'designation', 'branch', 'wallet', 'user:id,employee_id,email']), 201);
     }
 
     /**
@@ -317,7 +319,7 @@ class EmployeeController extends Controller
      */
     public function show(Employee $employee): JsonResponse
     {
-        return response()->json($employee->load(['department', 'designation', 'branch', 'wallet']));
+        return response()->json($employee->load(['department', 'designation', 'branch', 'wallet', 'user:id,employee_id,email']));
     }
 
     /**
@@ -948,9 +950,21 @@ class EmployeeController extends Controller
             return response()->json(['message' => 'Unauthorized.'], 401);
         }
 
+        $validated = $request->validate([
+            'target_branch_id' => 'nullable|integer|exists:companies,id',
+            'target_account_type' => 'nullable|in:cash,main',
+        ]);
+
+        $targetBranchIdFromRequest = array_key_exists('target_branch_id', $validated)
+            ? (int) $validated['target_branch_id']
+            : null;
+        $targetAccountType = array_key_exists('target_account_type', $validated)
+            ? (string) $validated['target_account_type']
+            : null;
+
         $summary = null;
 
-        DB::transaction(function () use ($id, $user, &$summary): void {
+        DB::transaction(function () use ($id, $user, $targetBranchIdFromRequest, $targetAccountType, &$summary): void {
             $row = EmployeeWalletCashHandover::query()
                 ->where('id', $id)
                 ->where('status', 'approved')
@@ -977,6 +991,19 @@ class EmployeeController extends Controller
                 throw new HttpResponseException(response()->json(['message' => 'You are not allowed to transfer this handover.'], 403));
             }
 
+            $destinationBranchId = $targetBranchIdFromRequest ?: (int) $row->branch_id;
+            $destinationBranch = Company::query()
+                ->where('id', $destinationBranchId)
+                ->first();
+
+            if (!$destinationBranch) {
+                throw new HttpResponseException(response()->json(['message' => 'Destination branch not found.'], 404));
+            }
+
+            if (!$this->canOverrideWalletApprovals($user) && (int) ($destinationBranch->manager_user_id ?? 0) !== (int) $user->id) {
+                throw new HttpResponseException(response()->json(['message' => 'You are not allowed to transfer funds to the selected branch.'], 403));
+            }
+
             $managerEmployee = Employee::query()
                 ->where('id', (int) ($row->manager_employee_id ?? 0))
                 ->where('branch_id', (int) $row->branch_id)
@@ -997,19 +1024,21 @@ class EmployeeController extends Controller
 
             $cashAccountId = (int) ($row->cash_account_id ?? 0);
 
+            $preferredAccountType = $targetAccountType ?: CompanyAccount::TYPE_CASH;
+
             $preferredCashAccount = CompanyAccount::query()
-                ->where('company_id', (int) $row->branch_id)
-                ->where('account_type', CompanyAccount::TYPE_CASH)
+                ->where('company_id', $destinationBranchId)
+                ->where('account_type', $preferredAccountType)
                 ->where('is_active', true)
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->first();
 
             $linkedAccount = null;
-            if ($cashAccountId > 0) {
+            if ($cashAccountId > 0 && !$targetBranchIdFromRequest && !$targetAccountType) {
                 $linkedAccount = CompanyAccount::query()
                     ->where('id', $cashAccountId)
-                    ->where('company_id', (int) $row->branch_id)
+                    ->where('company_id', $destinationBranchId)
                     ->whereIn('account_type', [CompanyAccount::TYPE_CASH, CompanyAccount::TYPE_MAIN])
                     ->where('is_active', true)
                     ->lockForUpdate()
@@ -1020,7 +1049,7 @@ class EmployeeController extends Controller
 
             if (!$cashAccount) {
                 $cashAccount = CompanyAccount::query()
-                    ->where('company_id', (int) $row->branch_id)
+                    ->where('company_id', $destinationBranchId)
                     ->whereIn('account_type', [CompanyAccount::TYPE_CASH, CompanyAccount::TYPE_MAIN])
                     ->where('is_active', true)
                     ->orderByRaw("CASE WHEN account_type = 'cash' THEN 0 ELSE 1 END")
@@ -1045,9 +1074,7 @@ class EmployeeController extends Controller
             $cashAccount->current_balance = round((float) ($cashAccount->current_balance ?? 0) + $amount, 2);
             $cashAccount->save();
 
-            if ((int) ($row->cash_account_id ?? 0) <= 0) {
-                $row->cash_account_id = (int) $cashAccount->id;
-            }
+            $row->cash_account_id = (int) $cashAccount->id;
             $row->branch_cash_transferred_at = now();
             $row->branch_cash_transferred_by = (int) $user->id;
             $row->save();
@@ -1056,7 +1083,11 @@ class EmployeeController extends Controller
                 'handover_id' => (int) $row->id,
                 'amount' => $amount,
                 'manager_wallet_balance' => round((float) ($managerWallet->current_balance ?? 0), 2),
+                'source_branch_id' => (int) $row->branch_id,
                 'branch_cash_account_id' => (int) $cashAccount->id,
+                'target_branch_id' => $destinationBranchId,
+                'target_branch_name' => (string) ($destinationBranch->name ?? ''),
+                'target_account_type' => (string) ($cashAccount->account_type ?? ''),
                 'branch_cash_account_balance' => round((float) ($cashAccount->current_balance ?? 0), 2),
             ];
         });
@@ -1177,6 +1208,14 @@ class EmployeeController extends Controller
             'first_name' => 'sometimes|required|string|max:255',
             'last_name' => 'sometimes|required|string|max:255',
             'email' => 'sometimes|required|email|unique:employees,email,' . $employee->id,
+            'user_id' => [
+                'sometimes',
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('users', 'email')->ignore((int) ($employee->user?->id ?? 0)),
+            ],
+            'nic_passport' => 'sometimes|required|string|max:100|unique:employees,nic_passport,' . $employee->id,
             'password' => 'nullable|string|min:8',
             'phone' => 'nullable|string|max:20',
             'reporting_person' => 'nullable|string|max:255',
@@ -1186,6 +1225,7 @@ class EmployeeController extends Controller
             'basic_salary' => 'sometimes|required|numeric|min:0',
             'commission' => 'nullable|numeric|min:0|max:100',
             'commission_base' => 'nullable|in:company_profit,own_business',
+            'monthly_target' => 'nullable|numeric|min:0',
             'overtime_payment_per_hour' => 'nullable|numeric|min:0',
             'deduction_late_hour' => 'nullable|numeric|min:0',
             'epf_employee_contribution' => 'nullable|numeric|min:0|max:100',
@@ -1208,6 +1248,7 @@ class EmployeeController extends Controller
             'first_name' => $validated['first_name'] ?? $employee->first_name,
             'last_name' => $validated['last_name'] ?? $employee->last_name,
             'email' => $validated['email'] ?? $employee->email,
+            'nic_passport' => $validated['nic_passport'] ?? $employee->nic_passport,
             'mobile' => $validated['phone'] ?? $employee->mobile,
             'reporting_person' => array_key_exists('reporting_person', $validated)
                 ? ($validated['reporting_person'] ?: null)
@@ -1221,6 +1262,7 @@ class EmployeeController extends Controller
             'basic_salary' => $validated['basic_salary'] ?? $employee->basic_salary,
             'commission' => $validated['commission'] ?? $employee->commission,
             'commission_base' => $validated['commission_base'] ?? $employee->commission_base,
+            'monthly_target' => array_key_exists('monthly_target', $validated) ? ($validated['monthly_target'] ?: null) : $employee->monthly_target,
             'overtime_payment_per_hour' => $validated['overtime_payment_per_hour'] ?? $employee->overtime_payment_per_hour,
             'deduction_late_hour' => $validated['deduction_late_hour'] ?? $employee->deduction_late_hour,
             'epf_employee_contribution' => $validated['epf_employee_contribution'] ?? $employee->epf_employee_contribution,
@@ -1241,6 +1283,10 @@ class EmployeeController extends Controller
 
         $employee->update($updateData);
 
+        if (array_key_exists('user_id', $validated) && $employee->user) {
+            $employee->user->update(['email' => trim((string) $validated['user_id'])]);
+        }
+
         if (!empty($validated['password']) && $employee->user) {
             $employee->user->update(['password' => Hash::make($validated['password'])]);
         }
@@ -1250,7 +1296,12 @@ class EmployeeController extends Controller
             $employee->user->update(['designation_id' => $validated['designation_id']]);
         }
 
-        return response()->json($employee->load(['department', 'designation', 'branch']));
+        // Keep auth scope aligned with employee branch reassignment.
+        if (array_key_exists('branch_id', $validated) && $employee->user) {
+            $employee->user->update(['branch_id' => (int) $validated['branch_id']]);
+        }
+
+        return response()->json($employee->load(['department', 'designation', 'branch', 'user:id,employee_id,email']));
     }
 
     /**

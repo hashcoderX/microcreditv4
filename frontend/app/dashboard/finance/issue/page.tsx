@@ -123,6 +123,7 @@ type CustomerDetail = {
   first_name?: string | null;
   last_name?: string | null;
   nic_passport?: string | null;
+  passport_no?: string | null;
   date_of_birth?: string | null;
   gender?: 'male' | 'female' | 'other' | null;
   marital_status?: 'single' | 'married' | 'divorced' | 'widowed' | null;
@@ -139,6 +140,12 @@ type CustomerDetail = {
   existing_loans?: boolean | null;
   monthly_loan_obligations?: number | string | null;
   credit_score?: number | string | null;
+};
+
+type FinanceCustomerSearchMatch = {
+  customer: CustomerDetail;
+  matched_by?: string[];
+  matched_investment_account_no?: string | null;
 };
 
 function isCustomerDetail(value: unknown): value is CustomerDetail {
@@ -198,29 +205,23 @@ export default function IssueFinancePage() {
 
   const [regDocuments, setRegDocuments] = useState<File[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
-  const [generatingCustomerNo, setGeneratingCustomerNo] = useState(false);
   const [loadingCustomerDetail, setLoadingCustomerDetail] = useState(false);
+  const [searchingCustomer, setSearchingCustomer] = useState(false);
+  const [regCustomerSearchBy, setRegCustomerSearchBy] = useState<'nic_passport' | 'passport' | 'investment_account_no'>('nic_passport');
+  const [regCustomerSearchValue, setRegCustomerSearchValue] = useState('');
+  const [regMatchedInvestmentAccountNo, setRegMatchedInvestmentAccountNo] = useState('');
+  const [loadingCustomerSuggestions, setLoadingCustomerSuggestions] = useState(false);
+  const [customerSuggestions, setCustomerSuggestions] = useState<FinanceCustomerSearchMatch[]>([]);
+  const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
+  const [showAdvancedCustomerSearch, setShowAdvancedCustomerSearch] = useState(false);
+  const [advancedSearchNic, setAdvancedSearchNic] = useState('');
+  const [advancedSearchPassport, setAdvancedSearchPassport] = useState('');
+  const [advancedSearchInvestmentAccountNo, setAdvancedSearchInvestmentAccountNo] = useState('');
+  const [advancedSearchCustomerNo, setAdvancedSearchCustomerNo] = useState('');
+  const [advancedSearchName, setAdvancedSearchName] = useState('');
+  const [advancedSearchPhone, setAdvancedSearchPhone] = useState('');
+  const [advancedSearchMatches, setAdvancedSearchMatches] = useState<FinanceCustomerSearchMatch[]>([]);
   const [regCustomerDetail, setRegCustomerDetail] = useState<CustomerDetail | null>(null);
-  const [regCustomerFirstName, setRegCustomerFirstName] = useState('');
-  const [regCustomerLastName, setRegCustomerLastName] = useState('');
-  const [regCustomerNic, setRegCustomerNic] = useState('');
-  const [regCustomerDob, setRegCustomerDob] = useState('');
-  const [regCustomerGender, setRegCustomerGender] = useState<'male' | 'female' | 'other'>('male');
-  const [regCustomerMaritalStatus, setRegCustomerMaritalStatus] = useState<'single' | 'married' | 'divorced' | 'widowed'>('single');
-  const [regCustomerNationality, setRegCustomerNationality] = useState('Sri Lankan');
-  const [regCustomerPhone, setRegCustomerPhone] = useState('');
-  const [regCustomerEmail, setRegCustomerEmail] = useState('');
-  const [regCustomerPermanentAddress, setRegCustomerPermanentAddress] = useState('');
-  const [regCustomerCurrentAddress, setRegCustomerCurrentAddress] = useState('');
-  const [regEmploymentType, setRegEmploymentType] = useState<'salaried' | 'self_employed' | 'business'>('salaried');
-  const [regEmployerName, setRegEmployerName] = useState('');
-  const [regJobTitle, setRegJobTitle] = useState('');
-  const [regMonthlyIncome, setRegMonthlyIncome] = useState('');
-  const [regOtherIncomeSources, setRegOtherIncomeSources] = useState('');
-  const [regExistingLoans, setRegExistingLoans] = useState(false);
-  const [regMonthlyLoanObligations, setRegMonthlyLoanObligations] = useState('');
-  const [regCreditScore, setRegCreditScore] = useState('');
-  const [savingCustomerProfile, setSavingCustomerProfile] = useState(false);
   const [showInterestTerms, setShowInterestTerms] = useState(false);
   const [showProductTypeModal, setShowProductTypeModal] = useState(false);
   const [newProductTypeName, setNewProductTypeName] = useState('');
@@ -312,7 +313,7 @@ export default function IssueFinancePage() {
     if (!token) return;
 
     const run = async () => {
-      await Promise.all([fetchProductTypes(token), generateCustomerNo(token)]);
+      await fetchProductTypes(token);
     };
 
     run();
@@ -717,184 +718,222 @@ export default function IssueFinancePage() {
     }, 0);
   }, [regInstallmentPlan]);
 
-  const generateCustomerNo = async (authToken: string) => {
+  const applyCustomerDetailToForm = (customer: CustomerDetail, canonicalCustomerNo?: string | null) => {
+    setRegCustomerDetail(customer);
+    const canonical = String(canonicalCustomerNo || '').trim();
+    setRegCustomerNo(canonical || String(customer.customer_code || '').trim());
+  };
+
+  const selectAdvancedSearchMatch = (match: FinanceCustomerSearchMatch) => {
+    if (!match || !isCustomerDetail(match.customer)) return;
+    const matchedAccountNo = String(match.matched_investment_account_no || '').trim();
+    applyCustomerDetailToForm(match.customer, matchedAccountNo || null);
+    setRegMatchedInvestmentAccountNo(matchedAccountNo);
+    setErrorMessage('');
+    setShowCustomerSuggestions(false);
+    setCustomerSuggestions([]);
+  };
+
+  const mapQuickSearchParams = (searchBy: 'nic_passport' | 'passport' | 'investment_account_no', value: string) => {
+    const keyword = value.trim();
+    if (!keyword) return {};
+
+    if (searchBy === 'passport') {
+      return { passport_no: keyword, limit: 8 };
+    }
+    if (searchBy === 'investment_account_no') {
+      return { investment_account_no: keyword, limit: 8 };
+    }
+    return { nic_passport: keyword, limit: 8 };
+  };
+
+  const loadCustomerSuggestions = async (authToken: string, searchBy: 'nic_passport' | 'passport' | 'investment_account_no', value: string) => {
+    const keyword = value.trim();
+    if (keyword.length < 1) {
+      setCustomerSuggestions([]);
+      return;
+    }
+
     try {
-      setGeneratingCustomerNo(true);
-      const response = await axios.get('/api/customers/generate-code', {
+      setLoadingCustomerSuggestions(true);
+      const response = await axios.get('/api/customers/finance-search', {
         headers: {
           Authorization: `Bearer ${authToken}`,
           Accept: 'application/json',
         },
+        params: mapQuickSearchParams(searchBy, keyword),
       });
 
-      const generatedCode = String(response.data?.customer_no || '').trim();
-      if (generatedCode) {
-        setRegCustomerNo(generatedCode);
-        setRegCustomerDetail(null);
-      }
+      const rows = Array.isArray(response.data?.matches) ? response.data.matches : [];
+      const next = rows.filter((row: unknown) => {
+        if (!row || typeof row !== 'object') return false;
+        const candidate = row as { customer?: unknown };
+        return isCustomerDetail(candidate.customer);
+      }) as FinanceCustomerSearchMatch[];
+
+      setCustomerSuggestions(next);
     } catch {
-      // manual input fallback
+      setCustomerSuggestions([]);
     } finally {
-      setGeneratingCustomerNo(false);
+      setLoadingCustomerSuggestions(false);
     }
   };
 
-  const fetchCustomerDetails = async (authToken: string, customerNoInput: string) => {
-    const customerNo = customerNoInput.trim();
-    if (!customerNo) {
-      setRegCustomerDetail(null);
+  const handleSelectQuickSuggestion = (match: FinanceCustomerSearchMatch) => {
+    const customer = match.customer;
+    if (!isCustomerDetail(customer)) return;
+
+    if (regCustomerSearchBy === 'investment_account_no' && match.matched_investment_account_no) {
+      setRegCustomerSearchValue(String(match.matched_investment_account_no));
+    } else if (regCustomerSearchBy === 'passport') {
+      setRegCustomerSearchValue(String(customer.passport_no || customer.nic_passport || customer.customer_code || ''));
+    } else {
+      setRegCustomerSearchValue(String(customer.nic_passport || customer.customer_code || ''));
+    }
+
+    selectAdvancedSearchMatch(match);
+  };
+
+  const searchCustomerForFinance = async (authToken: string) => {
+    const keyword = regCustomerSearchValue.trim();
+    if (!keyword) {
+      setErrorMessage('Enter search value to find customer.');
       return false;
     }
 
     try {
-      setLoadingCustomerDetail(true);
+      setSearchingCustomer(true);
+      setErrorMessage('');
 
-      const response = await axios.get(`/api/customers/by-code/${encodeURIComponent(customerNo)}`, {
+      const response = await axios.get('/api/customers/finance-lookup', {
         headers: {
           Authorization: `Bearer ${authToken}`,
           Accept: 'application/json',
         },
+        params: {
+          search_by: regCustomerSearchBy,
+          q: keyword,
+        },
       });
 
-      const payload = response.data as
-        | { found?: boolean; data?: unknown; message?: string }
-        | unknown;
+      const payload = response.data as {
+        found?: boolean;
+        data?: unknown;
+        matched_investment_account_no?: string | null;
+        message?: string;
+      };
 
-      const hasEnvelope = Boolean(payload && typeof payload === 'object' && 'data' in (payload as Record<string, unknown>));
-      const envelope = hasEnvelope ? (payload as { found?: boolean; data?: unknown }) : null;
-      const customerCandidate = hasEnvelope ? envelope?.data : payload;
-      const customer = isCustomerDetail(customerCandidate) ? customerCandidate : null;
-
-      const found = hasEnvelope
-        ? envelope?.found === true
-        : customer !== null;
-
-      if (!found || !customer) {
+      const customer = isCustomerDetail(payload?.data) ? payload.data : null;
+      if (!payload?.found || !customer) {
         setRegCustomerDetail(null);
+        setRegMatchedInvestmentAccountNo('');
+        setErrorMessage(payload?.message || 'Customer not found.');
         return false;
       }
 
-      setRegCustomerDetail(customer);
-      setRegCustomerFirstName(String(customer.first_name || ''));
-      setRegCustomerLastName(String(customer.last_name || ''));
-      setRegCustomerNic(String(customer.nic_passport || ''));
-      setRegCustomerDob(String(customer.date_of_birth || '').slice(0, 10));
-      setRegCustomerGender((customer.gender as 'male' | 'female' | 'other') || 'male');
-      setRegCustomerMaritalStatus((customer.marital_status as 'single' | 'married' | 'divorced' | 'widowed') || 'single');
-      setRegCustomerNationality(String(customer.nationality || 'Sri Lankan'));
-      setRegCustomerPhone(String(customer.phone || ''));
-      setRegCustomerEmail(String(customer.email || ''));
-      setRegCustomerPermanentAddress(String(customer.permanent_address || ''));
-      setRegCustomerCurrentAddress(String(customer.current_address || ''));
-      setRegEmploymentType((customer.employment_type as 'salaried' | 'self_employed' | 'business') || 'salaried');
-      setRegEmployerName(String(customer.employer_name || ''));
-      setRegJobTitle(String(customer.job_title || ''));
-      setRegMonthlyIncome(String(customer.monthly_income || ''));
-      setRegOtherIncomeSources(String(customer.other_income_sources || ''));
-      setRegExistingLoans(Boolean(customer.existing_loans));
-      setRegMonthlyLoanObligations(String(customer.monthly_loan_obligations || ''));
-      setRegCreditScore(String(customer.credit_score || ''));
-      return true;
-    } catch {
-      setRegCustomerDetail(null);
-      return false;
-    } finally {
-      setLoadingCustomerDetail(false);
-    }
-  };
-
-  const createCustomerFromStep2 = async (authToken: string) => {
-    if (!regCustomerNo.trim()) {
-      setErrorMessage('Customer No is required.');
-      return false;
-    }
-    if (!regCustomerFirstName.trim() || !regCustomerLastName.trim()) {
-      setErrorMessage('First Name and Last Name are required.');
-      return false;
-    }
-    if (!regCustomerPhone.trim()) {
-      setErrorMessage('Phone is required.');
-      return false;
-    }
-    if (!regCustomerNic.trim()) {
-      setErrorMessage('NIC/Passport is required.');
-      return false;
-    }
-    if (!regCustomerDob) {
-      setErrorMessage('Date of Birth is required.');
-      return false;
-    }
-    if (!regCustomerPermanentAddress.trim()) {
-      setErrorMessage('Permanent Address is required.');
-      return false;
-    }
-
-    try {
-      setSavingCustomerProfile(true);
-      setErrorMessage('');
-
-      const response = await axios.post(
-        '/api/customers',
-        {
-          customer_code: regCustomerNo.trim(),
-          first_name: regCustomerFirstName.trim(),
-          last_name: regCustomerLastName.trim(),
-          phone: regCustomerPhone.trim(),
-          nic_passport: regCustomerNic.trim(),
-          date_of_birth: regCustomerDob,
-          gender: regCustomerGender,
-          marital_status: regCustomerMaritalStatus,
-          nationality: regCustomerNationality.trim() || null,
-          email: regCustomerEmail.trim() || null,
-          permanent_address: regCustomerPermanentAddress.trim(),
-          current_address: regCustomerCurrentAddress.trim() || null,
-          employment_type: regEmploymentType,
-          employer_name: regEmployerName.trim() || null,
-          job_title: regJobTitle.trim() || null,
-          monthly_income: regMonthlyIncome ? Number(regMonthlyIncome) : null,
-          other_income_sources: regOtherIncomeSources.trim() || null,
-          existing_loans: regExistingLoans,
-          monthly_loan_obligations: regMonthlyLoanObligations ? Number(regMonthlyLoanObligations) : null,
-          credit_score: regCreditScore ? Number(regCreditScore) : null,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${authToken}`,
-            Accept: 'application/json',
-          },
-        },
-      );
-
-      setRegCustomerDetail(response.data as CustomerDetail);
+      const matchedAccountNo = String(payload.matched_investment_account_no || '').trim();
+      applyCustomerDetailToForm(customer, matchedAccountNo || null);
+      setRegMatchedInvestmentAccountNo(matchedAccountNo);
+      setAdvancedSearchMatches([]);
       return true;
     } catch (error: unknown) {
+      setRegCustomerDetail(null);
+      setRegMatchedInvestmentAccountNo('');
       if (axios.isAxiosError(error)) {
-        const msg = String(error.response?.data?.message || 'Failed to register customer.');
-        setErrorMessage(msg);
+        setErrorMessage(String(error.response?.data?.message || 'Customer not found.'));
       } else {
-        setErrorMessage('Failed to register customer.');
+        setErrorMessage('Customer search failed.');
       }
       return false;
     } finally {
-      setSavingCustomerProfile(false);
+      setSearchingCustomer(false);
+    }
+  };
+
+  const runAdvancedCustomerSearch = async (authToken: string) => {
+    const params = {
+      nic_passport: advancedSearchNic.trim() || undefined,
+      passport_no: advancedSearchPassport.trim() || undefined,
+      investment_account_no: advancedSearchInvestmentAccountNo.trim() || undefined,
+      customer_no: advancedSearchCustomerNo.trim() || undefined,
+      name: advancedSearchName.trim() || undefined,
+      phone: advancedSearchPhone.trim() || undefined,
+      limit: 20,
+    };
+
+    const hasAnyField = Object.values(params).some((value) => value !== undefined);
+    if (!hasAnyField) {
+      setErrorMessage('Enter at least one field for advanced search.');
+      return;
+    }
+
+    try {
+      setSearchingCustomer(true);
+      setErrorMessage('');
+      const response = await axios.get('/api/customers/finance-search', {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: 'application/json',
+        },
+        params,
+      });
+
+      const matches = Array.isArray(response.data?.matches) ? response.data.matches : [];
+      const typedMatches = matches.filter((row: unknown) => {
+        if (!row || typeof row !== 'object') return false;
+        const candidate = row as { customer?: unknown };
+        return isCustomerDetail(candidate.customer);
+      }) as FinanceCustomerSearchMatch[];
+
+      setAdvancedSearchMatches(typedMatches);
+      if (typedMatches.length === 1) {
+        selectAdvancedSearchMatch(typedMatches[0]);
+      }
+      if (typedMatches.length === 0) {
+        setRegCustomerDetail(null);
+        setRegMatchedInvestmentAccountNo('');
+        setErrorMessage('No customer found for advanced search criteria.');
+      }
+    } catch (error: unknown) {
+      setAdvancedSearchMatches([]);
+      if (axios.isAxiosError(error)) {
+        setErrorMessage(String(error.response?.data?.message || 'Advanced search failed.'));
+      } else {
+        setErrorMessage('Advanced search failed.');
+      }
+    } finally {
+      setSearchingCustomer(false);
     }
   };
 
   useEffect(() => {
-    if (!token || registerStep !== 2 || !regCustomerNo.trim()) return;
-    fetchCustomerDetails(token, regCustomerNo);
-  }, [token, registerStep, regCustomerNo]);
+    if (!token || registerStep !== 2 || !regCustomerSearchValue.trim()) return;
+    void searchCustomerForFinance(token);
+  }, [token, registerStep, regCustomerSearchBy, regCustomerSearchValue]);
+
+  useEffect(() => {
+    if (!token) return;
+
+    const keyword = regCustomerSearchValue.trim();
+    if (keyword.length < 1) {
+      setCustomerSuggestions([]);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadCustomerSuggestions(token, regCustomerSearchBy, keyword);
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [token, regCustomerSearchBy, regCustomerSearchValue]);
 
   const goToNextStep = async () => {
     if (registerStep === 2) {
       if (!token) return;
-      const ok = await fetchCustomerDetails(token, regCustomerNo);
+      const ok = await searchCustomerForFinance(token);
       if (!ok) {
-        const created = await createCustomerFromStep2(token);
-        if (!created) {
-          setErrorMessage('Customer not found. Enter customer Basic, Contact, and Income details to register.');
-          return;
-        }
+        setErrorMessage('Customer not found. Search and select an existing customer before continuing.');
+        return;
       }
     }
 
@@ -920,8 +959,8 @@ export default function IssueFinancePage() {
     const tenure = Number(regTenureMonths);
     const manualInstallment = regManualInstallmentAmount ? Number(regManualInstallmentAmount) : 0;
 
-    if (!regCustomerNo.trim()) {
-      setErrorMessage('Customer No is required.');
+    if (!regCustomerSearchValue.trim()) {
+      setErrorMessage('Customer search value is required.');
       setRegisterStep(1);
       return;
     }
@@ -932,23 +971,13 @@ export default function IssueFinancePage() {
     }
     let ensuredCustomerDetail = regCustomerDetail;
     if (!ensuredCustomerDetail) {
-      const fetched = await fetchCustomerDetails(token, regCustomerNo);
+      const fetched = await searchCustomerForFinance(token);
       if (fetched) {
         ensuredCustomerDetail = regCustomerDetail;
       } else {
-        const created = await createCustomerFromStep2(token);
-        if (!created) {
-          setErrorMessage('Customer not found. Enter customer Basic, Contact, and Income details in Step 2 and register customer first.');
-          setRegisterStep(2);
-          return;
-        }
-        const fetchedAfterCreate = await fetchCustomerDetails(token, regCustomerNo);
-        if (!fetchedAfterCreate) {
-          setErrorMessage('Customer registration completed, but customer could not be reloaded. Please check Step 2.');
-          setRegisterStep(2);
-          return;
-        }
-        ensuredCustomerDetail = regCustomerDetail;
+        setErrorMessage('Customer not found. Search and select an existing customer in Step 1 or Step 2.');
+        setRegisterStep(2);
+        return;
       }
     }
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -1264,35 +1293,85 @@ export default function IssueFinancePage() {
                 />
                 <div className="rounded-2xl border border-cyan-100 bg-white p-4 shadow-sm space-y-4">
                   <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Customer No</label>
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                      <input value={regCustomerNo} onChange={(e) => { setRegCustomerNo(e.target.value); setRegCustomerDetail(null); }} className={inputClass} placeholder="e.g. 5, 00005, or CUS-260323-00005" />
-                      <button
-                        type="button"
-                        onClick={async () => { if (token) await generateCustomerNo(token); }}
-                        disabled={generatingCustomerNo}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-cyan-200 bg-white px-4 py-2.5 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 disabled:opacity-60 transition shrink-0"
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Find Existing Customer</label>
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-[200px_1fr_auto_auto]">
+                      <select
+                        value={regCustomerSearchBy}
+                        onChange={(e) => setRegCustomerSearchBy(e.target.value as 'nic_passport' | 'passport' | 'investment_account_no')}
+                        className={inputClass}
                       >
-                        {generatingCustomerNo ? 'Generating…' : 'Generate'}
-                      </button>
+                        <option value="nic_passport">NIC</option>
+                        <option value="passport">Passport</option>
+                        <option value="investment_account_no">Investment Account No</option>
+                      </select>
+                      <input
+                        value={regCustomerSearchValue}
+                        onFocus={() => setShowCustomerSuggestions(true)}
+                        onChange={(e) => {
+                          setRegCustomerSearchValue(e.target.value);
+                          setShowCustomerSuggestions(true);
+                        }}
+                        className={inputClass}
+                        placeholder={regCustomerSearchBy === 'investment_account_no' ? 'Enter investment account no' : regCustomerSearchBy === 'passport' ? 'Enter passport number' : 'Enter NIC'}
+                      />
+                      {showCustomerSuggestions && (loadingCustomerSuggestions || customerSuggestions.length > 0) && (
+                        <div className="relative md:col-start-2">
+                          <div className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-cyan-200 bg-white shadow-xl">
+                            {loadingCustomerSuggestions ? (
+                              <div className="px-3 py-2 text-xs text-slate-600">Searching customers...</div>
+                            ) : (
+                              customerSuggestions.map((match) => {
+                                const customer = match.customer;
+                                const fullName = `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || 'N/A';
+                                return (
+                                  <button
+                                    key={`quick-suggestion-step1-${customer.id}`}
+                                    type="button"
+                                    onClick={() => handleSelectQuickSuggestion(match)}
+                                    className="block w-full border-b border-slate-100 px-3 py-2 text-left text-xs hover:bg-cyan-50"
+                                  >
+                                    <p className="font-semibold text-slate-900">{fullName}</p>
+                                    <p className="mt-0.5 text-slate-600">No: {customer.customer_code || '-'} | NIC: {customer.nic_passport || '-'}</p>
+                                    <p className="mt-0.5 text-slate-500">Investment: {match.matched_investment_account_no || '-'}</p>
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      )}
                       <button
                         type="button"
                         onClick={async () => {
                           if (!token) return;
-                          const ok = await fetchCustomerDetails(token, regCustomerNo);
-                          if (!ok) {
-                            setErrorMessage('Customer not found. Continue to Step 2 and enter Basic, Contact, and Income details to register this customer.');
-                            setRegisterStep(2);
-                          } else {
+                          const ok = await searchCustomerForFinance(token);
+                          if (ok) {
                             setErrorMessage('');
                             setRegisterStep(2);
                           }
                         }}
-                        disabled={loadingCustomerDetail}
+                        disabled={searchingCustomer}
                         className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-60 transition shrink-0"
                       >
-                        {loadingCustomerDetail ? 'Checking…' : 'Check customer'}
+                        {searchingCustomer ? 'Searching…' : 'Search'}
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setRegisterStep(2)}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-cyan-200 bg-white px-4 py-2.5 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 transition shrink-0"
+                      >
+                        Open Step 2
+                      </button>
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Customer No</p>
+                        <p className="text-sm font-semibold text-slate-900">{regCustomerNo || '-'}</p>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Investment Account No</p>
+                        <p className="text-sm font-semibold text-slate-900">{regMatchedInvestmentAccountNo || '-'}</p>
+                      </div>
                     </div>
                   </div>
 
@@ -1474,157 +1553,200 @@ export default function IssueFinancePage() {
                 <SectionHeader
                   icon={User}
                   title="Customer profile"
-                  description="Load an existing customer or register a new applicant with income details."
+                  description="Search and load an existing customer profile for finance issue."
                 />
 
                 <div className="rounded-xl border border-cyan-100 bg-white p-4">
-                  <div className="flex flex-col md:flex-row md:items-end gap-3">
-                    <div className="flex-1">
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Customer No</label>
-                      <input value={regCustomerNo} onChange={(e) => { setRegCustomerNo(e.target.value); setRegCustomerDetail(null); }} className={inputClass} placeholder="Enter Customer No (e.g. 5 or full code)" />
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-[200px_1fr_auto]">
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Search By</label>
+                      <select
+                        value={regCustomerSearchBy}
+                        onChange={(e) => setRegCustomerSearchBy(e.target.value as 'nic_passport' | 'passport' | 'investment_account_no')}
+                        className={inputClass}
+                      >
+                        <option value="nic_passport">NIC</option>
+                        <option value="passport">Passport</option>
+                        <option value="investment_account_no">Investment Account No</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Search Value</label>
+                      <input
+                        value={regCustomerSearchValue}
+                        onFocus={() => setShowCustomerSuggestions(true)}
+                        onChange={(e) => {
+                          setRegCustomerSearchValue(e.target.value);
+                          setShowCustomerSuggestions(true);
+                        }}
+                        className={inputClass}
+                        placeholder={regCustomerSearchBy === 'investment_account_no' ? 'Enter investment account no' : regCustomerSearchBy === 'passport' ? 'Enter passport number' : 'Enter NIC'}
+                      />
+                      {showCustomerSuggestions && (loadingCustomerSuggestions || customerSuggestions.length > 0) && (
+                        <div className="relative">
+                          <div className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-cyan-200 bg-white shadow-xl">
+                            {loadingCustomerSuggestions ? (
+                              <div className="px-3 py-2 text-xs text-slate-600">Searching customers...</div>
+                            ) : (
+                              customerSuggestions.map((match) => {
+                                const customer = match.customer;
+                                const fullName = `${customer.first_name || ''} ${customer.last_name || ''}`.trim() || 'N/A';
+                                return (
+                                  <button
+                                    key={`quick-suggestion-step1-${customer.id}`}
+                                    type="button"
+                                    onClick={() => handleSelectQuickSuggestion(match)}
+                                    className="block w-full border-b border-slate-100 px-3 py-2 text-left text-xs hover:bg-cyan-50"
+                                  >
+                                    <p className="font-semibold text-slate-900">{fullName}</p>
+                                    <p className="mt-0.5 text-slate-600">No: {customer.customer_code || '-'} | NIC: {customer.nic_passport || '-'}</p>
+                                    <p className="mt-0.5 text-slate-500">Investment: {match.matched_investment_account_no || '-'}</p>
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <button
                       type="button"
                       onClick={async () => {
                         if (!token) return;
-                        const ok = await fetchCustomerDetails(token, regCustomerNo);
-                        if (!ok) setErrorMessage('Customer not found. Fill details below and register customer.');
+                        const ok = await searchCustomerForFinance(token);
+                        if (!ok) setErrorMessage('Customer not found. Check NIC/Passport/Investment account and search again.');
                         else setErrorMessage('');
                       }}
-                      disabled={loadingCustomerDetail}
+                      disabled={searchingCustomer}
                       className="rounded-lg border border-cyan-200 bg-white px-4 py-2 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 disabled:opacity-60"
                     >
-                      {loadingCustomerDetail ? 'Loading...' : 'Get Customer Details'}
+                      {searchingCustomer ? 'Searching...' : 'Search Customer'}
                     </button>
+                  </div>
+
+                  <div className="mt-3">
                     <button
                       type="button"
-                      onClick={async () => {
-                        if (!token) return;
-                        const created = await createCustomerFromStep2(token);
-                        if (created) setErrorMessage('');
-                      }}
-                      disabled={savingCustomerProfile}
-                      className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-60"
+                      onClick={() => setShowAdvancedCustomerSearch((prev) => !prev)}
+                      className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
                     >
-                      {savingCustomerProfile ? 'Registering...' : 'Register Customer'}
+                      {showAdvancedCustomerSearch ? 'Hide Advanced Search' : 'Advanced Search'}
                     </button>
                   </div>
+
+                  {showAdvancedCustomerSearch && (
+                    <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/30 p-3">
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-indigo-700">Advanced Search Filters</p>
+                      <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
+                        <input value={advancedSearchNic} onChange={(e) => setAdvancedSearchNic(e.target.value)} className={inputClassSm} placeholder="NIC / Old NIC" />
+                        <input value={advancedSearchPassport} onChange={(e) => setAdvancedSearchPassport(e.target.value)} className={inputClassSm} placeholder="Passport No" />
+                        <input value={advancedSearchInvestmentAccountNo} onChange={(e) => setAdvancedSearchInvestmentAccountNo(e.target.value)} className={inputClassSm} placeholder="Investment Account No" />
+                        <input value={advancedSearchCustomerNo} onChange={(e) => setAdvancedSearchCustomerNo(e.target.value)} className={inputClassSm} placeholder="Customer No" />
+                        <input value={advancedSearchName} onChange={(e) => setAdvancedSearchName(e.target.value)} className={inputClassSm} placeholder="Customer Name" />
+                        <input value={advancedSearchPhone} onChange={(e) => setAdvancedSearchPhone(e.target.value)} className={inputClassSm} placeholder="Phone" />
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!token) return;
+                            await runAdvancedCustomerSearch(token);
+                          }}
+                          disabled={searchingCustomer}
+                          className="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 disabled:opacity-60"
+                        >
+                          {searchingCustomer ? 'Searching...' : 'Run Advanced Search'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAdvancedSearchNic('');
+                            setAdvancedSearchPassport('');
+                            setAdvancedSearchInvestmentAccountNo('');
+                            setAdvancedSearchCustomerNo('');
+                            setAdvancedSearchName('');
+                            setAdvancedSearchPhone('');
+                            setAdvancedSearchMatches([]);
+                          }}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          Clear Filters
+                        </button>
+                      </div>
+
+                      {advancedSearchMatches.length > 0 && (
+                        <div className="mt-3 overflow-x-auto rounded-xl border border-indigo-100 bg-white">
+                          <table className="min-w-full text-xs">
+                            <thead className="bg-indigo-50/70">
+                              <tr>
+                                <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">Customer</th>
+                                <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">Customer No</th>
+                                <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">NIC/Passport</th>
+                                <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">Investment Account</th>
+                                <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {advancedSearchMatches.map((match) => (
+                                <tr key={match.customer.id} className="border-t border-indigo-50">
+                                  <td className="px-3 py-2 text-slate-800">{`${match.customer.first_name || ''} ${match.customer.last_name || ''}`.trim() || '-'}</td>
+                                  <td className="px-3 py-2 text-slate-700">{match.customer.customer_code || '-'}</td>
+                                  <td className="px-3 py-2 text-slate-700">{match.customer.nic_passport || match.customer.passport_no || '-'}</td>
+                                  <td className="px-3 py-2 text-slate-700">{match.matched_investment_account_no || '-'}</td>
+                                  <td className="px-3 py-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => selectAdvancedSearchMatch(match)}
+                                      className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100"
+                                    >
+                                      Select
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
-                {regCustomerDetail && (
-                  <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 text-sm text-emerald-800">
-                    Existing customer profile loaded from system. You can review/edit details below.
+                {regCustomerDetail ? (
+                  <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-700">Selected Customer</p>
+                    <div className="mt-3 grid grid-cols-1 gap-3 text-sm text-emerald-900 md:grid-cols-3">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Name</p>
+                        <p className="font-semibold">{`${regCustomerDetail.first_name || ''} ${regCustomerDetail.last_name || ''}`.trim() || '-'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Customer No (Account)</p>
+                        <p className="font-semibold">{regCustomerNo || '-'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">NIC / Passport</p>
+                        <p className="font-semibold">{regCustomerDetail.nic_passport || regCustomerDetail.passport_no || '-'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Phone</p>
+                        <p className="font-semibold">{regCustomerDetail.phone || '-'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Email</p>
+                        <p className="font-semibold">{regCustomerDetail.email || '-'}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Investment Account</p>
+                        <p className="font-semibold">{regMatchedInvestmentAccountNo || '-'}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                    Search and select an existing customer to continue. Customer profile editing is removed from this screen.
                   </div>
                 )}
-
-                <div className="rounded-xl border border-cyan-100 bg-white p-4 space-y-4">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700">Basic Details</p>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">First Name</label>
-                      <input value={regCustomerFirstName} onChange={(e) => setRegCustomerFirstName(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Last Name</label>
-                      <input value={regCustomerLastName} onChange={(e) => setRegCustomerLastName(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">NIC / Passport</label>
-                      <input value={regCustomerNic} onChange={(e) => setRegCustomerNic(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Date of Birth</label>
-                      <input type="date" value={regCustomerDob} onChange={(e) => setRegCustomerDob(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Gender</label>
-                      <select value={regCustomerGender} onChange={(e) => setRegCustomerGender(e.target.value as 'male' | 'female' | 'other')} className={inputClass}>
-                        <option value="male">Male</option>
-                        <option value="female">Female</option>
-                        <option value="other">Other</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Marital Status</label>
-                      <select value={regCustomerMaritalStatus} onChange={(e) => setRegCustomerMaritalStatus(e.target.value as 'single' | 'married' | 'divorced' | 'widowed')} className={inputClass}>
-                        <option value="single">Single</option>
-                        <option value="married">Married</option>
-                        <option value="divorced">Divorced</option>
-                        <option value="widowed">Widowed</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-cyan-100 bg-white p-4 space-y-4">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700">Contact Details</p>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Phone</label>
-                      <input value={regCustomerPhone} onChange={(e) => setRegCustomerPhone(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Email</label>
-                      <input value={regCustomerEmail} onChange={(e) => setRegCustomerEmail(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Nationality</label>
-                      <input value={regCustomerNationality} onChange={(e) => setRegCustomerNationality(e.target.value)} className={inputClass} />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Permanent Address</label>
-                      <input value={regCustomerPermanentAddress} onChange={(e) => setRegCustomerPermanentAddress(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Current Address</label>
-                      <input value={regCustomerCurrentAddress} onChange={(e) => setRegCustomerCurrentAddress(e.target.value)} className={inputClass} />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-cyan-100 bg-white p-4 space-y-4">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700">Income Details</p>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Employment Type</label>
-                      <select value={regEmploymentType} onChange={(e) => setRegEmploymentType(e.target.value as 'salaried' | 'self_employed' | 'business')} className={inputClass}>
-                        <option value="salaried">Salaried</option>
-                        <option value="self_employed">Self Employed</option>
-                        <option value="business">Business</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Employer Name</label>
-                      <input value={regEmployerName} onChange={(e) => setRegEmployerName(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Job Title</label>
-                      <input value={regJobTitle} onChange={(e) => setRegJobTitle(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Monthly Income</label>
-                      <input value={regMonthlyIncome} onChange={(e) => setRegMonthlyIncome(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Other Income Sources</label>
-                      <input value={regOtherIncomeSources} onChange={(e) => setRegOtherIncomeSources(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Monthly Loan Obligations</label>
-                      <input value={regMonthlyLoanObligations} onChange={(e) => setRegMonthlyLoanObligations(e.target.value)} className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Credit Score</label>
-                      <input value={regCreditScore} onChange={(e) => setRegCreditScore(e.target.value)} className={inputClass} />
-                    </div>
-                    <div className="flex items-center gap-2 pt-7">
-                      <input id="existing-loans" type="checkbox" checked={regExistingLoans} onChange={(e) => setRegExistingLoans(e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-cyan-600" />
-                      <label htmlFor="existing-loans" className="text-sm text-slate-700">Has Existing Loans</label>
-                    </div>
-                  </div>
-                </div>
               </div>
             )}
 

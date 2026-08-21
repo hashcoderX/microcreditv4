@@ -7,13 +7,11 @@ import { getApiBaseUrl } from '@/lib/api';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
 import {
   ArrowLeft,
-  Check,
   Plus,
   RefreshCw,
   Search,
   Shield,
   Trash2,
-  X,
 } from 'lucide-react';
 
 const inputClass =
@@ -84,118 +82,6 @@ interface Role {
   created_at?: string;
 }
 
-interface PermissionTemplate {
-  key: string;
-  name: string;
-  module: string;
-  section: string;
-  action: string;
-  route: string;
-  description: string;
-}
-
-const slugify = (value: string): string =>
-  String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-
-const parsePermissionFile = (content: string): PermissionTemplate[] => {
-  const lines = content.split(/\r?\n/);
-  let currentModule = 'General';
-  let currentSection = 'General';
-
-  const templates: PermissionTemplate[] = [];
-  const seen = new Set<string>();
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    if (/^\d+\./.test(line)) {
-      currentModule = line.replace(/^\d+\./, '').trim() || 'General';
-      currentSection = 'General';
-      continue;
-    }
-
-    const leadingSpaces = (rawLine.match(/^\s*/) || [''])[0].length;
-
-    if (leadingSpaces <= 2 && !line.includes(' - ')) {
-      currentSection = line;
-      continue;
-    }
-
-    const parts = line.split(' - ').map((part) => part.trim()).filter(Boolean);
-    if (parts.length === 0) continue;
-
-    const action = parts[0];
-    const routePart = parts.find((part) => part.startsWith('/dashboard')) || '';
-    const extraDetails = parts.filter((part) => part !== action && part !== routePart).join(' - ');
-
-    const permissionName = [slugify(currentModule), slugify(currentSection), slugify(action)]
-      .filter(Boolean)
-      .join('_');
-
-    if (!permissionName || seen.has(permissionName)) continue;
-    seen.add(permissionName);
-
-    const descriptionParts = [action, routePart ? `Route: ${routePart}` : '', extraDetails];
-
-    templates.push({
-      key: permissionName,
-      name: permissionName,
-      module: currentModule,
-      section: currentSection,
-      action,
-      route: routePart,
-      description: descriptionParts.filter(Boolean).join(' | '),
-    });
-  }
-
-  return templates;
-};
-
-const ensureMicrofinanceSummaryTemplates = (
-  templates: PermissionTemplate[]
-): PermissionTemplate[] => {
-  const requiredActions = [
-    'Summary Report Total Outstanding Amount',
-    'Summary Report Today Collection',
-    'Summary Report Asset Value Total',
-    'Summary Report Month Collection',
-    'Summary Report Imagine Profit',
-    'Summary Report Today Profit',
-    'Summary Report Month Profit',
-  ];
-
-  const byName = new Set(templates.map((item) => String(item.name || '').trim().toLowerCase()));
-  const merged = [...templates];
-
-  for (const action of requiredActions) {
-    const key = [slugify('Credit'), slugify('Summary Report Workspace'), slugify(action)]
-      .filter(Boolean)
-      .join('_');
-
-    if (byName.has(key.toLowerCase())) {
-      continue;
-    }
-
-    merged.push({
-      key,
-      name: key,
-      module: 'Credit',
-      section: 'Summary Report Workspace',
-      action,
-      route: '/dashboard/microfinance',
-      description: `${action} | Route: /dashboard/microfinance`,
-    });
-
-    byName.add(key.toLowerCase());
-  }
-
-  return merged;
-};
-
 export default function RolesAddPage() {
   const router = useRouter();
   const apiBase = getApiBaseUrl();
@@ -203,12 +89,9 @@ export default function RolesAddPage() {
 
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
-  const [syncingFile, setSyncingFile] = useState(false);
   const [roleName, setRoleName] = useState('');
   const [roleDescription, setRoleDescription] = useState('');
   const [isActive, setIsActive] = useState(true);
-  const [selectedPermissionKeys, setSelectedPermissionKeys] = useState<string[]>([]);
-  const [permissionSearch, setPermissionSearch] = useState('');
   const [formError, setFormError] = useState('');
   const [formSuccess, setFormSuccess] = useState('');
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -218,14 +101,24 @@ export default function RolesAddPage() {
   const [noticeTitle, setNoticeTitle] = useState('Notice');
   const [noticeMessage, setNoticeMessage] = useState('');
 
-  const [permissionTemplates, setPermissionTemplates] = useState<PermissionTemplate[]>([]);
-  const [existingPermissions, setExistingPermissions] = useState<Permission[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [rolesLoading, setRolesLoading] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingDeleteRole, setPendingDeleteRole] = useState<Role | null>(null);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<string[]>([]);
   const [widgetNotice, setWidgetNotice] = useState<string | null>(null);
+
+  const openNotice = useCallback((title: string, message: string) => {
+    setNoticeTitle(title);
+    setNoticeMessage(message);
+    setNoticeOpen(true);
+  }, []);
+
+  const closeNotice = useCallback(() => {
+    setNoticeOpen(false);
+    setNoticeTitle('Notice');
+    setNoticeMessage('');
+  }, []);
 
   const fetchWidgetPreferences = useCallback(
     async (authToken?: string) => {
@@ -310,10 +203,26 @@ export default function RolesAddPage() {
     void initializePage(storedToken);
   }, [router]);
 
+  useEffect(() => {
+    if (!formError) return;
+    openNotice('Error', formError);
+    setFormError('');
+  }, [formError, openNotice]);
+
+  useEffect(() => {
+    if (!formSuccess) return;
+    openNotice('Success', formSuccess);
+    setFormSuccess('');
+  }, [formSuccess, openNotice]);
+
+  useEffect(() => {
+    if (!widgetNotice) return;
+    openNotice('Widget Notice', widgetNotice);
+    setWidgetNotice(null);
+  }, [widgetNotice, openNotice]);
+
   const initializePage = async (authToken: string) => {
     await Promise.all([
-      fetchPermissionTemplates(authToken),
-      fetchExistingPermissions(authToken),
       fetchRoles(authToken),
       fetchWidgetPreferences(authToken),
     ]);
@@ -341,97 +250,6 @@ export default function RolesAddPage() {
       setRolesLoading(false);
     }
   };
-
-  const fetchPermissionTemplates = async (authToken?: string) => {
-    const auth = authToken || token;
-    if (!auth) return;
-
-    try {
-      setSyncingFile(true);
-      setFormError('');
-      const response = await axios.get(`${apiBase}/permissions/template-file`, {
-        headers: { Authorization: `Bearer ${auth}` },
-      });
-
-      const content = String(response?.data?.content || '');
-      if (!content.trim()) {
-        throw new Error('Permission template file is empty.');
-      }
-
-      const parsed = parsePermissionFile(content);
-      const normalizedTemplates = ensureMicrofinanceSummaryTemplates(parsed);
-      setPermissionTemplates(normalizedTemplates);
-    } catch (error: any) {
-      console.error('Failed to load permission file:', error);
-      setFormError(
-        error?.response?.data?.message ||
-        error?.message ||
-        'Failed to load permission definitions from backend permission file.'
-      );
-      setPermissionTemplates([]);
-    } finally {
-      setSyncingFile(false);
-    }
-  };
-
-  const fetchExistingPermissions = async (authToken?: string): Promise<Permission[]> => {
-    const auth = authToken || token;
-    if (!auth) return [];
-
-    try {
-      const response = await axios.get(`${apiBase}/permissions`, {
-        headers: { Authorization: `Bearer ${auth}` },
-        params: { per_page: 2000 },
-      });
-
-      const rows = Array.isArray(response.data) ? response.data : response.data?.data || [];
-      setExistingPermissions(rows);
-      return rows as Permission[];
-    } catch (error) {
-      console.error('Failed to fetch existing permissions:', error);
-      setExistingPermissions([]);
-      return [] as Permission[];
-    }
-  };
-
-  const groupedPermissions = useMemo(() => {
-    const keyword = permissionSearch.trim().toLowerCase();
-
-    const filtered = keyword
-      ? permissionTemplates.filter((item) => {
-          const text = `${item.module} ${item.section} ${item.action} ${item.route} ${item.description}`.toLowerCase();
-          return text.includes(keyword);
-        })
-      : permissionTemplates;
-
-    const groupMap = new Map<string, PermissionTemplate[]>();
-
-    filtered.forEach((item) => {
-      const key = `${item.module}::${item.section}`;
-      const bucket = groupMap.get(key) || [];
-      bucket.push(item);
-      groupMap.set(key, bucket);
-    });
-
-    return Array.from(groupMap.entries())
-      .map(([groupKey, items]) => ({
-        groupKey,
-        module: items[0]?.module || 'General',
-        section: items[0]?.section || 'General',
-        items: [...items].sort((a, b) => a.action.localeCompare(b.action)),
-      }))
-      .sort((a, b) => `${a.module} ${a.section}`.localeCompare(`${b.module} ${b.section}`));
-  }, [permissionTemplates, permissionSearch]);
-
-  const allFilteredKeys = useMemo(
-    () => groupedPermissions.flatMap((group) => group.items.map((item) => item.key)),
-    [groupedPermissions]
-  );
-
-  const allFilteredSelected = useMemo(
-    () => allFilteredKeys.length > 0 && allFilteredKeys.every((key) => selectedPermissionKeys.includes(key)),
-    [allFilteredKeys, selectedPermissionKeys]
-  );
 
   const filteredRoles = useMemo(() => {
     const keyword = roleSearchTerm.trim().toLowerCase();
@@ -470,18 +288,6 @@ export default function RolesAddPage() {
     setRolesPage(1);
   }, [roleSearchTerm]);
 
-  const openNotice = (title: string, message: string) => {
-    setNoticeTitle(title);
-    setNoticeMessage(message);
-    setNoticeOpen(true);
-  };
-
-  const closeNotice = () => {
-    setNoticeOpen(false);
-    setNoticeTitle('Notice');
-    setNoticeMessage('');
-  };
-
   const openCreateForm = () => {
     resetForm();
     setFormError('');
@@ -489,105 +295,10 @@ export default function RolesAddPage() {
     setShowCreateForm(true);
   };
 
-  const togglePermission = (key: string) => {
-    setSelectedPermissionKeys((prev) =>
-      prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
-    );
-  };
-
-  const toggleGroup = (keys: string[]) => {
-    if (keys.length === 0) return;
-
-    setSelectedPermissionKeys((prev) => {
-      const allSelected = keys.every((key) => prev.includes(key));
-      if (allSelected) {
-        return prev.filter((key) => !keys.includes(key));
-      }
-      return Array.from(new Set([...prev, ...keys]));
-    });
-  };
-
-  const toggleAllFiltered = () => {
-    if (allFilteredKeys.length === 0) return;
-
-    setSelectedPermissionKeys((prev) => {
-      if (allFilteredSelected) {
-        return prev.filter((key) => !allFilteredKeys.includes(key));
-      }
-      return Array.from(new Set([...prev, ...allFilteredKeys]));
-    });
-  };
-
-  const ensurePermissionIds = async (): Promise<number[]> => {
-    return resolvePermissionIdsForKeys(selectedPermissionKeys);
-  };
-
-  const resolvePermissionIdsForKeys = async (keys: string[]): Promise<number[]> => {
-    const selectedTemplates = permissionTemplates.filter((tpl) => keys.includes(tpl.key));
-    if (selectedTemplates.length === 0) {
-      return [];
-    }
-
-    const resolvedIds: number[] = [];
-    const byName = new Map<string, Permission>(
-      existingPermissions.map((perm) => [String(perm.name || '').toLowerCase(), perm])
-    );
-
-    for (const template of selectedTemplates) {
-      const lookupKey = template.name.toLowerCase();
-      const existing = byName.get(lookupKey);
-      if (existing?.id) {
-        resolvedIds.push(existing.id);
-        continue;
-      }
-
-      try {
-        const createRes = await axios.post(
-          `${apiBase}/permissions`,
-          {
-            name: template.name,
-            module: template.module,
-            description: template.description,
-            is_active: true,
-          },
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-
-        const created = createRes.data;
-        const createdId = Number(created?.id || 0);
-        if (createdId > 0) {
-          resolvedIds.push(createdId);
-          byName.set(lookupKey, {
-            id: createdId,
-            name: String(created?.name || template.name),
-            module: String(created?.module || template.module),
-            description: String(created?.description || template.description),
-            is_active: created?.is_active !== false,
-          });
-        }
-      } catch (error: any) {
-        if (error?.response?.status === 422) {
-          const refreshed = (await fetchExistingPermissions()) || [];
-          const latest = refreshed.find((perm) => String(perm.name || '').toLowerCase() === lookupKey);
-          if (latest?.id) {
-            resolvedIds.push(latest.id);
-          }
-          continue;
-        }
-
-        throw error;
-      }
-    }
-
-    return Array.from(new Set(resolvedIds));
-  };
-
   const resetForm = () => {
     setRoleName('');
     setRoleDescription('');
     setIsActive(true);
-    setSelectedPermissionKeys([]);
-    setPermissionSearch('');
   };
 
   const handleCreateRole = async (e: React.FormEvent) => {
@@ -603,25 +314,21 @@ export default function RolesAddPage() {
     setFormSuccess('');
 
     try {
-      const permissionIds = await ensurePermissionIds();
-
       await axios.post(
         `${apiBase}/roles`,
         {
           name: roleName.trim(),
           description: roleDescription.trim(),
-          permissions: permissionIds,
           is_active: isActive,
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
-      setFormSuccess('Role created successfully with selected permissions.');
+      setFormSuccess('Role created successfully.');
       resetForm();
       setShowCreateForm(false);
-      await fetchExistingPermissions();
       await fetchRoles();
-      openNotice('Success', 'Role created successfully with selected permissions.');
+      openNotice('Success', 'Role created successfully.');
     } catch (error: unknown) {
       setFormError(
         extractApiMessage(error, 'Failed to create role. Please verify inputs and permissions.')
@@ -753,12 +460,6 @@ export default function RolesAddPage() {
       )}
 
       <main className="relative z-10 max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8 space-y-6">
-        {widgetNotice && (
-          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-            {widgetNotice}
-          </div>
-        )}
-
         {!hiddenWidgetKeys.includes(`${widgetPrefix}hero`) && (
         <div className="rounded-3xl border border-white/80 bg-white/90 shadow-xl overflow-hidden relative">
           <WidgetCloseGate>
@@ -815,30 +516,6 @@ export default function RolesAddPage() {
                   <p className="text-[10px] uppercase tracking-wide text-blue-100">Active</p>
                 </div>
               )}
-              {!hiddenWidgetKeys.includes(`${widgetPrefix}hero_reload_permissions`) && (
-                <div className="relative">
-                  <WidgetCloseGate>
-                    <button
-                      type="button"
-                      onClick={() => hideWidget(`${widgetPrefix}hero_reload_permissions`)}
-                      className="absolute -top-2 -right-2 h-6 w-6 rounded-full border border-white/60 bg-white text-gray-500 hover:text-rose-600 hover:border-rose-300"
-                      aria-label="Hide reload permissions button widget"
-                      title="Hide widget"
-                    >
-                      ×
-                    </button>
-                  </WidgetCloseGate>
-                  <button
-                    type="button"
-                    onClick={() => fetchPermissionTemplates()}
-                    disabled={syncingFile}
-                    className="inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/20 disabled:opacity-60"
-                  >
-                    <RefreshCw className={`h-4 w-4 ${syncingFile ? 'animate-spin' : ''}`} />
-                    Reload permissions
-                  </button>
-                </div>
-              )}
               {!hiddenWidgetKeys.includes(`${widgetPrefix}hero_add_role`) && (
                 <div className="relative">
                   <WidgetCloseGate>
@@ -867,27 +544,6 @@ export default function RolesAddPage() {
         </div>
         )}
 
-        {formError && (
-          <div className="flex items-start justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-            <span>{formError}</span>
-            <button type="button" onClick={() => setFormError('')} className="text-rose-500 hover:text-rose-700">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-
-        {formSuccess && (
-          <div className="flex items-start justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-            <span className="inline-flex items-center gap-2">
-              <Check className="h-4 w-4 shrink-0" />
-              {formSuccess}
-            </span>
-            <button type="button" onClick={() => setFormSuccess('')} className="text-emerald-600 hover:text-emerald-800">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-
         {showCreateForm && (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col">
@@ -895,9 +551,7 @@ export default function RolesAddPage() {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-xl font-bold text-white">Add new role</h3>
-                    <p className="text-white/85 text-sm mt-1">
-                      Permissions from backend/public/permission_file.txt · {selectedPermissionKeys.length} selected
-                    </p>
+                    <p className="text-white/85 text-sm mt-1">Create a role profile. Access is managed by widget controls.</p>
                   </div>
                   <button
                     type="button"
@@ -944,79 +598,6 @@ export default function RolesAddPage() {
                     </div>
                   </div>
 
-                  <div>
-                    <div className="flex items-center justify-between gap-2 mb-3">
-                      <label className="text-sm font-semibold text-gray-700">Permissions</label>
-                      <button
-                        type="button"
-                        onClick={toggleAllFiltered}
-                        className="px-3 py-1.5 text-xs rounded-lg border border-indigo-200 text-indigo-700 hover:bg-indigo-50 font-semibold"
-                      >
-                        {allFilteredSelected ? 'Clear visible' : 'Select visible'}
-                      </button>
-                    </div>
-
-                    <div className="relative mb-3">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                      <input
-                        type="text"
-                        value={permissionSearch}
-                        onChange={(e) => setPermissionSearch(e.target.value)}
-                        placeholder="Search action, route, or section…"
-                        className={`${inputClass} pl-10`}
-                      />
-                    </div>
-
-                    <div className="max-h-[22rem] overflow-y-auto rounded-xl border border-gray-200 bg-gray-50 p-3 space-y-3">
-                      {groupedPermissions.map((group) => {
-                        const groupKeys = group.items.map((item) => item.key);
-                        const groupAllSelected =
-                          groupKeys.length > 0 && groupKeys.every((key) => selectedPermissionKeys.includes(key));
-
-                        return (
-                          <div key={group.groupKey} className="rounded-xl border border-gray-200 bg-white p-3">
-                            <div className="flex items-center justify-between mb-2">
-                              <div>
-                                <p className="text-sm font-semibold text-gray-900">
-                                  {group.module} / {group.section}
-                                </p>
-                                <p className="text-xs text-gray-500">{group.items.length} permission(s)</p>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => toggleGroup(groupKeys)}
-                                className="px-2.5 py-1 text-xs rounded-lg border border-indigo-200 text-indigo-700 hover:bg-indigo-50 font-semibold"
-                              >
-                                {groupAllSelected ? 'Clear' : 'Select all'}
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                              {group.items.map((item) => (
-                                <label
-                                  key={item.key}
-                                  className="flex items-start gap-3 rounded-lg p-2 hover:bg-blue-50/50 cursor-pointer"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedPermissionKeys.includes(item.key)}
-                                    onChange={() => togglePermission(item.key)}
-                                    className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                  />
-                                  <div className="min-w-0">
-                                    <p className="text-sm font-medium text-gray-900">{item.action}</p>
-                                    <p className="text-xs text-gray-600 truncate">{item.route || item.description}</p>
-                                  </div>
-                                </label>
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {groupedPermissions.length === 0 && (
-                        <p className="text-sm text-gray-500 text-center py-6">No permissions loaded. Reload the permission file.</p>
-                      )}
-                    </div>
-                  </div>
                 </div>
 
                 <div className="flex justify-end gap-3 p-6 border-t border-gray-100 shrink-0 bg-white">

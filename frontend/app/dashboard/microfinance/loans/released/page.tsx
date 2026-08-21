@@ -17,6 +17,10 @@ type LoanGuarantor = {
   address?: string;
   contact_no?: string;
   relationship?: string;
+  image_url?: string | null;
+  signature_url?: string | null;
+  image_original_name?: string | null;
+  signature_original_name?: string | null;
 };
 
 type LoanRequest = {
@@ -26,6 +30,10 @@ type LoanRequest = {
   nick_name?: string | null;
   address?: string | null;
   contact_no?: string | null;
+  nic?: string | null;
+  bank_name?: string | null;
+  bank_branch?: string | null;
+  bank_account_no?: string | null;
   reason?: string | null;
   loan_scope: 'route_loan' | 'center_loan' | 'direct_loan';
   loan_amount: string | number;
@@ -35,6 +43,7 @@ type LoanRequest = {
   stamp_charges?: string | number;
   insurance_charges?: string | number;
   charge_payment_mode?: 'deduct_from_loan' | 'hand_cash';
+  charges_collection_status?: 'pending' | 'done' | string;
   manager_name?: string;
   field_officer?: string;
   group_leader?: string;
@@ -46,6 +55,18 @@ type LoanRequest = {
   terms_count: number;
   refund_option: 'day' | 'week' | 'month';
   status: string;
+  workflow_step?: number | null;
+  workflow_step_updated_at?: string | null;
+  call_confirmation_payload?: Record<string, unknown> | null;
+  call_confirmed_at?: string | null;
+  bm_approval_payload?: Record<string, unknown> | null;
+  bm_approved_at?: string | null;
+  cash_allocation_payload?: Record<string, unknown> | null;
+  cash_allocated_at?: string | null;
+  second_call_confirmation_payload?: Record<string, unknown> | null;
+  second_call_confirmed_at?: string | null;
+  document_verification_payload?: Record<string, unknown> | null;
+  document_verified_at?: string | null;
   route?: { id: number; name: string; code: string } | null;
   center?: { id: number; name: string; code: string } | null;
   group?: { id: number; name: string; code: string } | null;
@@ -60,6 +81,38 @@ type LoanRequest = {
     original_name: string;
   }[];
   guarantors?: LoanGuarantor[];
+};
+
+type CustomerProfileDocument = {
+  id: number;
+  document_type: string;
+  file_path: string;
+  original_name: string;
+  file_url?: string | null;
+  uploaded_by?: number;
+  created_at?: string;
+};
+
+type CustomerProfileRecord = {
+  id: number;
+  customer_code?: string;
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  phone?: string;
+  nic_passport?: string;
+  old_nic?: string;
+  date_of_birth?: string;
+  gender?: string;
+  marital_status?: string;
+  nationality?: string;
+  permanent_address?: string;
+  current_address?: string;
+  employer_name?: string;
+  job_title?: string;
+  monthly_income?: string | number;
+  additional_details?: Record<string, unknown>;
+  photo_url?: string | null;
 };
 
 type AuthRole = {
@@ -107,6 +160,15 @@ type CollectionTransaction = {
   reference: string;
 };
 
+type DetailsDocumentItem = {
+  id: string;
+  source: 'loan' | 'customer' | 'guarantor';
+  document_type: string;
+  original_name: string;
+  file_path?: string;
+  access_url?: string;
+};
+
 const ACTIVE_LOAN_STATUSES = new Set(['approved', 'released']);
 
 const formatDisplayDate = (value?: string | null) => {
@@ -124,6 +186,58 @@ const formatDisplayDate = (value?: string | null) => {
     timeZone: 'UTC',
   }).format(date);
 };
+
+const formatProcessValue = (value: unknown) => {
+  if (value === null || value === undefined) return '-';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'string') return value.trim() === '' ? '-' : value;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '-';
+    return value
+      .map((item) => {
+        if (item === null || item === undefined) return '';
+        if (typeof item === 'string') return item;
+        if (typeof item === 'number' || typeof item === 'boolean') return String(item);
+        return JSON.stringify(item);
+      })
+      .filter((item) => item !== '')
+      .join(', ');
+  }
+
+  if (typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+
+  return String(value);
+};
+
+const asRecord = (value: unknown): Record<string, unknown> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+};
+
+const resolveAssetUrl = (pathOrUrl: string) => {
+  const value = String(pathOrUrl || '').trim();
+  if (!value) return '';
+
+  if (value.startsWith('http://') || value.startsWith('https://')) {
+    return value;
+  }
+
+  if (value.startsWith('/')) {
+    return `${getBackendOrigin()}${value}`;
+  }
+
+  return `${getBackendOrigin()}/storage/${value.replace(/^public\//, '')}`;
+};
+
+const EyeIcon = ({ className = 'h-4 w-4' }: { className?: string }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
 
 export default function ReleasedLoansPage() {
   const router = useRouter();
@@ -162,6 +276,38 @@ export default function ReleasedLoansPage() {
     loanCode: '',
     customerName: '',
     documents: [],
+  });
+  const [detailsModal, setDetailsModal] = useState<{
+    open: boolean;
+    loan: LoanRequest | null;
+    selectedDocumentId: string | null;
+    activeTab: 'customer' | 'loan' | 'guarantor';
+    customerLoading: boolean;
+    customerError: string;
+    customerProfile: CustomerProfileRecord | null;
+    customerDocuments: CustomerProfileDocument[];
+    selectedCustomerDocumentId: number | null;
+  }>({
+    open: false,
+    loan: null,
+    selectedDocumentId: null,
+    activeTab: 'customer',
+    customerLoading: false,
+    customerError: '',
+    customerProfile: null,
+    customerDocuments: [],
+    selectedCustomerDocumentId: null,
+  });
+  const [customerDocPreview, setCustomerDocPreview] = useState<{
+    docId: number | null;
+    objectUrl: string;
+    loading: boolean;
+    error: string;
+  }>({
+    docId: null,
+    objectUrl: '',
+    loading: false,
+    error: '',
   });
   const [editModal, setEditModal] = useState<{
     open: boolean;
@@ -322,6 +468,88 @@ export default function ReleasedLoansPage() {
     setDocumentsModal({ open: false, loanCode: '', customerName: '', documents: [] });
   };
 
+  const openDetailsModal = (loan: LoanRequest) => {
+    const docs = Array.isArray(loan.documents) ? loan.documents : [];
+    setDetailsModal({
+      open: true,
+      loan,
+      selectedDocumentId: docs.length > 0 ? `loan-${docs[0].id}` : null,
+      activeTab: 'customer',
+      customerLoading: true,
+      customerError: '',
+      customerProfile: null,
+      customerDocuments: [],
+      selectedCustomerDocumentId: null,
+    });
+
+    void (async () => {
+      try {
+        const response = await axios.get(`${getApiBaseUrl()}/microfinance/loan-requests/${loan.id}/customer-profile`, {
+          headers,
+        });
+
+        const customer = response.data?.customer as CustomerProfileRecord | null;
+        const customerDocuments = Array.isArray(response.data?.customer_documents)
+          ? (response.data.customer_documents as CustomerProfileDocument[])
+          : [];
+
+        setDetailsModal((prev) => {
+          if (!prev.open || !prev.loan || prev.loan.id !== loan.id) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            customerLoading: false,
+            customerError: customer ? '' : String(response.data?.message || 'Customer details not found.'),
+            customerProfile: customer,
+            customerDocuments,
+            selectedCustomerDocumentId: customerDocuments.length > 0 ? customerDocuments[0].id : null,
+          };
+        });
+      } catch (error: unknown) {
+        const message =
+          axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
+            ? error.response.data.message
+            : 'Failed to load customer full profile.';
+
+        setDetailsModal((prev) => {
+          if (!prev.open || !prev.loan || prev.loan.id !== loan.id) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            customerLoading: false,
+            customerError: message,
+            customerProfile: null,
+            customerDocuments: [],
+            selectedCustomerDocumentId: null,
+          };
+        });
+      }
+    })();
+  };
+
+  const closeDetailsModal = () => {
+    if (customerDocPreview.objectUrl) {
+      URL.revokeObjectURL(customerDocPreview.objectUrl);
+    }
+
+    setDetailsModal({
+      open: false,
+      loan: null,
+      selectedDocumentId: null,
+      activeTab: 'customer',
+      customerLoading: false,
+      customerError: '',
+      customerProfile: null,
+      customerDocuments: [],
+      selectedCustomerDocumentId: null,
+    });
+    setCustomerDocPreview({ docId: null, objectUrl: '', loading: false, error: '' });
+  };
+
   const openEditModal = (loan: LoanRequest) => {
     if (!canManageSensitiveLoanActions) {
       openModal('Only Finance Manager, Branch Manager, and Admin can edit loans.', 'Access Denied');
@@ -461,6 +689,203 @@ export default function ReleasedLoansPage() {
     const normalizedPath = (filePath || '').replace(/^public\//, '');
     return `${getBackendOrigin()}/storage/${normalizedPath}`;
   };
+
+  const resolveDocumentPreviewType = (doc: { file_path?: string; original_name?: string }) => {
+    const source = `${doc.original_name || ''} ${doc.file_path || ''}`.toLowerCase();
+    if (/(\.png|\.jpe?g|\.webp|\.gif|\.bmp)/.test(source)) return 'image';
+    if (/\.pdf/.test(source)) return 'pdf';
+    return 'other';
+  };
+
+  const resolveDocumentUrl = (doc: { file_path?: string; file_url?: string | null }) => {
+    const fromFilePath = String(doc.file_path || '').trim();
+    if (fromFilePath !== '') {
+      return buildDocumentUrl(fromFilePath);
+    }
+
+    const fromApi = String(doc.file_url || '').trim();
+    if (fromApi !== '') {
+      const normalizedApiPath = fromApi.replace('/storage/public/', '/storage/');
+      if (fromApi.startsWith('http://') || fromApi.startsWith('https://')) {
+        return normalizedApiPath;
+      }
+      if (normalizedApiPath.startsWith('/')) {
+        return `${getBackendOrigin()}${normalizedApiPath}`;
+      }
+      return `${getBackendOrigin()}/${normalizedApiPath}`;
+    }
+
+    return '';
+  };
+
+  const resolveCustomerDocumentAccessUrl = (customerId: number, documentId: number) => {
+    return `${getApiBaseUrl()}/customers/${customerId}/documents/${documentId}/download`;
+  };
+
+  const openDocumentInNewTab = async (url: string) => {
+    if (!url) return;
+
+    try {
+      const response = await axios.get(url, {
+        headers,
+        responseType: 'blob',
+      });
+
+      const objectUrl = URL.createObjectURL(response.data as Blob);
+      window.open(objectUrl, '_blank', 'noopener,noreferrer');
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch {
+      openModal('Unable to open document preview. Please try again.', 'Error');
+    }
+  };
+
+  const pickDetailValue = (source: Record<string, unknown> | undefined, path: string) => {
+    if (!source) return '';
+
+    const segments = path.split('.');
+    let cursor: unknown = source;
+
+    for (const segment of segments) {
+      if (!cursor || typeof cursor !== 'object') {
+        return '';
+      }
+      cursor = (cursor as Record<string, unknown>)[segment];
+    }
+
+    if (cursor === null || cursor === undefined) return '';
+    return String(cursor);
+  };
+
+  const detailsModalDocuments = useMemo<DetailsDocumentItem[]>(() => {
+    if (!detailsModal.loan) return [];
+
+    const loanDocuments = (detailsModal.loan.documents || []).map((doc) => ({
+      id: `loan-${doc.id}`,
+      source: 'loan' as const,
+      document_type: String(doc.document_type || 'Document'),
+      original_name: String(doc.original_name || doc.file_path || ''),
+      file_path: String(doc.file_path || ''),
+      access_url: resolveDocumentUrl(doc),
+    }));
+
+    const customerId = Number(detailsModal.customerProfile?.id || 0);
+    const customerDocuments = detailsModal.customerDocuments.map((doc) => ({
+      id: `customer-${doc.id}`,
+      source: 'customer' as const,
+      document_type: String(doc.document_type || 'Customer Document'),
+      original_name: String(doc.original_name || doc.file_path || ''),
+      file_path: String(doc.file_path || ''),
+      access_url:
+        customerId > 0 && Number(doc.id || 0) > 0
+          ? resolveCustomerDocumentAccessUrl(customerId, Number(doc.id || 0))
+          : resolveDocumentUrl(doc),
+    }));
+
+    const guarantorDocuments = (detailsModal.loan.guarantors || []).flatMap((guarantor, index) => {
+      const rows: DetailsDocumentItem[] = [];
+      const guarantorName = String(guarantor.name || `Guarantor ${index + 1}`);
+
+      if (String(guarantor.image_url || '').trim() !== '') {
+        rows.push({
+          id: `guarantor-image-${detailsModal.loan?.id || 0}-${index}`,
+          source: 'guarantor',
+          document_type: `${guarantorName} Image`,
+          original_name: String(guarantor.image_original_name || guarantor.image_url || ''),
+          access_url: resolveAssetUrl(String(guarantor.image_url || '')),
+        });
+      }
+
+      if (String(guarantor.signature_url || '').trim() !== '') {
+        rows.push({
+          id: `guarantor-signature-${detailsModal.loan?.id || 0}-${index}`,
+          source: 'guarantor',
+          document_type: `${guarantorName} Signature`,
+          original_name: String(guarantor.signature_original_name || guarantor.signature_url || ''),
+          access_url: resolveAssetUrl(String(guarantor.signature_url || '')),
+        });
+      }
+
+      return rows;
+    });
+
+    return [...loanDocuments, ...customerDocuments, ...guarantorDocuments].filter(
+      (doc) => String(doc.access_url || '').trim() !== ''
+    );
+  }, [detailsModal.loan, detailsModal.customerDocuments, detailsModal.customerProfile?.id]);
+
+  const selectedDetailsDocument =
+    detailsModalDocuments.find((doc) => doc.id === detailsModal.selectedDocumentId)
+    || detailsModalDocuments[0]
+    || null;
+  const selectedDetailsDocumentType = selectedDetailsDocument ? resolveDocumentPreviewType(selectedDetailsDocument) : 'other';
+  const selectedCustomerDocument = detailsModal.customerDocuments.find((doc) => doc.id === detailsModal.selectedCustomerDocumentId) || null;
+  const selectedCustomerDocumentType = selectedCustomerDocument ? resolveDocumentPreviewType(selectedCustomerDocument) : 'other';
+
+  useEffect(() => {
+    const customerId = Number(detailsModal.customerProfile?.id || 0);
+    const selectedDocId = Number(selectedCustomerDocument?.id || 0);
+
+    if (!detailsModal.open || customerId <= 0 || selectedDocId <= 0 || !token) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadPreview = async () => {
+      const url = resolveCustomerDocumentAccessUrl(customerId, selectedDocId);
+      setCustomerDocPreview((prev) => {
+        if (prev.objectUrl) {
+          URL.revokeObjectURL(prev.objectUrl);
+        }
+
+        return {
+          docId: selectedDocId,
+          objectUrl: '',
+          loading: true,
+          error: '',
+        };
+      });
+
+      try {
+        const response = await axios.get(url, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+          responseType: 'blob',
+        });
+
+        if (cancelled) {
+          return;
+        }
+
+        const objectUrl = URL.createObjectURL(response.data as Blob);
+        setCustomerDocPreview({
+          docId: selectedDocId,
+          objectUrl,
+          loading: false,
+          error: '',
+        });
+      } catch {
+        if (cancelled) {
+          return;
+        }
+
+        setCustomerDocPreview({
+          docId: selectedDocId,
+          objectUrl: '',
+          loading: false,
+          error: 'Failed to load this document preview.',
+        });
+      }
+    };
+
+    void loadPreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detailsModal.open, detailsModal.customerProfile?.id, selectedCustomerDocument?.id, token]);
 
   const handleDownloadAgreement = async (loanId: number, customerNo: string) => {
     if (!token) return;
@@ -1543,9 +1968,17 @@ export default function ReleasedLoansPage() {
                       <button
                         type="button"
                         onClick={() => openDocumentsModal(loan)}
-                        className="w-full sm:w-auto px-3 py-1.5 rounded-lg border border-cyan-200 bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-xs font-semibold"
+                        className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-200 bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-xs font-semibold"
                       >
-                        View Documents ({Array.isArray(loan.documents) ? loan.documents.length : 0})
+                        <EyeIcon className="h-3.5 w-3.5" />
+                        <span>View Documents ({Array.isArray(loan.documents) ? loan.documents.length : 0})</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openDetailsModal(loan)}
+                        className="w-full sm:w-auto px-3 py-1.5 rounded-lg border border-sky-200 bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-semibold"
+                      >
+                        View More Details
                       </button>
                     </div>
                     <p className="text-sm text-gray-600">Loan Amount</p>
@@ -2194,13 +2627,452 @@ export default function ReleasedLoansPage() {
                       href={buildDocumentUrl(doc.file_path)}
                       target="_blank"
                       rel="noreferrer"
-                      className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-xs font-semibold"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-xs font-semibold"
                     >
-                      Open
+                      <EyeIcon className="h-3.5 w-3.5" />
+                      <span>Open</span>
                     </a>
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        )}
+
+        {detailsModal.open && detailsModal.loan && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/65 px-3 py-5">
+            <div className="w-full max-w-[96rem] rounded-2xl bg-white p-5 shadow-2xl border border-cyan-100 max-h-[95vh] overflow-auto">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900">Loan and Customer Full Details</h3>
+                  <p className="text-sm text-slate-600 mt-1">
+                    {detailsModal.loan.customer_name} | Loan Code: {detailsModal.loan.customer_no}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeDetailsModal}
+                  className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDetailsModal((prev) => ({ ...prev, activeTab: 'customer' }))}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold border ${detailsModal.activeTab === 'customer' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-emerald-200'}`}
+                >
+                  Customer Profile
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDetailsModal((prev) => ({ ...prev, activeTab: 'loan' }))}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold border ${detailsModal.activeTab === 'loan' ? 'bg-cyan-600 text-white border-cyan-600' : 'bg-white text-slate-700 border-cyan-200'}`}
+                >
+                  Loan Details
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDetailsModal((prev) => ({ ...prev, activeTab: 'guarantor' }))}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold border ${detailsModal.activeTab === 'guarantor' ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-slate-700 border-amber-200'}`}
+                >
+                  Guarantor Details
+                </button>
+              </div>
+
+              {detailsModal.activeTab === 'customer' && (
+                <div className="mt-4 space-y-4">
+                  <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">Customer Full Record (customers table)</p>
+                    {detailsModal.customerLoading ? (
+                      <p className="mt-3 text-sm text-slate-600">Loading customer profile...</p>
+                    ) : detailsModal.customerError ? (
+                      <p className="mt-3 text-sm text-rose-700">{detailsModal.customerError}</p>
+                    ) : detailsModal.customerProfile ? (
+                      <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2 text-sm text-slate-800">
+                        <p><span className="font-semibold">Customer Code:</span> {detailsModal.customerProfile.customer_code || detailsModal.loan.customer_no || '-'}</p>
+                        <p><span className="font-semibold">First Name:</span> {detailsModal.customerProfile.first_name || '-'}</p>
+                        <p><span className="font-semibold">Last Name:</span> {detailsModal.customerProfile.last_name || '-'}</p>
+                        <p><span className="font-semibold">NIC/Passport:</span> {detailsModal.customerProfile.nic_passport || detailsModal.customerProfile.old_nic || detailsModal.loan.nic || '-'}</p>
+                        <p><span className="font-semibold">Phone:</span> {detailsModal.customerProfile.phone || detailsModal.loan.contact_no || '-'}</p>
+                        <p><span className="font-semibold">Email:</span> {detailsModal.customerProfile.email || '-'}</p>
+                        <p><span className="font-semibold">DOB:</span> {formatDisplayDate(detailsModal.customerProfile.date_of_birth)}</p>
+                        <p><span className="font-semibold">Gender:</span> {detailsModal.customerProfile.gender || '-'}</p>
+                        <p><span className="font-semibold">Marital Status:</span> {detailsModal.customerProfile.marital_status || '-'}</p>
+                        <p><span className="font-semibold">Nationality:</span> {detailsModal.customerProfile.nationality || '-'}</p>
+                        <p><span className="font-semibold">Current Address:</span> {detailsModal.customerProfile.current_address || detailsModal.loan.address || '-'}</p>
+                        <p><span className="font-semibold">Permanent Address:</span> {detailsModal.customerProfile.permanent_address || '-'}</p>
+                        <p><span className="font-semibold">Employer:</span> {detailsModal.customerProfile.employer_name || '-'}</p>
+                        <p><span className="font-semibold">Job Title:</span> {detailsModal.customerProfile.job_title || '-'}</p>
+                        <p><span className="font-semibold">Monthly Income:</span> {detailsModal.customerProfile.monthly_income || '-'}</p>
+                        <p><span className="font-semibold">Identity Name:</span> {pickDetailValue(detailsModal.customerProfile.additional_details, 'identity.full_name_with_initials') || '-'}</p>
+                        <p><span className="font-semibold">Second Mobile:</span> {pickDetailValue(detailsModal.customerProfile.additional_details, 'contact.second_mobile') || '-'}</p>
+                        <p><span className="font-semibold">Emergency Contact:</span> {pickDetailValue(detailsModal.customerProfile.additional_details, 'contact.emergency_contact') || '-'}</p>
+                      </div>
+                    ) : (
+                      <p className="mt-3 text-sm text-slate-600">Customer profile not available.</p>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl border border-cyan-100 bg-cyan-50/40 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wide text-cyan-700">Customer Uploaded Documents (customer_documents table)</p>
+                    {detailsModal.customerDocuments.length > 0 ? (
+                      <div className="mt-3 grid grid-cols-1 xl:grid-cols-3 gap-3">
+                        <div className="xl:col-span-1 max-h-[26rem] overflow-auto space-y-2">
+                          {detailsModal.customerDocuments.map((doc) => (
+                            <button
+                              key={`customer-doc-${doc.id}`}
+                              type="button"
+                              onClick={() => setDetailsModal((prev) => ({ ...prev, selectedCustomerDocumentId: doc.id }))}
+                              className={`w-full rounded-lg border p-2 text-left transition ${doc.id === detailsModal.selectedCustomerDocumentId ? 'border-cyan-400 bg-cyan-100' : 'border-cyan-100 bg-white hover:bg-cyan-50'}`}
+                            >
+                              <p className="text-sm font-semibold text-slate-900">{doc.document_type}</p>
+                              <p className="text-[11px] text-slate-500 break-all">{doc.original_name || doc.file_path}</p>
+                            </button>
+                          ))}
+                        </div>
+                        <div className="xl:col-span-2 rounded-lg border border-cyan-100 bg-white p-3 min-h-[18rem]">
+                          {selectedCustomerDocument ? (
+                            <>
+                              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <p className="text-sm font-semibold text-slate-900">{selectedCustomerDocument.document_type}</p>
+                                  <p className="text-xs text-slate-500">{selectedCustomerDocument.original_name || selectedCustomerDocument.file_path}</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const customerId = Number(detailsModal.customerProfile?.id || 0);
+                                    const documentId = Number(selectedCustomerDocument.id || 0);
+                                    if (customerId > 0 && documentId > 0) {
+                                      void openDocumentInNewTab(resolveCustomerDocumentAccessUrl(customerId, documentId));
+                                      return;
+                                    }
+                                    void openDocumentInNewTab(resolveDocumentUrl(selectedCustomerDocument));
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-xs font-semibold"
+                                >
+                                  <EyeIcon className="h-3.5 w-3.5" />
+                                  <span>Open in new tab</span>
+                                </button>
+                              </div>
+
+                              {customerDocPreview.loading && (
+                                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+                                  Loading preview...
+                                </div>
+                              )}
+
+                              {!customerDocPreview.loading && customerDocPreview.error && (
+                                <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                                  {customerDocPreview.error}
+                                </div>
+                              )}
+
+                              {selectedCustomerDocumentType === 'image' && (
+                                <img
+                                  src={customerDocPreview.objectUrl || resolveDocumentUrl(selectedCustomerDocument)}
+                                  alt={selectedCustomerDocument.document_type}
+                                  className="w-full max-h-[58vh] rounded-lg border border-cyan-100 object-contain bg-slate-50"
+                                />
+                              )}
+
+                              {selectedCustomerDocumentType === 'pdf' && (
+                                <iframe
+                                  src={customerDocPreview.objectUrl || resolveDocumentUrl(selectedCustomerDocument)}
+                                  title={selectedCustomerDocument.document_type}
+                                  className="h-[58vh] w-full rounded-lg border border-cyan-100"
+                                />
+                              )}
+
+                              {selectedCustomerDocumentType === 'other' && (
+                                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                                  Preview is not available for this file type. Use "Open in new tab".
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                              Select a customer document from the list to preview.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-sm text-slate-600">No customer documents found.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {detailsModal.activeTab === 'loan' && (
+                <div className="mt-4 space-y-4">
+                  <div className="rounded-xl border border-cyan-100 bg-cyan-50/40 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wide text-cyan-700">Loan Details</p>
+                    <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2 text-slate-800 text-sm">
+                      <p><span className="font-semibold">Status:</span> <span className="capitalize">{detailsModal.loan.status || '-'}</span></p>
+                      <p><span className="font-semibold">Scope:</span> {detailsModal.loan.loan_scope || '-'}</p>
+                      <p><span className="font-semibold">Amount:</span> {Number(detailsModal.loan.loan_amount || 0).toFixed(2)}</p>
+                      <p><span className="font-semibold">Refundable:</span> {Number(detailsModal.loan.refundable_amount || 0).toFixed(2)}</p>
+                      <p><span className="font-semibold">Installment:</span> {Number(detailsModal.loan.installment_amount || 0).toFixed(2)}</p>
+                      <p><span className="font-semibold">Interest:</span> {Number(detailsModal.loan.interest_rate || 0).toFixed(2)}% ({detailsModal.loan.interest_type})</p>
+                      <p><span className="font-semibold">Terms:</span> {detailsModal.loan.terms_count} {detailsModal.loan.refund_option}(s)</p>
+                      <p><span className="font-semibold">Charge Mode:</span> {String(detailsModal.loan.charge_payment_mode || '-').replaceAll('_', ' ')}</p>
+                      <p><span className="font-semibold">Collection Status:</span> {String(detailsModal.loan.charges_collection_status || '-').replaceAll('_', ' ')}</p>
+                      <p><span className="font-semibold">Document Charges:</span> {Number(detailsModal.loan.document_charges || 0).toFixed(2)}</p>
+                      <p><span className="font-semibold">Stamp Charges:</span> {Number(detailsModal.loan.stamp_charges || 0).toFixed(2)}</p>
+                      <p><span className="font-semibold">Insurance Charges:</span> {Number(detailsModal.loan.insurance_charges || 0).toFixed(2)}</p>
+                      <p><span className="font-semibold">Route:</span> {detailsModal.loan.route?.name || '-'}</p>
+                      <p><span className="font-semibold">Center:</span> {detailsModal.loan.center?.name || '-'}</p>
+                      <p><span className="font-semibold">Group:</span> {detailsModal.loan.group?.name || '-'}</p>
+                      <p><span className="font-semibold">Manager:</span> {detailsModal.loan.manager_name || '-'}</p>
+                      <p><span className="font-semibold">Field Officer:</span> {detailsModal.loan.field_officer || '-'}</p>
+                      <p><span className="font-semibold">Group Leader:</span> {detailsModal.loan.group_leader || '-'}</p>
+                      <p><span className="font-semibold">Request Date:</span> {formatDisplayDate(detailsModal.loan.loan_request_date)}</p>
+                      <p><span className="font-semibold">Next Payment:</span> {formatDisplayDate(detailsModal.loan.next_payment_date)}</p>
+                      <p><span className="font-semibold">Due Date:</span> {formatDisplayDate(detailsModal.loan.due_date)}</p>
+                      <p><span className="font-semibold">Loan End Date:</span> {formatDisplayDate(detailsModal.loan.loan_end_date)}</p>
+                      <p><span className="font-semibold">Bank:</span> {detailsModal.loan.bank_name || '-'} / {detailsModal.loan.bank_branch || '-'}</p>
+                      <p><span className="font-semibold">Account No:</span> {detailsModal.loan.bank_account_no || '-'}</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wide text-violet-700">Loan Process and Verification Details</p>
+                    {(() => {
+                      const workflowStep = Number(detailsModal.loan.workflow_step || 0);
+                      const callPayload = asRecord(detailsModal.loan.call_confirmation_payload);
+                      const bmPayload = asRecord(detailsModal.loan.bm_approval_payload);
+                      const cashPayload = asRecord(detailsModal.loan.cash_allocation_payload);
+                      const secondCallPayload = asRecord(detailsModal.loan.second_call_confirmation_payload);
+                      const documentVerificationPayload = asRecord(detailsModal.loan.document_verification_payload);
+                      const documentVerificationDocuments = asRecord(documentVerificationPayload.documents);
+
+                      return (
+                        <div className="mt-3 space-y-3 text-sm text-slate-800">
+                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                            <p><span className="font-semibold">Workflow Step:</span> {workflowStep > 0 ? `Step ${workflowStep}` : '-'}</p>
+                            <p><span className="font-semibold">Workflow Updated:</span> {formatDisplayDate(detailsModal.loan.workflow_step_updated_at)}</p>
+                            <p><span className="font-semibold">Status:</span> <span className="capitalize">{detailsModal.loan.status || '-'}</span></p>
+                          </div>
+
+                          {Object.keys(callPayload).length > 0 && (
+                            <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3">
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-700">Step 2: Call Confirmation</p>
+                              <p className="mt-1 text-xs text-slate-600">Confirmed at: {formatDisplayDate(detailsModal.loan.call_confirmed_at)}</p>
+                              <div className="mt-2 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                                {Object.entries(callPayload).map(([key, value]) => (
+                                  <p key={`call-${key}`}><span className="font-semibold">{key.replaceAll('_', ' ')}:</span> {formatProcessValue(value)}</p>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {Object.keys(bmPayload).length > 0 && (
+                            <div className="rounded-lg border border-cyan-200 bg-cyan-50/40 p-3">
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700">Step 3: BM Approval</p>
+                              <p className="mt-1 text-xs text-slate-600">Approved at: {formatDisplayDate(detailsModal.loan.bm_approved_at)}</p>
+                              <div className="mt-2 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                                {Object.entries(bmPayload).map(([key, value]) => (
+                                  <p key={`bm-${key}`}><span className="font-semibold">{key.replaceAll('_', ' ')}:</span> {formatProcessValue(value)}</p>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {Object.keys(cashPayload).length > 0 && (
+                            <div className="rounded-lg border border-sky-200 bg-sky-50/40 p-3">
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-sky-700">Step 5: Cash Allocation</p>
+                              <p className="mt-1 text-xs text-slate-600">Allocated at: {formatDisplayDate(detailsModal.loan.cash_allocated_at)}</p>
+                              <div className="mt-2 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                                {Object.entries(cashPayload).map(([key, value]) => (
+                                  <p key={`cash-${key}`}><span className="font-semibold">{key.replaceAll('_', ' ')}:</span> {formatProcessValue(value)}</p>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {Object.keys(secondCallPayload).length > 0 && (
+                            <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3">
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-indigo-700">Step 8: Second Call Confirmation</p>
+                              <p className="mt-1 text-xs text-slate-600">Confirmed at: {formatDisplayDate(detailsModal.loan.second_call_confirmed_at)}</p>
+                              <div className="mt-2 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                                {Object.entries(secondCallPayload)
+                                  .filter(([key]) => key !== 'confirmations')
+                                  .map(([key, value]) => (
+                                    <p key={`second-${key}`}><span className="font-semibold">{key.replaceAll('_', ' ')}:</span> {formatProcessValue(value)}</p>
+                                  ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {Object.keys(documentVerificationPayload).length > 0 && (
+                            <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-3">
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-amber-700">Step 10: Document Verification</p>
+                              <p className="mt-1 text-xs text-slate-600">Verified at: {formatDisplayDate(detailsModal.loan.document_verified_at)}</p>
+
+                              {Object.keys(documentVerificationDocuments).length > 0 ? (
+                                <div className="mt-2 overflow-x-auto">
+                                  <table className="min-w-full text-xs">
+                                    <thead>
+                                      <tr className="bg-white/70">
+                                        <th className="px-2 py-1 text-left font-semibold text-slate-700">Document</th>
+                                        <th className="px-2 py-1 text-left font-semibold text-slate-700">Available</th>
+                                        <th className="px-2 py-1 text-left font-semibold text-slate-700">Verified</th>
+                                        <th className="px-2 py-1 text-left font-semibold text-slate-700">Not Required</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-amber-100">
+                                      {Object.entries(documentVerificationDocuments).map(([key, value]) => {
+                                        const row = asRecord(value);
+                                        return (
+                                          <tr key={`doc-check-${key}`}>
+                                            <td className="px-2 py-1 text-slate-800">{formatProcessValue(row.label || key)}</td>
+                                            <td className="px-2 py-1 text-slate-800">{formatProcessValue(row.available)}</td>
+                                            <td className="px-2 py-1 text-slate-800">{formatProcessValue(row.confirmed)}</td>
+                                            <td className="px-2 py-1 text-slate-800">{formatProcessValue(row.not_required)}</td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : (
+                                <p className="mt-2 text-xs text-slate-600">No document verification checklist items found.</p>
+                              )}
+                            </div>
+                          )}
+
+                          {Object.keys(callPayload).length === 0
+                            && Object.keys(bmPayload).length === 0
+                            && Object.keys(cashPayload).length === 0
+                            && Object.keys(secondCallPayload).length === 0
+                            && Object.keys(documentVerificationPayload).length === 0 && (
+                              <p className="text-sm text-slate-600">No stored process verification payloads found for this loan record.</p>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="rounded-xl border border-cyan-100 bg-cyan-50/40 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wide text-cyan-700">Loan Request Uploaded Documents</p>
+                    {detailsModalDocuments.length > 0 ? (
+                      <div className="mt-3 grid grid-cols-1 xl:grid-cols-3 gap-3">
+                        <div className="xl:col-span-1 max-h-[28rem] overflow-auto space-y-2">
+                          {detailsModalDocuments.map((doc) => (
+                            <button
+                              key={`details-doc-${doc.id}`}
+                              type="button"
+                              onClick={() => setDetailsModal((prev) => ({ ...prev, selectedDocumentId: doc.id }))}
+                              className={`w-full rounded-lg border p-2 text-left transition ${doc.id === detailsModal.selectedDocumentId ? 'border-cyan-400 bg-cyan-100' : 'border-cyan-100 bg-white hover:bg-cyan-50'}`}
+                            >
+                              <p className="text-sm font-semibold text-slate-900">{doc.document_type}</p>
+                              <p className="text-[11px] text-slate-500 break-all">{doc.original_name || doc.file_path || '-'}</p>
+                              <p className="text-[10px] mt-1 uppercase tracking-wide text-slate-500">Source: {doc.source}</p>
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="xl:col-span-2 rounded-lg border border-cyan-100 bg-white p-3 min-h-[18rem]">
+                          {selectedDetailsDocument ? (
+                            <>
+                              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <p className="text-sm font-semibold text-slate-900">{selectedDetailsDocument.document_type}</p>
+                                  <p className="text-xs text-slate-500">{selectedDetailsDocument.original_name || selectedDetailsDocument.file_path || '-'}</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (selectedDetailsDocument.access_url) {
+                                      void openDocumentInNewTab(selectedDetailsDocument.access_url);
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-white text-xs font-semibold"
+                                >
+                                  <EyeIcon className="h-3.5 w-3.5" />
+                                  <span>Open in new tab</span>
+                                </button>
+                              </div>
+
+                              {selectedDetailsDocument.source === 'customer' && (
+                                <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                                  Customer document is protected. Use "Open in new tab" for authenticated preview.
+                                </div>
+                              )}
+
+                              {selectedDetailsDocumentType === 'image' && selectedDetailsDocument.source !== 'customer' && (
+                                <img
+                                  src={selectedDetailsDocument.access_url || ''}
+                                  alt={selectedDetailsDocument.document_type}
+                                  className="w-full max-h-[60vh] rounded-lg border border-cyan-100 object-contain bg-slate-50"
+                                />
+                              )}
+
+                              {selectedDetailsDocumentType === 'pdf' && selectedDetailsDocument.source !== 'customer' && (
+                                <iframe
+                                  src={selectedDetailsDocument.access_url || ''}
+                                  title={selectedDetailsDocument.document_type}
+                                  className="h-[60vh] w-full rounded-lg border border-cyan-100"
+                                />
+                              )}
+
+                              {(selectedDetailsDocumentType === 'other' || selectedDetailsDocument.source === 'customer') && (
+                                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                                  Preview is not available for this file type. Use "Open in new tab" to view or download.
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                              Select a document from the left list to preview.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-sm text-slate-600">No uploaded loan request documents available.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {detailsModal.activeTab === 'guarantor' && (
+                <div className="mt-4 rounded-xl border border-amber-100 bg-amber-50/40 p-4">
+                  <p className="text-xs font-bold uppercase tracking-wide text-amber-700">Guarantor Details</p>
+                  {Array.isArray(detailsModal.loan.guarantors) && detailsModal.loan.guarantors.length > 0 ? (
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-white/70">
+                          <tr>
+                            <th className="px-2 py-1.5 text-left text-xs font-bold uppercase tracking-wide text-slate-600">Name</th>
+                            <th className="px-2 py-1.5 text-left text-xs font-bold uppercase tracking-wide text-slate-600">NIC</th>
+                            <th className="px-2 py-1.5 text-left text-xs font-bold uppercase tracking-wide text-slate-600">Contact</th>
+                            <th className="px-2 py-1.5 text-left text-xs font-bold uppercase tracking-wide text-slate-600">Relationship</th>
+                            <th className="px-2 py-1.5 text-left text-xs font-bold uppercase tracking-wide text-slate-600">Address</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-amber-100">
+                          {detailsModal.loan.guarantors.map((g, index) => (
+                            <tr key={`details-guarantor-${detailsModal.loan?.id}-${index}`}>
+                              <td className="px-2 py-1.5 text-slate-800">{g.name || '-'}</td>
+                              <td className="px-2 py-1.5 text-slate-800">{g.nic || '-'}</td>
+                              <td className="px-2 py-1.5 text-slate-800">{g.contact_no || '-'}</td>
+                              <td className="px-2 py-1.5 text-slate-800">{g.relationship || '-'}</td>
+                              <td className="px-2 py-1.5 text-slate-800">{g.address || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-slate-600">No guarantor information available.</p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}

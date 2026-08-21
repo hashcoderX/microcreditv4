@@ -100,9 +100,36 @@ class UserNotificationController extends Controller
             ->where('is_read', false)
             ->count();
 
+        $importantUnread = UserNotification::query()
+            ->where('user_id', (int) $user->id)
+            ->where('is_read', false)
+            ->where('is_important', true)
+            ->count();
+
+        $unreadTypeRows = UserNotification::query()
+            ->where('user_id', (int) $user->id)
+            ->where('is_read', false)
+            ->get(['type']);
+
+        $typeCounts = [];
+        foreach ($unreadTypeRows as $row) {
+            $type = trim((string) ($row->type ?? ''));
+            if ($type === '') {
+                $type = 'system';
+            }
+
+            if (!array_key_exists($type, $typeCounts)) {
+                $typeCounts[$type] = 0;
+            }
+
+            $typeCounts[$type]++;
+        }
+
         return response()->json([
             'items' => $items,
             'unread_count' => $unread,
+            'important_unread_count' => $importantUnread,
+            'type_counts' => $typeCounts,
         ]);
     }
 

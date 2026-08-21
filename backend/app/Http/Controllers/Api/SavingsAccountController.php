@@ -65,6 +65,37 @@ class SavingsAccountController extends Controller
         return false;
     }
 
+    private function isSuperAdminUser(?object $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $configured = strtolower(trim((string) env('SYSTEM_SUPER_ADMIN_EMAIL', 'superadmin@softcodelk.com')));
+        $email = strtolower(trim((string) ($user->email ?? '')));
+        if ($email !== '' && ($email === 'superadmin@softcodelk.com' || $email === $configured)) {
+            return true;
+        }
+
+        $designationName = strtolower(trim((string) optional($user->designation)->name));
+        if ($designationName !== '' && str_contains($designationName, 'super admin')) {
+            return true;
+        }
+
+        if (!method_exists($user, 'roles')) {
+            return false;
+        }
+
+        foreach ($user->roles()->pluck('name') as $roleName) {
+            $normalized = strtolower(trim((string) $roleName));
+            if ($normalized !== '' && str_contains($normalized, 'super admin')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function scopedBranchId(Request $request): ?int
     {
         $requestedBranchId = (int) ($request->get('branch_id', 0));
@@ -209,6 +240,67 @@ class SavingsAccountController extends Controller
             },
         ]);
         return response()->json($account);
+    }
+
+    public function update(Request $request, int $id): JsonResponse
+    {
+        if (!$this->isSuperAdminUser($request->user())) {
+            return response()->json([
+                'message' => 'Only superadmin can edit accounts.',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'interest_type' => ['sometimes', 'required', 'in:' . implode(',', self::INTEREST_TYPES)],
+            'interest_rate' => ['sometimes', 'required', 'numeric', 'min:0'],
+            'opened_at' => ['sometimes', 'nullable', 'date'],
+            'status' => ['sometimes', 'required', 'in:active,dormant,closed'],
+        ]);
+
+        $account = $this->resolveAccountOrFail($request, $id);
+
+        $payload = [];
+        if (array_key_exists('interest_type', $validated)) {
+            $payload['interest_type'] = (string) $validated['interest_type'];
+        }
+        if (array_key_exists('interest_rate', $validated)) {
+            $payload['interest_rate'] = round((float) $validated['interest_rate'], 4);
+        }
+        if (array_key_exists('opened_at', $validated)) {
+            $payload['opened_at'] = $validated['opened_at'] ?: null;
+        }
+        if (array_key_exists('status', $validated)) {
+            $payload['status'] = (string) $validated['status'];
+        }
+
+        if (!empty($payload)) {
+            $account->update($payload);
+        }
+
+        return response()->json($account->fresh()->load('customer:id,customer_code,first_name,last_name,phone'));
+    }
+
+    public function destroy(Request $request, int $id): JsonResponse
+    {
+        if (!$this->isAdminUser($request->user())) {
+            return response()->json([
+                'message' => 'Only admin can remove accounts.',
+            ], 403);
+        }
+
+        $account = $this->resolveAccountOrFail($request, $id);
+
+        if (SavingsAccountTransaction::query()->where('savings_account_id', $account->id)->exists()) {
+            return response()->json([
+                'message' => 'This account has transactions and cannot be removed.',
+            ], 422);
+        }
+
+        $account->delete();
+
+        return response()->json([
+            'message' => 'Account removed successfully.',
+        ]);
     }
 
     public function transactions(Request $request, int $id): JsonResponse

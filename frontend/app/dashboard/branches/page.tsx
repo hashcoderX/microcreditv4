@@ -35,12 +35,41 @@ interface Company {
   phone: string;
   website: string;
   manager_user_id?: number | null;
+  is_main_branch?: boolean;
+  business_owner_user_id?: number | null;
+  ceo_user_id?: number | null;
+  regional_manager_user_id?: number | null;
   opening_asset?: string | number | null;
   manager?: {
     id: number;
     name: string;
     email: string;
   } | null;
+  business_owner?: {
+    id: number;
+    name: string;
+    email: string;
+  } | null;
+  ceo?: {
+    id: number;
+    name: string;
+    email: string;
+  } | null;
+  regional_manager?: {
+    id: number;
+    name: string;
+    email: string;
+  } | null;
+  leadership_assignments?: Array<{
+    id: number;
+    role_type: LeadershipRoleType;
+    user_id: number;
+    user?: {
+      id: number;
+      name: string;
+      email: string;
+    } | null;
+  }>;
   created_at: string;
   updated_at: string;
 }
@@ -80,6 +109,69 @@ type BankFormRow = {
   opening_balance: string;
 };
 
+type LeadershipRoleType = 'business_owner' | 'ceo' | 'regional_manager' | 'zonal_manager';
+
+type LeadershipFormRow = {
+  key: string;
+  role_type: LeadershipRoleType;
+  user_id: string;
+};
+
+const leadershipRoleOptions: Array<{ value: LeadershipRoleType; label: string }> = [
+  { value: 'business_owner', label: 'Business Owner' },
+  { value: 'ceo', label: 'CEO' },
+  { value: 'regional_manager', label: 'Regional Manager' },
+  { value: 'zonal_manager', label: 'Zonal Manager' },
+];
+
+function roleLabel(roleType: LeadershipRoleType): string {
+  const hit = leadershipRoleOptions.find((option) => option.value === roleType);
+  return hit?.label || roleType;
+}
+
+function newLeadershipRow(roleType: LeadershipRoleType = 'regional_manager'): LeadershipFormRow {
+  return {
+    key: `leader-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role_type: roleType,
+    user_id: '',
+  };
+}
+
+function defaultLeadershipRows(): LeadershipFormRow[] {
+  return [
+    newLeadershipRow('business_owner'),
+    newLeadershipRow('ceo'),
+    newLeadershipRow('regional_manager'),
+  ];
+}
+
+function leadershipNames(company: Company, roleType: LeadershipRoleType): string[] {
+  const fromAssignments = Array.isArray(company.leadership_assignments)
+    ? company.leadership_assignments
+        .filter((row) => row.role_type === roleType)
+        .map((row) => String(row.user?.name || '').trim())
+        .filter(Boolean)
+    : [];
+
+  if (fromAssignments.length > 0) {
+    return Array.from(new Set(fromAssignments));
+  }
+
+  if (roleType === 'business_owner' && company.business_owner?.name) {
+    return [company.business_owner.name];
+  }
+
+  if (roleType === 'ceo' && company.ceo?.name) {
+    return [company.ceo.name];
+  }
+
+  if (roleType === 'regional_manager' && company.regional_manager?.name) {
+    return [company.regional_manager.name];
+  }
+
+  return [];
+}
+
 function newBankRow(): BankFormRow {
   return {
     key: `bank-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -118,6 +210,7 @@ export default function Branches() {
   const [phone, setPhone] = useState('');
   const [website, setWebsite] = useState('');
   const [managerUserId, setManagerUserId] = useState('');
+  const [leadershipRows, setLeadershipRows] = useState<LeadershipFormRow[]>(defaultLeadershipRows());
   const [openingAsset, setOpeningAsset] = useState('0');
   const [cashOpeningBalance, setCashOpeningBalance] = useState('0');
   const [bankRows, setBankRows] = useState<BankFormRow[]>([newBankRow()]);
@@ -131,6 +224,8 @@ export default function Branches() {
     setToken(storedToken);
     fetchCompanies(storedToken);
     fetchUsers(storedToken);
+    void fetchWidgetPreferences(storedToken);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   const filteredCompanies = useMemo(() => {
@@ -153,10 +248,12 @@ export default function Branches() {
   const stats = useMemo(() => {
     const totalOpening = companies.reduce((sum, c) => sum + Number(c.opening_asset || 0), 0);
     const withManager = companies.filter((c) => c.manager?.name).length;
+    const mainBranch = companies.find((c) => c.is_main_branch) || null;
     return {
       total: companies.length,
       withManager,
       totalOpening,
+      mainBranch,
     };
   }, [companies]);
   const statCards = [
@@ -170,6 +267,19 @@ export default function Branches() {
   const showSearchListWidget = !hiddenWidgetKeys.includes(`${widgetPrefix}search_list`);
   const visibleStatCards = statCards.filter((card) => !hiddenWidgetKeys.includes(`${widgetPrefix}stat_${card.key}`));
   const showAnyWidget = showHeroWidget || showStatsWidget || showNoticeWidget || showSearchListWidget;
+
+  const mainBranchId = useMemo(() => {
+    const flagged = companies.find((company) => company.is_main_branch);
+    if (flagged) return flagged.id;
+
+    if (companies.length === 0) return null;
+    const first = [...companies].sort((a, b) => a.id - b.id)[0];
+    return first?.id ?? null;
+  }, [companies]);
+
+  const isCreatingFirstBranch = !editingCompany && companies.length === 0;
+  const isEditingMainBranch = Boolean(editingCompany && mainBranchId && editingCompany.id === mainBranchId);
+  const showMainBranchSetup = isCreatingFirstBranch || isEditingMainBranch;
 
   const fetchWidgetPreferences = useCallback(async (authToken: string) => {
     try {
@@ -279,6 +389,7 @@ export default function Branches() {
     setPhone('');
     setWebsite('');
     setManagerUserId('');
+    setLeadershipRows(defaultLeadershipRows());
     setOpeningAsset('0');
     setCashOpeningBalance('0');
     setBankRows([newBankRow()]);
@@ -288,6 +399,20 @@ export default function Branches() {
   const openCreateForm = () => {
     resetForm();
     setShowForm(true);
+  };
+
+  const addLeadershipRow = (roleType: LeadershipRoleType = 'regional_manager') => {
+    setLeadershipRows((rows) => [...rows, newLeadershipRow(roleType)]);
+  };
+
+  const removeLeadershipRow = (key: string) => {
+    setLeadershipRows((rows) => {
+      if (rows.length <= 1) {
+        return rows;
+      }
+
+      return rows.filter((row) => row.key !== key);
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -304,6 +429,17 @@ export default function Branches() {
       manager_user_id: managerUserId ? Number(managerUserId) : null,
       opening_asset: openingAsset ? Number(openingAsset) : 0,
     };
+
+    if (showMainBranchSetup) {
+      const leadershipAssignments = leadershipRows
+        .map((row) => ({
+          role_type: row.role_type,
+          user_id: row.user_id ? Number(row.user_id) : 0,
+        }))
+        .filter((row) => row.user_id > 0);
+
+      formData.leadership_assignments = leadershipAssignments;
+    }
 
     if (!editingCompany) {
       formData.cash_opening_balance = cashOpeningBalance ? Number(cashOpeningBalance) : 0;
@@ -356,6 +492,46 @@ export default function Branches() {
     setPhone(company.phone || '');
     setWebsite(company.website || '');
     setManagerUserId(company.manager_user_id ? String(company.manager_user_id) : '');
+
+    const normalizedAssignments = Array.isArray(company.leadership_assignments)
+      ? company.leadership_assignments
+          .filter((row) => row && row.user_id)
+          .map((row) => ({
+            key: `leader-existing-${row.id}`,
+            role_type: row.role_type,
+            user_id: String(row.user_id),
+          }))
+      : [];
+
+    if (normalizedAssignments.length > 0) {
+      setLeadershipRows(normalizedAssignments);
+    } else {
+      const legacyRows: LeadershipFormRow[] = [];
+      if (company.business_owner_user_id) {
+        legacyRows.push({
+          key: `legacy-owner-${company.id}`,
+          role_type: 'business_owner',
+          user_id: String(company.business_owner_user_id),
+        });
+      }
+      if (company.ceo_user_id) {
+        legacyRows.push({
+          key: `legacy-ceo-${company.id}`,
+          role_type: 'ceo',
+          user_id: String(company.ceo_user_id),
+        });
+      }
+      if (company.regional_manager_user_id) {
+        legacyRows.push({
+          key: `legacy-regional-${company.id}`,
+          role_type: 'regional_manager',
+          user_id: String(company.regional_manager_user_id),
+        });
+      }
+
+      setLeadershipRows(legacyRows.length > 0 ? legacyRows : defaultLeadershipRows());
+    }
+
     setOpeningAsset(String(company.opening_asset ?? 0));
     setShowForm(true);
   };
@@ -594,7 +770,7 @@ export default function Branches() {
                 </p>
                 <p className="mt-1 text-sm text-slate-600">
                   {companies.length === 0
-                    ? 'Create your first branch with opening accounting balances.'
+                    ? 'Create your first branch with opening accounting balances and main-branch leadership assignments.'
                     : 'Try a different search term.'}
                 </p>
                 {companies.length === 0 ? (
@@ -659,6 +835,11 @@ export default function Branches() {
                       <h3 className="text-lg font-extrabold text-slate-900 group-hover:text-teal-800 transition-colors">
                         {company.name}
                       </h3>
+                      {mainBranchId && company.id === mainBranchId ? (
+                        <div className="mt-1 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
+                          Main Branch
+                        </div>
+                      ) : null}
                       <p className="text-sm text-slate-600 mt-0.5 flex items-center gap-1.5">
                         <Mail className="h-3.5 w-3.5 shrink-0" />
                         {company.email}
@@ -699,6 +880,19 @@ export default function Branches() {
                           </p>
                         </div>
                       </div>
+
+                      {mainBranchId && company.id === mainBranchId ? (
+                        <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50/70 px-3 py-2.5 text-[11px] text-amber-900 space-y-1">
+                          {(['business_owner', 'ceo', 'regional_manager', 'zonal_manager'] as LeadershipRoleType[]).map((roleType) => {
+                            const names = leadershipNames(company, roleType);
+                            return (
+                              <p key={`${company.id}-${roleType}`}>
+                                <span className="font-bold">{roleLabel(roleType)}:</span> {names.length > 0 ? names.join(', ') : 'Not assigned'}
+                              </p>
+                            );
+                          })}
+                        </div>
+                      ) : null}
 
                       <p className="mt-3 text-[11px] font-semibold text-teal-700">Open branch dashboard →</p>
                     </div>
@@ -747,6 +941,17 @@ export default function Branches() {
                 <p className="text-xs text-slate-600 mt-0.5">Contact and location information</p>
               </div>
 
+              {showMainBranchSetup ? (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50/60 px-4 py-3">
+                  <p className="text-sm font-bold text-amber-900">Main branch leadership setup</p>
+                  <p className="text-xs text-amber-800 mt-0.5">
+                    {isCreatingFirstBranch
+                      ? 'This first branch will be marked as the Main Branch.'
+                      : 'Main Branch leadership assignments can be updated here.'}
+                  </p>
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="sm:col-span-2">
                   <label className={labelClass}>Branch name *</label>
@@ -779,6 +984,86 @@ export default function Branches() {
                     ))}
                   </select>
                 </div>
+
+                {showMainBranchSetup ? (
+                  <div className="sm:col-span-2 rounded-2xl border border-amber-100 bg-white/90 p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-bold uppercase tracking-wide text-amber-800">Leadership assignments</p>
+                      <button
+                        type="button"
+                        onClick={() => addLeadershipRow('zonal_manager')}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Add assignment
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {leadershipRows.map((row) => (
+                        <div key={row.key} className="grid grid-cols-1 sm:grid-cols-[1fr_1.6fr_auto] gap-2 items-end rounded-xl border border-amber-100 bg-amber-50/40 p-3">
+                          <div>
+                            <label className={labelClass}>Position</label>
+                            <select
+                              value={row.role_type}
+                              onChange={(e) =>
+                                setLeadershipRows((rows) =>
+                                  rows.map((item) =>
+                                    item.key === row.key
+                                      ? { ...item, role_type: e.target.value as LeadershipRoleType }
+                                      : item
+                                  )
+                                )
+                              }
+                              className={inputClass}
+                            >
+                              {leadershipRoleOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className={labelClass}>Assigned user</label>
+                            <select
+                              value={row.user_id}
+                              onChange={(e) =>
+                                setLeadershipRows((rows) =>
+                                  rows.map((item) =>
+                                    item.key === row.key ? { ...item, user_id: e.target.value } : item
+                                  )
+                                )
+                              }
+                              className={inputClass}
+                            >
+                              <option value="">Not assigned</option>
+                              {users.map((user) => (
+                                <option key={`${row.key}-${user.id}`} value={user.id}>
+                                  {user.name} ({user.email})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => removeLeadershipRow(row.key)}
+                            disabled={leadershipRows.length <= 1}
+                            className="inline-flex items-center justify-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-amber-800/90">
+                      Multiple users can be assigned to the same position (for example multiple Regional Managers or Zonal Managers).
+                    </p>
+                  </div>
+                ) : null}
               </div>
 
               <div className="rounded-2xl border border-violet-100 bg-violet-50/40 px-4 py-3">

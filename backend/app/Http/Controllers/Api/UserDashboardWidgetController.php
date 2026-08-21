@@ -42,7 +42,7 @@ class UserDashboardWidgetController extends Controller
         $widgets = UserDashboardWidget::query()
             ->where('user_id', (int) $user->id)
             ->orderBy('widget_key')
-            ->get(['widget_key', 'is_visible', 'hidden_at']);
+            ->get(['widget_key', 'is_visible', 'hidden_route_path', 'hidden_at']);
 
         return response()->json([
             'widgets' => $widgets,
@@ -59,19 +59,32 @@ class UserDashboardWidgetController extends Controller
         $validated = $request->validate([
             'widget_key' => ['required', 'string', 'max:120'],
             'is_visible' => ['required', 'boolean'],
+            'hidden_route_path' => ['nullable', 'string', 'max:255'],
         ]);
 
         $isVisible = (bool) $validated['is_visible'];
+        $hiddenRoutePath = trim((string) ($validated['hidden_route_path'] ?? ''));
+        if ($hiddenRoutePath !== '' && !str_starts_with($hiddenRoutePath, '/dashboard')) {
+            $hiddenRoutePath = '';
+        }
+
+        $updatePayload = [
+            'is_visible' => $isVisible,
+            'hidden_at' => $isVisible ? null : now(),
+        ];
+
+        if ($isVisible) {
+            $updatePayload['hidden_route_path'] = null;
+        } elseif ($hiddenRoutePath !== '') {
+            $updatePayload['hidden_route_path'] = $hiddenRoutePath;
+        }
 
         $row = UserDashboardWidget::query()->updateOrCreate(
             [
                 'user_id' => (int) $user->id,
                 'widget_key' => trim((string) $validated['widget_key']),
             ],
-            [
-                'is_visible' => $isVisible,
-                'hidden_at' => $isVisible ? null : now(),
-            ]
+            $updatePayload
         );
 
         return response()->json([
@@ -199,13 +212,68 @@ class UserDashboardWidgetController extends Controller
             ->where('is_visible', false)
             ->orderByDesc('hidden_at')
             ->orderBy('widget_key')
-            ->get(['widget_key', 'hidden_at']);
+            ->get(['widget_key', 'hidden_route_path', 'hidden_at']);
 
         return response()->json([
             'employee_id' => $employeeId,
             'user_id' => (int) $targetUser->id,
             'hidden_widgets' => $widgets,
             'hidden_count' => $widgets->count(),
+        ]);
+    }
+
+    public function unhideEmployeeWidget(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized.'], 401);
+        }
+
+        if (!$this->isAdminUser($user)) {
+            return response()->json(['message' => 'Only admin or super admin can unhide employee widgets.'], 403);
+        }
+
+        $validated = $request->validate([
+            'employee_id' => ['required', 'integer', 'exists:employees,id'],
+            'widget_key' => ['required', 'string', 'max:120'],
+        ]);
+
+        $employeeId = (int) $validated['employee_id'];
+        $widgetKey = trim((string) $validated['widget_key']);
+
+        $targetUser = User::query()
+            ->where('employee_id', $employeeId)
+            ->first();
+
+        if (!$targetUser) {
+            return response()->json(['message' => 'No user account found for this employee.'], 404);
+        }
+
+        $updatedCount = UserDashboardWidget::query()
+            ->where('user_id', (int) $targetUser->id)
+            ->where('widget_key', $widgetKey)
+            ->where('is_visible', false)
+            ->update([
+                'is_visible' => true,
+                'hidden_route_path' => null,
+                'hidden_at' => null,
+            ]);
+
+        if ($updatedCount < 1) {
+            return response()->json([
+                'message' => 'Widget is already visible or not found.',
+                'employee_id' => $employeeId,
+                'widget_key' => $widgetKey,
+                'updated_count' => 0,
+            ]);
+        }
+
+        return response()->json([
+            'message' => 'Employee widget restored successfully.',
+            'employee_id' => $employeeId,
+            'user_id' => (int) $targetUser->id,
+            'widget_key' => $widgetKey,
+            'updated_count' => $updatedCount,
         ]);
     }
 

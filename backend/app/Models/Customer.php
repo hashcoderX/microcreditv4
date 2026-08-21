@@ -12,11 +12,15 @@ class Customer extends Model
 
     protected $fillable = [
         'tenant_id', 'branch_id', 'customer_code',
-        'first_name', 'last_name', 'email', 'phone', 'nic_passport',
+        'first_name', 'last_name', 'email', 'phone', 'nic_passport', 'old_nic',
+        'passport_no', 'driving_license_no', 'tax_identification_no', 'biometric_reference',
         'date_of_birth', 'gender', 'marital_status', 'nationality',
         'permanent_address', 'current_address', 'photo_path',
         'employment_type', 'employer_name', 'job_title', 'monthly_income', 'other_income_sources',
         'existing_loans', 'monthly_loan_obligations', 'credit_score',
+        'risk_total_score', 'risk_grade',
+        'additional_details',
+        'onboarding_payload',
         'created_by', 'status', 'user_id',
     ];
 
@@ -30,6 +34,9 @@ class Customer extends Model
         'monthly_income' => 'decimal:2',
         'monthly_loan_obligations' => 'decimal:2',
         'credit_score' => 'integer',
+        'risk_total_score' => 'integer',
+        'additional_details' => 'array',
+        'onboarding_payload' => 'array',
     ];
 
     public function getPhotoUrlAttribute(): ?string

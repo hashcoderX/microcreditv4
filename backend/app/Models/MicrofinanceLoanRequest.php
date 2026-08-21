@@ -18,9 +18,11 @@ class MicrofinanceLoanRequest extends Model
         'mf_center_id',
         'mf_group_id',
         'manager_name',
+        'approval_employee_id',
         'field_officer',
         'group_leader',
         'loan_code',
+        'reference_no',
         'customer_no',
         'customer_name',
         'nick_name',
@@ -30,9 +32,22 @@ class MicrofinanceLoanRequest extends Model
         'bank_name',
         'bank_branch',
         'bank_account_no',
+        'evaluation_payload',
+        'evaluation_payload_version',
+        'call_confirmation_payload',
+        'call_confirmed_at',
+        'bm_approval_payload',
+        'bm_approved_at',
+        'cash_allocation_payload',
+        'cash_allocated_at',
+        'second_call_confirmation_payload',
+        'second_call_confirmed_at',
+        'document_verification_payload',
+        'document_verified_at',
         'loan_amount',
         'reason',
         'refund_option',
+        'assumed_month_days',
         'interest_type',
         'interest_rate',
         'terms_count',
@@ -64,14 +79,31 @@ class MicrofinanceLoanRequest extends Model
         'closed_reason',
         'loan_request_date',
         'status',
+        'workflow_step',
+        'workflow_step_updated_at',
         'created_by',
     ];
 
     protected $casts = [
         'loan_amount' => 'decimal:2',
+        'assumed_month_days' => 'integer',
         'refundable_amount' => 'decimal:2',
         'installment_amount' => 'decimal:2',
         'loan_balance' => 'decimal:2',
+        'evaluation_payload' => 'array',
+        'evaluation_payload_version' => 'integer',
+        'call_confirmation_payload' => 'array',
+        'call_confirmed_at' => 'datetime',
+        'bm_approval_payload' => 'array',
+        'bm_approved_at' => 'datetime',
+        'cash_allocation_payload' => 'array',
+        'cash_allocated_at' => 'datetime',
+        'second_call_confirmation_payload' => 'array',
+        'second_call_confirmed_at' => 'datetime',
+        'document_verification_payload' => 'array',
+        'document_verified_at' => 'datetime',
+        'workflow_step' => 'integer',
+        'workflow_step_updated_at' => 'datetime',
         'due_date' => 'date',
         'charges_wallet_credited_at' => 'datetime',
         'hold_at' => 'datetime',
@@ -86,6 +118,16 @@ class MicrofinanceLoanRequest extends Model
     public function branch()
     {
         return $this->belongsTo(Company::class, 'branch_id');
+    }
+
+    public function approvalEmployee()
+    {
+        return $this->belongsTo(Employee::class, 'approval_employee_id');
+    }
+
+    public function createdBy()
+    {
+        return $this->belongsTo(User::class, 'created_by');
     }
 
     public function center()

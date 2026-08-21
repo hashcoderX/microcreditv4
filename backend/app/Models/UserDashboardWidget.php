@@ -11,11 +11,13 @@ class UserDashboardWidget extends Model
         'user_id',
         'widget_key',
         'is_visible',
+        'hidden_route_path',
         'hidden_at',
     ];
 
     protected $casts = [
         'is_visible' => 'boolean',
+        'hidden_route_path' => 'string',
         'hidden_at' => 'datetime',
     ];
 

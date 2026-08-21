@@ -49,7 +49,12 @@ Route::get('/media/company/logo', function () {
             ->first();
 
         if (!$companyWithLogo) {
-            abort(404);
+            $fallbackPath = public_path('favicon.ico');
+            if (!file_exists($fallbackPath)) {
+                abort(404);
+            }
+
+            return response()->file($fallbackPath);
         }
 
         $response = StoredFile::response($companyWithLogo->logo_path);
@@ -58,9 +63,46 @@ Route::get('/media/company/logo', function () {
         return $response;
     } catch (\Throwable $exception) {
         report($exception);
-        abort(404);
+
+        $fallbackPath = public_path('favicon.ico');
+        if (!file_exists($fallbackPath)) {
+            abort(404);
+        }
+
+        return response()->file($fallbackPath);
     }
 })->name('company.logo.current');
+
+Route::get('/media/company/profile', function () {
+    try {
+        $company = Company::query()->orderByDesc('updated_at')->first();
+
+        if (!$company) {
+            return response()->json([
+                'name' => '',
+                'logo_url' => '/media/company/logo',
+            ]);
+        }
+
+        $logoUrl = '';
+        if (!empty($company->logo_path)) {
+            $logoUrl = '/media/companies/' . $company->id . '/logo';
+        }
+
+        return response()->json([
+            'id' => (int) $company->id,
+            'name' => (string) ($company->name ?? ''),
+            'logo_url' => $logoUrl,
+        ]);
+    } catch (\Throwable $exception) {
+        report($exception);
+
+        return response()->json([
+            'name' => '',
+            'logo_url' => '/media/company/logo',
+        ]);
+    }
+})->name('company.profile.current');
 
 Route::get('/media/loan-documents/{document}', function (MicrofinanceLoanRequestDocument $document) {
     if (!$document->file_path) {

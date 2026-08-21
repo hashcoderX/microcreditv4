@@ -24,7 +24,9 @@ class StoreEmployeeRequest extends FormRequest
         return [
             'first_name' => 'required|string|max:255',
             'last_name' => 'required|string|max:255',
-            'email' => 'required|email|unique:employees|unique:users',
+            'user_id' => 'required|string|max:255|unique:users,email',
+            'email' => 'required|email|unique:employees,email',
+            'nic_passport' => 'required|string|max:100|unique:employees,nic_passport',
             'password' => 'required|string|min:8',
             'phone' => 'nullable|string|max:20',
             'reporting_person' => 'nullable|string|max:255',
@@ -35,6 +37,7 @@ class StoreEmployeeRequest extends FormRequest
             'basic_salary' => 'required|numeric|min:0',
             'commission' => 'nullable|numeric|min:0|max:100',
             'commission_base' => 'nullable|in:company_profit,own_business',
+            'monthly_target' => 'nullable|numeric|min:0',
             'overtime_payment_per_hour' => 'nullable|numeric|min:0',
             'deduction_late_hour' => 'nullable|numeric|min:0',
             'epf_employee_contribution' => 'nullable|numeric|min:0|max:100',

@@ -1,7 +1,7 @@
 'use client';
 
 import axios from 'axios';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { getApiBaseUrl } from '@/lib/api';
 
@@ -11,7 +11,25 @@ type NotificationType =
   | 'approval'
   | 'finance'
   | 'reminder'
-  | 'microfinance_loan_request';
+  | 'step_1'
+  | 'step_2'
+  | 'step_3'
+  | 'step_4'
+  | 'step_5'
+  | 'step_6'
+  | 'step_7'
+  | 'step_8'
+  | 'step_9'
+  | 'step_10'
+  | 'step_11'
+  | 'step_12'
+  | 'step_13'
+  | 'step_14'
+  | 'microfinance_loan_request'
+  | 'microfinance_approval_request'
+  | 'microfinance_send_back';
+
+type NotificationScope = 'all' | 'important' | 'loan' | 'approval';
 
 type NotificationItem = {
   id: number;
@@ -41,7 +59,23 @@ const typeStyles: Record<NotificationType, string> = {
   approval: 'bg-amber-100 text-amber-700 border-amber-200',
   finance: 'bg-emerald-100 text-emerald-700 border-emerald-200',
   reminder: 'bg-rose-100 text-rose-700 border-rose-200',
+  step_1: 'bg-lime-100 text-lime-700 border-lime-200',
+  step_2: 'bg-slate-100 text-slate-700 border-slate-200',
+  step_3: 'bg-red-100 text-red-700 border-red-200',
+  step_4: 'bg-amber-100 text-amber-700 border-amber-200',
+  step_5: 'bg-blue-100 text-blue-700 border-blue-200',
+  step_6: 'bg-cyan-100 text-cyan-700 border-cyan-200',
+  step_7: 'bg-indigo-100 text-indigo-700 border-indigo-200',
+  step_8: 'bg-teal-100 text-teal-700 border-teal-200',
+  step_9: 'bg-violet-100 text-violet-700 border-violet-200',
+  step_10: 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200',
+  step_11: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  step_12: 'bg-sky-100 text-sky-700 border-sky-200',
+  step_13: 'bg-orange-100 text-orange-700 border-orange-200',
+  step_14: 'bg-green-100 text-green-700 border-green-200',
   microfinance_loan_request: 'bg-indigo-100 text-indigo-700 border-indigo-200',
+  microfinance_approval_request: 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200',
+  microfinance_send_back: 'bg-rose-100 text-rose-700 border-rose-200',
 };
 
 const resolveNotificationType = (value: string): NotificationType => {
@@ -61,7 +95,11 @@ export default function NotificationsPage() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<'all' | 'unread' | 'important'>('all');
+  const [scope, setScope] = useState<NotificationScope>('all');
   const [summary, setSummary] = useState({ total: 0, unread: 0, important: 0 });
+  const [barUnreadCount, setBarUnreadCount] = useState(0);
+  const [barImportantUnreadCount, setBarImportantUnreadCount] = useState(0);
+  const [barTypeCounts, setBarTypeCounts] = useState<Record<string, number>>({});
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
@@ -121,9 +159,39 @@ export default function NotificationsPage() {
     }
   }, [apiBaseUrl, token, tab, query]);
 
+  const fetchNotificationBarSnapshot = useCallback(async () => {
+    if (!token) return;
+
+    try {
+      const response = await axios.get(`${apiBaseUrl}/notifications/preview`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+        params: { limit: 8 },
+      });
+
+      setBarUnreadCount(Number(response.data?.unread_count || 0));
+      setBarImportantUnreadCount(Number(response.data?.important_unread_count || 0));
+      const nextTypeCounts =
+        response.data?.type_counts && typeof response.data.type_counts === 'object'
+          ? (response.data.type_counts as Record<string, number>)
+          : {};
+      setBarTypeCounts(nextTypeCounts);
+    } catch {
+      setBarUnreadCount(0);
+      setBarImportantUnreadCount(0);
+      setBarTypeCounts({});
+    }
+  }, [apiBaseUrl, token]);
+
   useEffect(() => {
     void fetchNotifications();
   }, [fetchNotifications]);
+
+  useEffect(() => {
+    void fetchNotificationBarSnapshot();
+  }, [fetchNotificationBarSnapshot]);
 
   const markAsRead = async (id: number) => {
     if (!token) return;
@@ -139,6 +207,7 @@ export default function NotificationsPage() {
         }
       );
       await fetchNotifications();
+      await fetchNotificationBarSnapshot();
     } catch {
       setNotice('Failed to mark notification as read.');
     }
@@ -158,6 +227,7 @@ export default function NotificationsPage() {
         }
       );
       await fetchNotifications();
+      await fetchNotificationBarSnapshot();
     } catch {
       setNotice('Failed to update notification.');
     }
@@ -177,6 +247,7 @@ export default function NotificationsPage() {
         }
       );
       await fetchNotifications();
+      await fetchNotificationBarSnapshot();
     } catch {
       setNotice('Failed to mark all notifications as read.');
     }
@@ -192,6 +263,7 @@ export default function NotificationsPage() {
         },
       });
       await fetchNotifications();
+      await fetchNotificationBarSnapshot();
     } catch {
       setNotice('Failed to clear read notifications.');
     }
@@ -201,6 +273,44 @@ export default function NotificationsPage() {
   const importantCount = summary.important;
   const totalCount = summary.total;
 
+  const scopedNotifications = useMemo(() => {
+    if (scope === 'all') return notifications;
+    if (scope === 'important') return notifications.filter((row) => row.important);
+    if (scope === 'loan') return notifications.filter((row) => row.type === 'microfinance_loan_request');
+    return notifications.filter((row) => row.type === 'microfinance_approval_request' || row.type === 'microfinance_send_back');
+  }, [notifications, scope]);
+
+  const notificationBarItems = [
+    {
+      key: 'all' as NotificationScope,
+      icon: '🔔',
+      title: 'All Unread',
+      count: barUnreadCount,
+      color: 'bg-red-100 text-red-800 border-red-200',
+    },
+    {
+      key: 'important' as NotificationScope,
+      icon: '⚠️',
+      title: 'Important',
+      count: barImportantUnreadCount,
+      color: 'bg-amber-100 text-amber-800 border-amber-200',
+    },
+    {
+      key: 'loan' as NotificationScope,
+      icon: '📄',
+      title: 'Loan Requests',
+      count: Number(barTypeCounts['microfinance_loan_request'] || 0),
+      color: 'bg-blue-100 text-blue-800 border-blue-200',
+    },
+    {
+      key: 'approval' as NotificationScope,
+      icon: '✅',
+      title: 'Approval Requests',
+      count: Number(barTypeCounts['microfinance_approval_request'] || 0),
+      color: 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200',
+    },
+  ];
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 via-white to-amber-50 p-4 sm:p-6 lg:p-8">
       <div className="mx-auto max-w-6xl space-y-6">
@@ -208,10 +318,10 @@ export default function NotificationsPage() {
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700">
-                Notification Center
+                Action Center
               </p>
-              <h1 className="mt-3 text-2xl font-bold text-slate-900 sm:text-3xl">Notifications</h1>
-              <p className="mt-1 text-sm text-slate-600">Stay updated with system alerts, approvals, and reminders.</p>
+              <h1 className="mt-3 text-2xl font-bold text-slate-900 sm:text-3xl">Action Center</h1>
+              <p className="mt-1 text-sm text-slate-600">Stay updated with alerts, approvals, and workflow actions.</p>
             </div>
             <button
               onClick={() => router.push('/dashboard')}
@@ -240,6 +350,34 @@ export default function NotificationsPage() {
           <div className="rounded-2xl border border-rose-100 bg-gradient-to-br from-rose-50 to-white p-4 shadow-sm">
             <p className="text-xs uppercase tracking-wide text-rose-600">Important</p>
             <p className="mt-1 text-2xl font-bold text-rose-700">{importantCount}</p>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-lg">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="px-2 text-xs font-bold uppercase tracking-wide text-slate-600">Dashboard Action Center</h3>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold text-slate-600">Quick Filter</span>
+          </div>
+          <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+            {notificationBarItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => {
+                  setScope(item.key);
+                  setTab(item.key === 'all' || item.key === 'loan' || item.key === 'approval' ? 'all' : 'important');
+                }}
+                className={`inline-flex min-w-[150px] shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-left transition hover:shadow ${item.color} ${
+                  scope === item.key ? 'ring-2 ring-slate-300' : ''
+                }`}
+              >
+                <span className="text-base">{item.icon}</span>
+                <div className="leading-tight">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide">{item.title}</p>
+                  <p className="text-base font-extrabold">{item.count}</p>
+                </div>
+              </button>
+            ))}
           </div>
         </div>
 
@@ -289,12 +427,12 @@ export default function NotificationsPage() {
             <div className="rounded-2xl border border-slate-200 bg-white/90 p-8 text-center text-slate-500 shadow-sm">
               Loading notifications...
             </div>
-          ) : notifications.length === 0 ? (
+          ) : scopedNotifications.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-white/90 p-8 text-center text-slate-500 shadow-sm">
               No notifications found for this filter.
             </div>
           ) : (
-            notifications.map((row) => (
+            scopedNotifications.map((row) => (
               <div
                 key={row.id}
                 className={`rounded-2xl border p-4 shadow-sm transition ${

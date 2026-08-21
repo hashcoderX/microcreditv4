@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import axios from 'axios';
 import { getApiBaseUrl, getBackendOrigin } from '@/lib/api';
@@ -35,6 +35,11 @@ type AuthEmployee = {
   last_name?: string;
   email?: string;
   branch_id?: number;
+  branch_name?: string;
+  branch?: {
+    id?: number;
+    name?: string;
+  } | null;
   designation_id?: number;
   wallet?: AuthEmployeeWallet | null;
 };
@@ -43,6 +48,11 @@ type AuthUser = {
   id: number;
   name?: string;
   email: string;
+  branch_id?: number;
+  branch?: {
+    id?: number;
+    name?: string;
+  } | null;
   role?: string;
   designation?: { id?: number; name?: string } | null;
   roles?: AuthRole[];
@@ -213,12 +223,14 @@ export default function Dashboard() {
   const [notificationPreviewOpen, setNotificationPreviewOpen] = useState(false);
   const [notificationPreviewLoading, setNotificationPreviewLoading] = useState(false);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
+  const [notificationTypeCounts, setNotificationTypeCounts] = useState<Record<string, number>>({});
   const [notificationPreviewItems, setNotificationPreviewItems] = useState<NotificationPreviewItem[]>([]);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [calculatorInput, setCalculatorInput] = useState('');
   const [calculatorResult, setCalculatorResult] = useState('0');
   const notificationPreviewRef = useRef<HTMLDivElement | null>(null);
   const router = useRouter();
+  const searchParams = useSearchParams();
   const apiBaseUrl = getApiBaseUrl();
   const companyLogoUrl = `${getBackendOrigin()}/media/company/logo`;
 
@@ -585,6 +597,14 @@ export default function Dashboard() {
     authUser?.role ||
     (roleNames.some((roleName) => roleName.includes('admin')) ? 'Super Admin' : 'User');
   const primaryRoleName = String(primaryRoleRaw || 'User').trim();
+  const resolvedBranchName = String(
+    authUser?.branch?.name ||
+    authUser?.employee?.branch?.name ||
+    authUser?.employee?.branch_name ||
+    ''
+  ).trim();
+  const resolvedBranchId = Number(authUser?.branch_id || authUser?.employee?.branch_id || 0);
+  const branchBadgeLabel = resolvedBranchName || (resolvedBranchId > 0 ? `Branch #${resolvedBranchId}` : 'No Branch');
   const isCollectionOfficer = hasOfficerKeyword('collection officer');
   const isFieldOfficer = hasOfficerKeyword('field officer');
   const canRestoreHiddenWidgets = normalizedRoleSources.some(
@@ -702,9 +722,15 @@ export default function Dashboard() {
       const items = Array.isArray(response.data?.items) ? response.data.items : [];
       setNotificationPreviewItems(items as NotificationPreviewItem[]);
       setNotificationUnreadCount(Number(response.data?.unread_count || 0));
+      const nextTypeCounts =
+        response.data?.type_counts && typeof response.data.type_counts === 'object'
+          ? (response.data.type_counts as Record<string, number>)
+          : {};
+      setNotificationTypeCounts(nextTypeCounts);
     } catch {
       setNotificationPreviewItems([]);
       setNotificationUnreadCount(0);
+      setNotificationTypeCounts({});
     } finally {
       setNotificationPreviewLoading(false);
     }
@@ -733,6 +759,21 @@ export default function Dashboard() {
     }
   };
 
+  useEffect(() => {
+    const blockedReason = String(searchParams.get('blocked') || '').trim();
+    if (blockedReason !== 'hidden-widget') {
+      return;
+    }
+
+    setWalletNotice({
+      open: true,
+      title: 'Route Blocked',
+      message: 'This URL is blocked because its related widget is hidden for your account.',
+    });
+
+    router.replace('/dashboard');
+  }, [router, searchParams]);
+
   const fetchWidgetPreferences = async (authToken: string) => {
     setLoadingWidgets(true);
     try {
@@ -756,15 +797,21 @@ export default function Dashboard() {
     }
   };
 
-  const saveWidgetPreference = async (widgetKey: string, isVisible: boolean) => {
+  const saveWidgetPreference = async (widgetKey: string, isVisible: boolean, hiddenRoutePath?: string) => {
     if (!token) return false;
     const normalizedKey = String(widgetKey || '').trim();
     if (!normalizedKey) return false;
     if (normalizedKey.length > 120) return false;
+    const normalizedHiddenRoutePath = String(hiddenRoutePath || '').trim();
     try {
       await axios.patch(
         `${apiBaseUrl}/dashboard/widgets`,
-        { widget_key: normalizedKey, is_visible: Boolean(isVisible) },
+        {
+          widget_key: normalizedKey,
+          is_visible: Boolean(isVisible),
+          hidden_route_path:
+            !isVisible && normalizedHiddenRoutePath.startsWith('/dashboard') ? normalizedHiddenRoutePath : null,
+        },
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -778,13 +825,13 @@ export default function Dashboard() {
     }
   };
 
-  const hideWidget = async (widgetKey: string) => {
+  const hideWidget = async (widgetKey: string, hiddenRoutePath?: string) => {
     const previous = new Set(hiddenWidgetKeys);
     const next = new Set(hiddenWidgetKeys);
     next.add(widgetKey);
     setHiddenWidgetKeys(next);
 
-    const ok = await saveWidgetPreference(widgetKey, false);
+    const ok = await saveWidgetPreference(widgetKey, false, hiddenRoutePath);
     if (!ok) {
       setHiddenWidgetKeys(previous);
       setWalletNotice({
@@ -1185,6 +1232,14 @@ export default function Dashboard() {
       path: '/dashboard/savings-deposits',
     },
     {
+      key: 'module_customer',
+      name: 'Customer',
+      icon: '🧾',
+      color: 'from-emerald-500 to-teal-500',
+      bgColor: 'from-emerald-50 to-teal-50',
+      path: '/dashboard/microfinance/customers',
+    },
+    {
       key: 'module_branch_management',
       name: 'Branch Management',
       icon: '🏢',
@@ -1221,10 +1276,10 @@ export default function Dashboard() {
     {
       key: 'setting_notifications',
       icon: '🔔',
-      title: 'Notifications',
-      desc: 'View alerts, reminders, and updates',
+      title: 'Action Center',
+      desc: 'View alerts, reminders, and workflow updates',
       color: 'from-amber-500 to-orange-500',
-      path: '/dashboard/notifications',
+      path: '/dashboard/action-center',
     },
     {
       key: 'setting_ai_assistant',
@@ -1254,6 +1309,106 @@ export default function Dashboard() {
     if (selectedModule) {
       router.push(selectedModule.path);
     }
+  };
+
+  const notificationWorkflowSteps = [
+    {
+      key: 'step_1',
+      icon: '📁',
+      title: 'CRO Check Pending',
+      typeKeys: ['step_1', 'step1', 'cro_check_pending'],
+    },
+    {
+      key: 'step_2',
+      icon: '📞',
+      title: 'Pending Call Confirmation',
+      typeKeys: ['step_2', 'step2', 'pending_call_confirmation'],
+    },
+    {
+      key: 'step_3',
+      icon: '🧑‍💼',
+      title: 'BM approval',
+      typeKeys: ['step_3', 'step3', 'bm_approval'],
+    },
+    {
+      key: 'step_4',
+      icon: '🏛️',
+      title: 'Head Office Approval',
+      typeKeys: ['step_4', 'step4', 'head_office_approval'],
+    },
+    {
+      key: 'step_5',
+      icon: '💼',
+      title: 'Cash Allocation',
+      typeKeys: ['step_5', 'step5', 'cash_allocation'],
+    },
+    {
+      key: 'step_6',
+      icon: '💳',
+      title: 'Cash Request',
+      typeKeys: ['step_6', 'step6', 'cash_request'],
+    },
+    {
+      key: 'step_7',
+      icon: '🏦',
+      title: 'Cash Withdrawal',
+      typeKeys: ['step_7', 'step7', 'cash_withdrawal'],
+    },
+    {
+      key: 'step_8',
+      icon: '☎️',
+      title: 'Second Call Confirmation',
+      typeKeys: ['step_8', 'step8', 'second_call_confirmation'],
+    },
+    {
+      key: 'step_9',
+      icon: '✍️',
+      title: 'Loan Signature Check',
+      typeKeys: ['step_9', 'step9', 'loan_signature_check'],
+    },
+    {
+      key: 'step_10',
+      icon: '🗂️',
+      title: 'Document failing',
+      typeKeys: ['step_10', 'step10', 'document_failing'],
+    },
+    {
+      key: 'step_11',
+      icon: '🛡️',
+      title: 'Insurance Request',
+      typeKeys: ['step_11', 'step11', 'insurance_request'],
+    },
+    {
+      key: 'step_12',
+      icon: '🏢',
+      title: 'Branch Insurance Request',
+      typeKeys: ['step_12', 'step12', 'branch_insurance_request'],
+    },
+    {
+      key: 'step_13',
+      icon: '🏬',
+      title: 'Head Office Insurance Request',
+      typeKeys: ['step_13', 'step13', 'head_office_insurance_request'],
+    },
+    {
+      key: 'step_14',
+      icon: '🎉',
+      title: 'Grant',
+      typeKeys: ['step_14', 'step14', 'grant'],
+    },
+  ];
+
+  const notificationStepBadgeTones = [
+    'bg-lime-200 text-lime-800',
+    'bg-slate-200 text-slate-700',
+    'bg-red-200 text-red-700',
+    'bg-amber-200 text-amber-800',
+    'bg-blue-200 text-blue-800',
+  ];
+
+  const getWorkflowStepCount = (typeKeys: string[]) => {
+    const uniqueKeys = Array.from(new Set(typeKeys.map((key) => String(key || '').trim()).filter(Boolean)));
+    return uniqueKeys.reduce((sum, key) => sum + Number(notificationTypeCounts[key] || 0), 0);
   };
 
   if (!token || loadingPrivileges || loadingWidgets) {
@@ -1292,6 +1447,10 @@ export default function Dashboard() {
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
                 <span>System Online</span>
               </div>
+              <div className="hidden sm:flex items-center rounded-full border border-sky-100 bg-sky-50/80 px-3 py-1.5 text-xs font-semibold text-sky-900">
+                <span className="mr-1.5 inline-flex h-2 w-2 rounded-full bg-sky-500"></span>
+                {branchBadgeLabel}
+              </div>
               <div className="hidden sm:flex items-center rounded-full border border-red-100 bg-white/80 px-3 py-1.5 text-left">
                 <div className="leading-tight">
                   <p className="text-xs font-semibold text-slate-900">{displayName}</p>
@@ -1303,12 +1462,12 @@ export default function Dashboard() {
                   type="button"
                   onClick={() => {
                     setNotificationPreviewOpen(false);
-                    router.push('/dashboard/notifications');
+                    router.push('/dashboard/action-center');
                   }}
                   className="flex w-full items-center gap-2 rounded-full border border-amber-200 bg-amber-50/90 px-3 py-1.5 text-left transition hover:bg-amber-100 sm:w-auto"
                 >
                   <span className="text-sm">🔔</span>
-                  <span className="text-xs font-semibold text-amber-800">Notifications</span>
+                  <span className="text-xs font-semibold text-amber-800">Action Center</span>
                   <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-900">
                     {notificationUnreadCount}
                   </span>
@@ -1317,7 +1476,7 @@ export default function Dashboard() {
                 {notificationPreviewOpen && (
                   <div className="absolute right-0 mt-2 w-80 rounded-2xl border border-amber-100 bg-white/95 p-3 shadow-2xl backdrop-blur z-30">
                     <div className="flex items-center justify-between">
-                      <h4 className="text-sm font-semibold text-slate-900">User Notifications</h4>
+                      <h4 className="text-sm font-semibold text-slate-900">Action Center</h4>
                       <span className="text-xs text-slate-500">{notificationUnreadCount} unread</span>
                     </div>
                     <div className="mt-3 space-y-2">
@@ -1347,11 +1506,11 @@ export default function Dashboard() {
                       )}
                     </div>
                     <Link
-                      href="/dashboard/notifications"
+                      href="/dashboard/action-center"
                       onClick={() => setNotificationPreviewOpen(false)}
                       className="mt-3 block w-full rounded-lg bg-slate-900 px-3 py-2 text-center text-xs font-semibold text-white hover:bg-slate-700"
                     >
-                      Open Notification Center
+                      Open Action Center
                     </Link>
                   </div>
                 )}
@@ -1379,6 +1538,47 @@ export default function Dashboard() {
       </nav>
 
       <main className="relative z-10 max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
+        <section className="mb-8 rounded-2xl border border-slate-200 bg-white/85 p-3 shadow-lg backdrop-blur-sm">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="px-2 text-xs font-bold uppercase tracking-wide text-slate-600">Action Center</h3>
+            <button
+              type="button"
+              onClick={() => router.push('/dashboard/action-center')}
+              className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+            >
+              Open Action Center
+            </button>
+          </div>
+
+          <div className="mt-2 flex items-center gap-2 overflow-x-auto overflow-y-visible pb-1">
+            {notificationWorkflowSteps.map((step, index) => {
+              const count = getWorkflowStepCount(step.typeKeys);
+              const badgeTone = notificationStepBadgeTones[index % notificationStepBadgeTones.length];
+              const tooltip = `${index + 1}. ${step.title} - ${count} request${count === 1 ? '' : 's'}`;
+
+              return (
+                <div key={step.key} className="group relative shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => router.push('/dashboard/action-center')}
+                    className="relative inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-lg transition hover:border-blue-200 hover:bg-blue-50 hover:shadow"
+                    aria-label={tooltip}
+                    title={tooltip}
+                  >
+                    <span aria-hidden="true">{step.icon}</span>
+                    <span className={`absolute -right-2 -top-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-extrabold ${badgeTone}`}>
+                      {count}
+                    </span>
+                  </button>
+                  <div className="pointer-events-none absolute left-1/2 top-[calc(100%+6px)] z-30 hidden w-56 -translate-x-1/2 rounded-md border border-slate-200 bg-slate-900 px-2 py-1.5 text-[11px] font-medium text-white shadow-xl group-hover:block">
+                    {tooltip}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
         {/* Hero Section */}
         <div className="text-center mb-12">
           <div className="inline-block p-1 bg-gradient-to-r from-red-500 to-pink-500 rounded-3xl mb-6">
@@ -1456,7 +1656,7 @@ export default function Dashboard() {
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      void hideWidget(module.key);
+                      void hideWidget(module.key, module.path);
                     }}
                     className="absolute right-3 top-3 z-10 inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-sm font-bold text-slate-600 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
                     aria-label={`Hide ${module.name} widget`}
@@ -1536,7 +1736,7 @@ export default function Dashboard() {
                       type="button"
                       onClick={(event) => {
                         event.stopPropagation();
-                        void hideWidget(setting.key);
+                        void hideWidget(setting.key, setting.path);
                       }}
                       className="absolute right-3 top-3 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-sm font-bold text-slate-600 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
                       aria-label={`Hide ${setting.title} widget`}

@@ -23,8 +23,10 @@ interface Employee {
   employee_code: string;
   first_name: string;
   last_name: string;
+  nic_passport?: string;
   email: string;
   phone: string;
+  user?: { id?: number; email?: string; role?: string };
   reporting_person?: string;
   address: string;
   date_of_birth: string;
@@ -32,6 +34,7 @@ interface Employee {
   basic_salary: number;
   commission?: number;
   commission_base?: 'company_profit' | 'own_business';
+  monthly_target?: number;
   overtime_payment_per_hour?: number;
   deduction_late_hour?: number;
   epf_employee_contribution?: number;
@@ -44,7 +47,6 @@ interface Employee {
   apit_tax_amount?: number;
   apit_tax_rate?: number;
   status: 'active' | 'inactive';
-  user?: { role?: string };
   wallet?: {
     id?: number;
     wallet_no?: string;
@@ -98,6 +100,7 @@ interface EmployeeWallet {
 
 interface HiddenWidgetEntry {
   widget_key: string;
+  hidden_route_path?: string | null;
   hidden_at?: string | null;
 }
 
@@ -200,6 +203,7 @@ export default function Employees() {
   const [walletModalSaving, setWalletModalSaving] = useState(false);
   const [profileEmployee, setProfileEmployee] = useState<EmployeeFull | null>(null);
   const [profileHiddenWidgets, setProfileHiddenWidgets] = useState<HiddenWidgetEntry[]>([]);
+  const [unhidingWidgetKey, setUnhidingWidgetKey] = useState<string | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const router = useRouter();
 
@@ -216,6 +220,8 @@ export default function Employees() {
   // Form fields
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [userId, setUserId] = useState('');
+  const [nicPassport, setNicPassport] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('employee');
@@ -227,6 +233,7 @@ export default function Employees() {
   const [basicSalary, setBasicSalary] = useState('');
   const [commission, setCommission] = useState('');
   const [commissionBase, setCommissionBase] = useState<'company_profit' | 'own_business' | ''>('');
+  const [monthlyTarget, setMonthlyTarget] = useState('');
   const [overtimePaymentPerHour, setOvertimePaymentPerHour] = useState('');
   const [deductionLateHour, setDeductionLateHour] = useState('');
   const [epfEmployeeContribution, setEpfEmployeeContribution] = useState('');
@@ -845,6 +852,8 @@ export default function Employees() {
   const resetForm = () => {
     setFirstName('');
     setLastName('');
+    setUserId('');
+    setNicPassport('');
     setEmail('');
     setPassword('');
     setRole('employee');
@@ -856,6 +865,7 @@ export default function Employees() {
     setBasicSalary('');
     setCommission('');
     setCommissionBase('');
+    setMonthlyTarget('');
     setOvertimePaymentPerHour('');
     setDeductionLateHour('');
     setEpfEmployeeContribution('');
@@ -892,6 +902,8 @@ export default function Employees() {
     const employeeData = {
       first_name: firstName,
       last_name: lastName,
+      user_id: userId.trim(),
+      nic_passport: nicPassport.trim(),
       email,
       password: editingEmployee
         ? (password.trim() ? password : undefined)
@@ -904,6 +916,7 @@ export default function Employees() {
       basic_salary: parseFloat(basicSalary),
       commission: commission ? parseFloat(commission) : undefined,
       commission_base: commissionBase || undefined,
+      monthly_target: monthlyTarget ? parseFloat(monthlyTarget) : undefined,
       overtime_payment_per_hour: overtimePaymentPerHour ? parseFloat(overtimePaymentPerHour) : undefined,
       deduction_late_hour: deductionLateHour ? parseFloat(deductionLateHour) : undefined,
       epf_employee_contribution: epfEmployeeContribution ? parseFloat(epfEmployeeContribution) : undefined,
@@ -962,6 +975,8 @@ export default function Employees() {
     // Quick fill from list row (then refresh from full show endpoint).
     setFirstName(employee.first_name || '');
     setLastName(employee.last_name || '');
+    setUserId(employee.user?.email || '');
+    setNicPassport(employee.nic_passport || '');
     setEmail(employee.email || '');
     setPhone(employee.phone || '');
     setRole(employee.user?.role || 'employee');
@@ -972,6 +987,7 @@ export default function Employees() {
     setBasicSalary(employee.basic_salary?.toString?.() || '');
     setCommission(employee.commission != null ? String(employee.commission) : '');
     setCommissionBase(employee.commission_base || '');
+    setMonthlyTarget(employee.monthly_target != null ? String(employee.monthly_target) : '');
     setOvertimePaymentPerHour(employee.overtime_payment_per_hour != null ? String(employee.overtime_payment_per_hour) : '');
     setDeductionLateHour(employee.deduction_late_hour != null ? String(employee.deduction_late_hour) : '');
     setEpfEmployeeContribution(employee.epf_employee_contribution != null ? String(employee.epf_employee_contribution) : '');
@@ -1000,6 +1016,8 @@ export default function Employees() {
       const full = response.data as any;
       setFirstName(full.first_name || '');
       setLastName(full.last_name || '');
+      setUserId(full.user?.email || '');
+      setNicPassport(full.nic_passport || '');
       setEmail(full.email || '');
       setPhone(full.phone ?? full.mobile ?? '');
       setAddress(full.address || '');
@@ -1009,6 +1027,7 @@ export default function Employees() {
       setBasicSalary(full.basic_salary != null ? String(full.basic_salary) : '');
       setCommission(full.commission != null ? String(full.commission) : '');
       setCommissionBase(full.commission_base || '');
+      setMonthlyTarget(full.monthly_target != null ? String(full.monthly_target) : '');
       setOvertimePaymentPerHour(full.overtime_payment_per_hour != null ? String(full.overtime_payment_per_hour) : '');
       setDeductionLateHour(full.deduction_late_hour != null ? String(full.deduction_late_hour) : '');
       setEpfEmployeeContribution(full.epf_employee_contribution != null ? String(full.epf_employee_contribution) : '');
@@ -1093,6 +1112,39 @@ export default function Employees() {
       setProfileLoading(false);
     }
   };
+
+  const unhideEmployeeWidget = useCallback(
+    async (widgetKey: string) => {
+      if (!token || !canRestoreEmployeeWidgets || !activeEmployee?.id || !widgetKey) {
+        return;
+      }
+
+      setUnhidingWidgetKey(widgetKey);
+      try {
+        await axios.post(
+          `${apiBase}/dashboard/widgets/unhide-employee-widget`,
+          {
+            employee_id: activeEmployee.id,
+            widget_key: widgetKey,
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/json',
+            },
+          }
+        );
+
+        setProfileHiddenWidgets((prev) => prev.filter((row) => row.widget_key !== widgetKey));
+        showNotice('Widget Unhidden', `Restored ${widgetKey} for ${activeEmployee.first_name} ${activeEmployee.last_name}.`, 'success');
+      } catch {
+        showNotice('Unhide Failed', 'Failed to unhide selected widget.', 'error');
+      } finally {
+        setUnhidingWidgetKey(null);
+      }
+    },
+    [activeEmployee, apiBase, canRestoreEmployeeWidgets, token, showNotice]
+  );
 
   const createEmployeeWallet = async (employee: Employee) => {
     setWalletEmployee(employee);
@@ -2068,12 +2120,39 @@ export default function Employees() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
+                    User ID *
+                  </label>
+                  <input
+                    type="text"
+                    value={userId}
+                    onChange={(e) => setUserId(e.target.value)}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-gray-900 placeholder-gray-500"
+                    required
+                    placeholder="Login user id"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
                     Email *
                   </label>
                   <input
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-gray-900 placeholder-gray-500"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    NIC *
+                  </label>
+                  <input
+                    type="text"
+                    value={nicPassport}
+                    onChange={(e) => setNicPassport(e.target.value)}
                     className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-gray-900 placeholder-gray-500"
                     required
                   />
@@ -2295,6 +2374,21 @@ export default function Employees() {
                     <option value="company_profit">Company Profit</option>
                     <option value="own_business">Own Business</option>
                   </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Monthly Target (Amount)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={monthlyTarget}
+                    onChange={(e) => setMonthlyTarget(e.target.value)}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-gray-900 placeholder-gray-500"
+                    placeholder="Commission only if monthly amount target is achieved"
+                  />
                 </div>
 
                 <div>
@@ -2756,6 +2850,7 @@ export default function Employees() {
                     </div>
                     <div><strong>Basic Salary:</strong> LKR {profileEmployee.basic_salary.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                     {profileEmployee.commission && <div><strong>Commission:</strong> {profileEmployee.commission}% ({profileEmployee.commission_base})</div>}
+                    <div><strong>Monthly Target:</strong> {profileEmployee.monthly_target != null ? `LKR ${Number(profileEmployee.monthly_target).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A'}</div>
                     <div><strong>EPF Employee (%):</strong> {profileEmployee.epf_employee_contribution ?? 0}%</div>
                     <div><strong>EPF Employer (%):</strong> {profileEmployee.epf_employer_contribution ?? 0}%</div>
                     <div><strong>ETF Employee (%):</strong> {profileEmployee.etf_employee_contribution ?? 0}%</div>
@@ -2798,9 +2893,12 @@ export default function Employees() {
                       {profileHiddenWidgets.map((widget, index) => (
                         <div
                           key={`${widget.widget_key}-${index}`}
-                          className="flex flex-col gap-1 rounded-lg border border-amber-200 bg-white p-3"
+                          className="flex flex-col gap-2 rounded-lg border border-amber-200 bg-white p-3"
                         >
                           <p className="text-sm font-semibold text-gray-900">{widget.widget_key}</p>
+                          {widget.hidden_route_path ? (
+                            <p className="text-xs text-slate-500">Route: {widget.hidden_route_path}</p>
+                          ) : null}
                           <p className="text-xs text-gray-500">
                             Hidden at:{' '}
                             {widget.hidden_at
@@ -2813,6 +2911,20 @@ export default function Employees() {
                                 })
                               : 'Unknown'}
                           </p>
+                          {canRestoreEmployeeWidgets ? (
+                            <div className="pt-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void unhideEmployeeWidget(widget.widget_key);
+                                }}
+                                disabled={unhidingWidgetKey === widget.widget_key}
+                                className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {unhidingWidgetKey === widget.widget_key ? 'Unhiding...' : 'Unhide'}
+                              </button>
+                            </div>
+                          ) : null}
                         </div>
                       ))}
                     </div>

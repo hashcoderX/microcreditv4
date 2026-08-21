@@ -2238,7 +2238,8 @@ export default function CollectionManagementPage() {
                           <button
                             type="button"
                             onClick={() => openCollectModal(loan)}
-                            className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-semibold hover:from-emerald-600 hover:to-teal-600"
+                            disabled={getOutstandingBalance(loan) <= 0}
+                            className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-semibold hover:from-emerald-600 hover:to-teal-600 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-400 disabled:text-slate-100"
                           >
                             Collect
                           </button>
@@ -2567,7 +2568,8 @@ export default function CollectionManagementPage() {
                                     e.stopPropagation();
                                     openCollectModal(loan);
                                   }}
-                                  className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-semibold hover:from-emerald-600 hover:to-teal-600"
+                                  disabled={getOutstandingBalance(loan) <= 0}
+                                  className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-semibold hover:from-emerald-600 hover:to-teal-600 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-400 disabled:text-slate-100"
                                 >
                                   Collect
                                 </button>
@@ -2702,7 +2704,8 @@ export default function CollectionManagementPage() {
                                     e.stopPropagation();
                                     openCollectModal(loan);
                                   }}
-                                  className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-semibold hover:from-emerald-600 hover:to-teal-600"
+                                  disabled={getOutstandingBalance(loan) <= 0}
+                                  className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-semibold hover:from-emerald-600 hover:to-teal-600 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-400 disabled:text-slate-100"
                                 >
                                   Collect
                                 </button>

@@ -13,6 +13,8 @@ export type CompanyAccount = {
   current_balance?: number | string | null;
   is_active?: boolean;
   notes?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 export type AccountingSummary = {

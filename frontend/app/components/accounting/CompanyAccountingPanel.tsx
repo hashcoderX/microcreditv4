@@ -43,6 +43,20 @@ export default function CompanyAccountingPanel({
   onNotice,
   emptyMessage = 'Select a company or branch first.',
 }: CompanyAccountingPanelProps) {
+  const formatDateTime = (value?: string | null) => {
+    const raw = String(value || '').trim();
+    if (!raw) return '-';
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return raw;
+    return date.toLocaleString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [accountSummary, setAccountSummary] = useState<AccountingSummary | null>(null);
   const [bankAccounts, setBankAccounts] = useState<CompanyAccount[]>([]);
@@ -51,9 +65,12 @@ export default function CompanyAccountingPanel({
   const [bankForm, setBankForm] = useState<BankFormState>(emptyBankForm());
   const [editingBankId, setEditingBankId] = useState<number | null>(null);
   const [savingMainAccount, setSavingMainAccount] = useState(false);
+  const [addingMainMoney, setAddingMainMoney] = useState(false);
   const [savingCashAccount, setSavingCashAccount] = useState(false);
   const [savingBankAccount, setSavingBankAccount] = useState(false);
   const [deletingBankId, setDeletingBankId] = useState<number | null>(null);
+  const [mainTopUpAmount, setMainTopUpAmount] = useState('');
+  const [mainTopUpNote, setMainTopUpNote] = useState('');
 
   const notify = (notice: Notice) => {
     onNotice?.(notice);
@@ -150,6 +167,62 @@ export default function CompanyAccountingPanel({
       notify({ type: 'error', text: error?.response?.data?.message || 'Failed to save main account.' });
     } finally {
       setSavingMainAccount(false);
+    }
+  };
+
+  const handleAddMoneyToMainAccount = async () => {
+    if (!token || !companyId) {
+      notify({ type: 'error', text: 'Select a company first.' });
+      return;
+    }
+
+    if (!accountSummary?.main?.id) {
+      notify({ type: 'error', text: 'Create the main account first, then add money.' });
+      return;
+    }
+
+    const amount = toAmount(mainTopUpAmount);
+    if (amount <= 0) {
+      notify({ type: 'error', text: 'Enter a valid amount greater than zero.' });
+      return;
+    }
+
+    setAddingMainMoney(true);
+
+    const currentBalance = toAmount(accountSummary.main.current_balance);
+    const newCurrentBalance = Math.round((currentBalance + amount) * 100) / 100;
+    const topUpNote = mainTopUpNote.trim();
+    const existingNotes = String(accountSummary.main.notes || '').trim();
+    const mergedNotes =
+      topUpNote === ''
+        ? undefined
+        : [
+            existingNotes,
+            `Top-up ${new Date().toLocaleString('en-GB')}: +${formatMoney(amount, currency)} ${topUpNote}`,
+          ]
+            .filter(Boolean)
+            .join('\n');
+
+    const payload: { current_balance: number; notes?: string } = {
+      current_balance: newCurrentBalance,
+    };
+
+    if (mergedNotes !== undefined) {
+      payload.notes = mergedNotes;
+    }
+
+    try {
+      await axios.put(`/api/companies/${companyId}/accounts/${accountSummary.main.id}`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      notify({ type: 'success', text: `Added ${formatMoney(amount, currency)} to main account.` });
+      setMainTopUpAmount('');
+      setMainTopUpNote('');
+      await refreshCompanyAccounts();
+    } catch (error: any) {
+      notify({ type: 'error', text: error?.response?.data?.message || 'Failed to add money to main account.' });
+    } finally {
+      setAddingMainMoney(false);
     }
   };
 
@@ -298,8 +371,8 @@ export default function CompanyAccountingPanel({
             {[
               {
                 label: 'Main account',
-                value: accountSummary?.main ? formatMoney(accountSummary.main.opening_balance, currency) : 'Not set',
-                sub: accountSummary?.main?.account_name || 'Company capital / main ledger',
+                value: accountSummary?.main ? formatMoney(accountSummary.main.current_balance, currency) : 'Not set',
+                sub: accountSummary?.main ? `${accountSummary.main.account_name || 'Main account'} current balance` : 'Company capital / main ledger',
                 icon: Landmark,
                 accent: 'from-violet-500 to-purple-600',
               },
@@ -346,7 +419,7 @@ export default function CompanyAccountingPanel({
             })}
           </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+          <div className="grid grid-cols-1 gap-5">
             <form onSubmit={handleSaveMainAccount} className="rounded-2xl border border-violet-100 bg-white p-5 shadow-sm space-y-4">
               <div className="flex items-center gap-2">
                 <Landmark className="h-5 w-5 text-violet-700" />
@@ -397,6 +470,50 @@ export default function CompanyAccountingPanel({
                   placeholder="Optional notes"
                 />
               </div>
+              {accountSummary?.main ? (
+                <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3.5">
+                  <p className="text-xs font-bold uppercase tracking-wide text-violet-800">Current main balance</p>
+                  <p className="mt-1 text-base font-extrabold text-slate-900">{formatMoney(accountSummary.main.current_balance, currency)}</p>
+
+                  <div className="mt-3 grid grid-cols-1 gap-2.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label className={accountingLabelClass}>Add money amount ({currency})</label>
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          value={mainTopUpAmount}
+                          onChange={(e) => setMainTopUpAmount(e.target.value)}
+                          className={accountingInputClass}
+                          placeholder="0.00"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className={accountingLabelClass}>Top-up note (optional)</label>
+                        <input
+                          value={mainTopUpNote}
+                          onChange={(e) => setMainTopUpNote(e.target.value)}
+                          className={accountingInputClass}
+                          placeholder="Capital injection / owner deposit"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => void handleAddMoneyToMainAccount()}
+                        disabled={addingMainMoney}
+                        className="inline-flex items-center gap-2 rounded-xl border border-violet-300 bg-white px-3.5 py-2 text-sm font-bold text-violet-800 hover:bg-violet-100 disabled:opacity-60"
+                      >
+                        <Plus className="h-4 w-4" />
+                        {addingMainMoney ? 'Adding…' : 'Add money to main account'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               <button
                 type="submit"
                 disabled={savingMainAccount}
@@ -405,67 +522,39 @@ export default function CompanyAccountingPanel({
                 <Save className="h-4 w-4" />
                 {savingMainAccount ? 'Saving…' : accountSummary?.main ? 'Update main account' : 'Create main account'}
               </button>
-            </form>
 
-            <form onSubmit={handleSaveCashAccount} className="rounded-2xl border border-emerald-100 bg-white p-5 shadow-sm space-y-4">
-              <div className="flex items-center gap-2">
-                <Coins className="h-5 w-5 text-emerald-700" />
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Cash account</h3>
-                  <p className="text-xs text-slate-500">Starting cash float for office collections and payments</p>
+              {accountSummary?.main ? (
+                <div className="rounded-xl border border-violet-100 overflow-x-auto">
+                  <table className="min-w-full text-sm text-black">
+                    <thead className="bg-violet-50/70 text-[10px] font-bold uppercase tracking-wider text-black">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Account Name</th>
+                        <th className="px-3 py-2 text-left">Code</th>
+                        <th className="px-3 py-2 text-right">Opening</th>
+                        <th className="px-3 py-2 text-right">Current</th>
+                        <th className="px-3 py-2 text-left">Notes</th>
+                        <th className="px-3 py-2 text-left">Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white">
+                      <tr className="border-t border-violet-100">
+                        <td className="px-3 py-2 font-semibold text-black">{accountSummary.main.account_name || '-'}</td>
+                        <td className="px-3 py-2 text-black">{accountSummary.main.account_code || '-'}</td>
+                        <td className="px-3 py-2 text-right font-semibold tabular-nums text-black">
+                          {formatMoney(accountSummary.main.opening_balance, currency)}
+                        </td>
+                        <td className="px-3 py-2 text-right font-semibold tabular-nums text-black">
+                          {formatMoney(accountSummary.main.current_balance, currency)}
+                        </td>
+                        <td className="px-3 py-2 text-black max-w-[220px] truncate" title={accountSummary.main.notes || ''}>
+                          {accountSummary.main.notes || '-'}
+                        </td>
+                        <td className="px-3 py-2 text-black">{formatDateTime(accountSummary.main.updated_at)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
-              </div>
-              <div>
-                <label className={accountingLabelClass}>Account name</label>
-                <input
-                  value={cashForm.account_name}
-                  onChange={(e) => setCashForm({ ...cashForm, account_name: e.target.value })}
-                  className={accountingInputClass}
-                  placeholder="Cash Account"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={accountingLabelClass}>Account code</label>
-                  <input
-                    value={cashForm.account_code}
-                    onChange={(e) => setCashForm({ ...cashForm, account_code: e.target.value })}
-                    className={accountingInputClass}
-                    placeholder="1100"
-                  />
-                </div>
-                <div>
-                  <label className={accountingLabelClass}>Opening cash amount ({currency}) *</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={cashForm.opening_balance}
-                    onChange={(e) => setCashForm({ ...cashForm, opening_balance: e.target.value })}
-                    className={accountingInputClass}
-                    placeholder="0.00"
-                    required
-                  />
-                </div>
-              </div>
-              <div>
-                <label className={accountingLabelClass}>Notes</label>
-                <textarea
-                  value={cashForm.notes}
-                  onChange={(e) => setCashForm({ ...cashForm, notes: e.target.value })}
-                  rows={2}
-                  className={accountingInputClass}
-                  placeholder="Optional notes"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={savingCashAccount}
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
-              >
-                <Save className="h-4 w-4" />
-                {savingCashAccount ? 'Saving…' : accountSummary?.cash ? 'Update cash balance' : 'Create cash account'}
-              </button>
+              ) : null}
             </form>
           </div>
 
@@ -611,6 +700,67 @@ export default function CompanyAccountingPanel({
               </table>
             </div>
           </div>
+
+          <form onSubmit={handleSaveCashAccount} className="rounded-2xl border border-emerald-100 bg-white p-5 shadow-sm space-y-4">
+            <div className="flex items-center gap-2">
+              <Coins className="h-5 w-5 text-emerald-700" />
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Cash account</h3>
+                <p className="text-xs text-slate-500">Starting cash float for office collections and payments</p>
+              </div>
+            </div>
+            <div>
+              <label className={accountingLabelClass}>Account name</label>
+              <input
+                value={cashForm.account_name}
+                onChange={(e) => setCashForm({ ...cashForm, account_name: e.target.value })}
+                className={accountingInputClass}
+                placeholder="Cash Account"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={accountingLabelClass}>Account code</label>
+                <input
+                  value={cashForm.account_code}
+                  onChange={(e) => setCashForm({ ...cashForm, account_code: e.target.value })}
+                  className={accountingInputClass}
+                  placeholder="1100"
+                />
+              </div>
+              <div>
+                <label className={accountingLabelClass}>Opening cash amount ({currency}) *</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={cashForm.opening_balance}
+                  onChange={(e) => setCashForm({ ...cashForm, opening_balance: e.target.value })}
+                  className={accountingInputClass}
+                  placeholder="0.00"
+                  required
+                />
+              </div>
+            </div>
+            <div>
+              <label className={accountingLabelClass}>Notes</label>
+              <textarea
+                value={cashForm.notes}
+                onChange={(e) => setCashForm({ ...cashForm, notes: e.target.value })}
+                rows={2}
+                className={accountingInputClass}
+                placeholder="Optional notes"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={savingCashAccount}
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
+            >
+              <Save className="h-4 w-4" />
+              {savingCashAccount ? 'Saving…' : accountSummary?.cash ? 'Update cash balance' : 'Create cash account'}
+            </button>
+          </form>
         </>
       )}
     </div>

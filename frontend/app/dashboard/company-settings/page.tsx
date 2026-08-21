@@ -56,6 +56,8 @@ type Company = {
   email: string;
   address?: string | null;
   phone?: string | null;
+  secondary_phone?: string | null;
+  whatsapp_no?: string | null;
   website?: string | null;
   country?: string | null;
   currency?: string | null;
@@ -100,6 +102,8 @@ export default function CompanySettingsPage() {
   const [email, setEmail] = useState('');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
+  const [secondaryPhone, setSecondaryPhone] = useState('');
+  const [whatsappNo, setWhatsappNo] = useState('');
   const [website, setWebsite] = useState('');
   const [country, setCountry] = useState('');
   const [currency, setCurrency] = useState('');
@@ -108,6 +112,7 @@ export default function CompanySettingsPage() {
   const [uploadingLogo, setUploadingLogo] = useState(false);
 
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [showNoticeModal, setShowNoticeModal] = useState(false);
   const [templates, setTemplates] = useState<CompanyTemplate[]>([]);
   const [templateType, setTemplateType] = useState<CompanyTemplate['template_type']>('loan_agreement');
   const [templateFile, setTemplateFile] = useState<File | null>(null);
@@ -215,6 +220,8 @@ export default function CompanySettingsPage() {
     setEmail(company?.email || '');
     setAddress(company?.address || '');
     setPhone(company?.phone || '');
+    setSecondaryPhone(company?.secondary_phone || '');
+    setWhatsappNo(company?.whatsapp_no || '');
     setWebsite(company?.website || '');
     setCountry(company?.country || '');
     setCurrency(company?.currency || '');
@@ -337,6 +344,15 @@ export default function CompanySettingsPage() {
     fetchWhatsappGatewayConfig(token);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  useEffect(() => {
+    if (!notice) {
+      setShowNoticeModal(false);
+      return;
+    }
+
+    setShowNoticeModal(true);
+  }, [notice]);
 
   const fetchSmsGatewayConfig = async (authToken: string) => {
     setSmsConfigLoading(true);
@@ -912,6 +928,8 @@ export default function CompanySettingsPage() {
       email: email.trim(),
       address: address.trim() || null,
       phone: phone.trim() || null,
+      secondary_phone: secondaryPhone.trim() || null,
+      whatsapp_no: whatsappNo.trim() || null,
       website: website.trim() || null,
       country: country.trim() || null,
       currency: currency.trim() || null,
@@ -1093,29 +1111,6 @@ export default function CompanySettingsPage() {
           })}
         </div>
 
-        {/* Notice */}
-        {notice ? (
-          <div
-            className={`flex items-start justify-between gap-3 rounded-2xl border px-4 py-3 text-sm font-medium ${
-              notice.type === 'success'
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                : 'border-rose-200 bg-rose-50 text-rose-800'
-            }`}
-          >
-            <div className="flex items-start gap-2">
-              {notice.type === 'success' ? (
-                <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-              ) : (
-                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-              )}
-              <span>{notice.text}</span>
-            </div>
-            <button type="button" onClick={() => setNotice(null)} className="rounded-lg p-1 hover:bg-black/5">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        ) : null}
-
         {/* Section tabs */}
         <div className="rounded-3xl border border-white/80 bg-white/90 shadow-lg overflow-hidden">
           <div className="border-b border-slate-100 px-4 sm:px-6 py-4">
@@ -1244,6 +1239,22 @@ export default function CompanySettingsPage() {
                         <div className="relative">
                           <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                           <input value={phone} onChange={(e) => setPhone(e.target.value)} className={`${inputClass} pl-10`} />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className={labelClass}>Another telephone number</label>
+                        <div className="relative">
+                          <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          <input value={secondaryPhone} onChange={(e) => setSecondaryPhone(e.target.value)} className={`${inputClass} pl-10`} />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className={labelClass}>WhatsApp number</label>
+                        <div className="relative">
+                          <MessageCircle className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                          <input value={whatsappNo} onChange={(e) => setWhatsappNo(e.target.value)} className={`${inputClass} pl-10`} />
                         </div>
                       </div>
 
@@ -2241,6 +2252,68 @@ export default function CompanySettingsPage() {
                 >
                   <Trash2 className="h-4 w-4" />
                   {deletingTemplateId !== null ? 'Deleting…' : 'Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showNoticeModal && notice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg rounded-3xl border border-white/70 bg-white shadow-2xl overflow-hidden">
+            <div
+              className={`px-6 py-4 flex items-start justify-between gap-3 ${
+                notice.type === 'success'
+                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600'
+                  : 'bg-gradient-to-r from-rose-600 to-red-700'
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                {notice.type === 'success' ? (
+                  <CheckCircle2 className="h-6 w-6 text-white shrink-0 mt-0.5" />
+                ) : (
+                  <AlertTriangle className="h-6 w-6 text-white shrink-0 mt-0.5" />
+                )}
+                <div>
+                  <h3 className="text-xl font-extrabold text-white">
+                    {notice.type === 'success' ? 'Success' : 'Action Required'}
+                  </h3>
+                  <p className={`text-sm mt-1 ${notice.type === 'success' ? 'text-emerald-50' : 'text-rose-100'}`}>
+                    {notice.type === 'success'
+                      ? 'Operation completed successfully.'
+                      : 'Please review the message below.'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNoticeModal(false);
+                  setNotice(null);
+                }}
+                className="rounded-lg border border-white/30 bg-white/10 p-2 text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-6">
+              <p className="text-sm text-slate-700">{notice.text}</p>
+              <div className="mt-5 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNoticeModal(false);
+                    setNotice(null);
+                  }}
+                  className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold text-white ${
+                    notice.type === 'success'
+                      ? 'bg-gradient-to-r from-emerald-600 to-teal-600'
+                      : 'bg-gradient-to-r from-rose-600 to-red-700'
+                  }`}
+                >
+                  OK
                 </button>
               </div>
             </div>

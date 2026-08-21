@@ -134,6 +134,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::delete('dashboard/widgets', [UserDashboardWidgetController::class, 'reset']);
     Route::post('dashboard/widgets/authorize-admin', [UserDashboardWidgetController::class, 'authorizeAdminAction']);
     Route::post('dashboard/widgets/restore-employee', [UserDashboardWidgetController::class, 'restoreEmployeeWidgets']);
+    Route::post('dashboard/widgets/unhide-employee-widget', [UserDashboardWidgetController::class, 'unhideEmployeeWidget']);
     Route::get('dashboard/widgets/employee-hidden', [UserDashboardWidgetController::class, 'employeeHiddenWidgets']);
     Route::get('notifications', [UserNotificationController::class, 'index']);
     Route::get('notifications/preview', [UserNotificationController::class, 'preview']);
@@ -163,6 +164,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::delete('companies/{company}/document-templates/{template}', [CompanyDocumentTemplateController::class, 'destroy']);
     Route::get('companies/{company}/accounts', [CompanyAccountController::class, 'index']);
     Route::post('companies/{company}/accounts', [CompanyAccountController::class, 'store']);
+    Route::post('companies/{company}/accounts/transfer-to-branch', [CompanyAccountController::class, 'transferToBranch']);
     Route::put('companies/{company}/accounts/{account}', [CompanyAccountController::class, 'update']);
     Route::delete('companies/{company}/accounts/{account}', [CompanyAccountController::class, 'destroy']);
     Route::get('companies/{company}/expenses', [AccountingExpenseController::class, 'index']);
@@ -347,18 +349,21 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
 
     // Customers
     Route::get('customers/generate-code', [CustomerController::class, 'generateCode']);
+    Route::get('customers/finance-lookup', [CustomerController::class, 'financeLookup']);
+    Route::get('customers/finance-search', [CustomerController::class, 'financeSearch']);
     Route::get('customers/by-code/{customerCode}', [CustomerController::class, 'findByCode']);
     Route::post('customers/by-code/{customerCode}/photo', [CustomerController::class, 'uploadPhotoByCode']);
     Route::apiResource('customers', CustomerController::class);
     Route::get('customers/{customer}/documents', [CustomerDocumentController::class, 'index']);
     Route::post('customers/{customer}/documents', [CustomerDocumentController::class, 'store']);
     Route::delete('customers/{customer}/documents/{document}', [CustomerDocumentController::class, 'destroy']);
+    Route::get('customers/{customer}/documents/{document}/download', [CustomerDocumentController::class, 'download']);
 
     // Savings & Deposits
     Route::get('savings-accounts/reports/ledger', [SavingsAccountController::class, 'ledgerReport']);
     Route::get('savings-accounts/reports/deposit-growth', [SavingsAccountController::class, 'depositGrowthReport']);
     Route::get('savings-accounts/reports/maturity', [SavingsAccountController::class, 'maturityReport']);
-    Route::apiResource('savings-accounts', SavingsAccountController::class)->only(['index', 'store', 'show']);
+    Route::apiResource('savings-accounts', SavingsAccountController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
     Route::get('savings-accounts/{account}/transactions', [SavingsAccountController::class, 'transactions']);
     Route::post('savings-accounts/{account}/deposit', [SavingsAccountController::class, 'deposit']);
     Route::post('savings-accounts/{account}/withdraw', [SavingsAccountController::class, 'withdraw']);
@@ -379,16 +384,27 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::prefix('microfinance/loan-requests')->group(function () {
         Route::get('/', [MicrofinanceLoanRequestController::class, 'index']);
         Route::get('/meta', [MicrofinanceLoanRequestController::class, 'meta']);
+        Route::get('/approval-candidates', [MicrofinanceLoanRequestController::class, 'approvalCandidates']);
         Route::post('/', [MicrofinanceLoanRequestController::class, 'store']);
         Route::put('/{loanRequest}', [MicrofinanceLoanRequestController::class, 'update']);
         Route::delete('/{loanRequest}', [MicrofinanceLoanRequestController::class, 'destroy']);
         Route::post('/{loanRequest}/lifecycle', [MicrofinanceLoanRequestController::class, 'updateLifecycle']);
         Route::post('/{loanRequest}/documents', [MicrofinanceLoanRequestController::class, 'storeDocuments']);
+        Route::get('/{loanRequest}/customer-profile', [MicrofinanceLoanRequestController::class, 'customerProfile']);
+        Route::post('/{loanRequest}/guarantors/{guarantor}/media', [MicrofinanceLoanRequestController::class, 'storeGuarantorMedia']);
         Route::get('/{loanRequest}/download-agreement', [MicrofinanceLoanRequestController::class, 'downloadAgreement']);
         Route::get('/{loanRequest}/download-reminder-letter', [MicrofinanceLoanRequestController::class, 'downloadReminderLetter']);
         Route::get('/{loanRequest}/download-legal-letter', [MicrofinanceLoanRequestController::class, 'downloadLegalLetter']);
         Route::post('/{loanRequest}/approve', [MicrofinanceLoanRequestController::class, 'approve']);
         Route::post('/{loanRequest}/reject', [MicrofinanceLoanRequestController::class, 'reject']);
+        Route::post('/{loanRequest}/request-approval', [MicrofinanceLoanRequestController::class, 'requestApproval']);
+        Route::post('/{loanRequest}/approve-bm-step', [MicrofinanceLoanRequestController::class, 'approveBmStep']);
+        Route::post('/{loanRequest}/complete-cash-allocation-step', [MicrofinanceLoanRequestController::class, 'completeCashAllocationStep']);
+        Route::post('/{loanRequest}/confirm-second-call-step', [MicrofinanceLoanRequestController::class, 'confirmSecondCallStep']);
+        Route::post('/{loanRequest}/confirm-document-verification-step', [MicrofinanceLoanRequestController::class, 'confirmDocumentVerificationStep']);
+        Route::post('/{loanRequest}/advance-workflow-step', [MicrofinanceLoanRequestController::class, 'advanceWorkflowStep']);
+        Route::post('/{loanRequest}/mark-as-called', [MicrofinanceLoanRequestController::class, 'markAsCalled']);
+        Route::post('/{loanRequest}/send-back', [MicrofinanceLoanRequestController::class, 'sendBack']);
         Route::post('/{loanRequest}/request-documents', [MicrofinanceLoanRequestController::class, 'requestDocuments']);
     });
 

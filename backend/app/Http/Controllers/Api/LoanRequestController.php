@@ -9,6 +9,7 @@ use App\Models\Customer;
 use App\Models\LoanRequest;
 use App\Models\LoanRequestDocument;
 use App\Models\Role;
+use App\Models\SavingsAccount;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,6 +22,51 @@ use ZipArchive;
 
 class LoanRequestController extends Controller
 {
+    private function resolveCustomerDisplayName(Customer $customer): string
+    {
+        $details = is_array($customer->additional_details) ? $customer->additional_details : [];
+        $identity = is_array($details['identity'] ?? null) ? $details['identity'] : [];
+
+        $fullName = trim((string) ($identity['full_name_with_initials'] ?? ''));
+        if ($fullName !== '') {
+            return $fullName;
+        }
+
+        return trim(((string) ($customer->first_name ?? '')) . ' ' . ((string) ($customer->last_name ?? '')));
+    }
+
+    private function findCustomerByCodeOrSerial(string $input): ?Customer
+    {
+        $normalized = strtoupper(trim($input));
+        if ($normalized === '') {
+            return null;
+        }
+
+        if (ctype_digit($normalized) && strlen($normalized) <= 5) {
+            $serial = str_pad($normalized, 5, '0', STR_PAD_LEFT);
+            return Customer::where('customer_code', 'like', '%-' . $serial)
+                ->orderByDesc('id')
+                ->first();
+        }
+
+        $byCode = Customer::whereRaw('UPPER(customer_code) = ?', [$normalized])->first();
+        if ($byCode) {
+            return $byCode;
+        }
+
+        $byInvestmentAccount = SavingsAccount::query()
+            ->with('customer')
+            ->where('account_type', 'investment')
+            ->whereRaw('UPPER(account_number) = ?', [$normalized])
+            ->first();
+
+        if ($byInvestmentAccount?->customer) {
+            return $byInvestmentAccount->customer;
+        }
+
+        return null;
+    }
+
     private function buildCustomerPortalEmail(string $customerCode, int $customerId): string
     {
         $base = strtolower(trim($customerCode));
@@ -241,17 +287,18 @@ class LoanRequestController extends Controller
             'total_payable' => ['required', 'numeric', 'min:0.01'],
 
             'customer_details' => ['required', 'array'],
-            'customer_details.customerNo' => ['required', 'string', 'max:60'],
-            'customer_details.fullName' => ['required', 'string', 'max:190'],
-            'customer_details.nic' => ['required', 'string', 'max:80'],
-            'customer_details.mobile' => ['required', 'string', 'max:40'],
-            'customer_details.address' => ['required', 'string'],
-            'customer_details.monthlyIncome' => ['required', 'numeric', 'min:0.01'],
-            'customer_details.incomeSource' => ['required', 'string', 'max:120'],
+            'customer_details.selectedCustomerId' => ['nullable', 'integer', 'exists:customers,id'],
+            'customer_details.customerNo' => ['nullable', 'string', 'max:60'],
+            'customer_details.nic' => ['nullable', 'string', 'max:80'],
+            'customer_details.fullName' => ['nullable', 'string', 'max:190'],
+            'customer_details.mobile' => ['nullable', 'string', 'max:40'],
+            'customer_details.address' => ['nullable', 'string'],
+            'customer_details.monthlyIncome' => ['nullable', 'numeric', 'min:0'],
+            'customer_details.incomeSource' => ['nullable', 'string', 'max:120'],
             'customer_details.businessName' => ['nullable', 'string', 'max:190'],
-            'customer_details.bankName' => ['required', 'string', 'max:190'],
-            'customer_details.bankBranch' => ['required', 'string', 'max:190'],
-            'customer_details.bankAccountNo' => ['required', 'string', 'max:80'],
+            'customer_details.bankName' => ['nullable', 'string', 'max:190'],
+            'customer_details.bankBranch' => ['nullable', 'string', 'max:190'],
+            'customer_details.bankAccountNo' => ['nullable', 'string', 'max:80'],
             'customer_details.additionalIncome' => ['nullable', 'numeric', 'min:0'],
 
             'guarantor_details' => ['nullable', 'array'],
@@ -269,21 +316,66 @@ class LoanRequestController extends Controller
         ]);
 
         $user = $request->user();
-        $customer = $validated['customer_details'];
+        $customerInput = $validated['customer_details'];
         $requiredApprovalLevel = (int) ($validated['required_approval_level'] ?? 2);
         $resolvedBranchId = (int) ($user?->branch_id ?? $validated['branch_id'] ?? 1);
 
+        $selectedCustomerId = (int) ($customerInput['selectedCustomerId'] ?? 0);
+        $customerRecord = null;
+        if ($selectedCustomerId > 0) {
+            $customerRecord = Customer::query()->find($selectedCustomerId);
+        }
+
+        if (!$customerRecord && !empty($customerInput['customerNo'])) {
+            $customerRecord = $this->findCustomerByCodeOrSerial((string) $customerInput['customerNo']);
+        }
+
+        if (!$customerRecord && !empty($customerInput['nic'])) {
+            $customerRecord = Customer::query()
+                ->whereRaw('UPPER(nic_passport) = ?', [strtoupper(trim((string) $customerInput['nic']))])
+                ->orWhereRaw('UPPER(old_nic) = ?', [strtoupper(trim((string) $customerInput['nic']))])
+                ->first();
+        }
+
+        if (!$customerRecord) {
+            return response()->json([
+                'message' => 'Please select an existing registered customer before submitting a loan request.',
+            ], 422);
+        }
+
+        $customerDetails = is_array($customerRecord->additional_details) ? $customerRecord->additional_details : [];
+        $banking = is_array($customerDetails['banking_relationships'] ?? null) ? $customerDetails['banking_relationships'] : [];
+        $employment = is_array($customerDetails['employment'] ?? null) ? $customerDetails['employment'] : [];
+        $business = is_array($customerDetails['business_information'] ?? null) ? $customerDetails['business_information'] : [];
+
+        $customerSnapshot = [
+            'selectedCustomerId' => (int) ($customerRecord->id ?? 0),
+            'customerNo' => (string) ($customerRecord->customer_code ?? ''),
+            'fullName' => $this->resolveCustomerDisplayName($customerRecord),
+            'nic' => (string) ($customerRecord->nic_passport ?: $customerRecord->old_nic ?: ''),
+            'mobile' => (string) ($customerRecord->phone ?? ''),
+            'address' => (string) ($customerRecord->current_address ?: $customerRecord->permanent_address ?: ''),
+            'monthlyIncome' => (string) ($employment['monthly_salary'] ?? $customerRecord->monthly_income ?? '0'),
+            'incomeSource' => (string) ($employment['job_title'] ?? $employment['employment_type'] ?? ''),
+            'businessName' => (string) ($business['business_name'] ?? ''),
+            'bankName' => (string) ($banking['primary_bank_name'] ?? ''),
+            'bankBranch' => (string) ($banking['bank_branch'] ?? ''),
+            'bankAccountNo' => (string) ($banking['account_number'] ?? ''),
+            'additionalIncome' => (string) ($employment['additional_income'] ?? '0'),
+            'source' => 'registered_customer',
+        ];
+
         $customerPortalCredentials = null;
-        $loanRequest = DB::transaction(function () use ($validated, $resolvedBranchId, $customer, $requiredApprovalLevel, $user, &$customerPortalCredentials) {
+        $loanRequest = DB::transaction(function () use ($validated, $resolvedBranchId, $customerSnapshot, $requiredApprovalLevel, $user, $customerRecord, &$customerPortalCredentials) {
             $loanRequest = LoanRequest::create([
                 'tenant_id' => 1,
                 'branch_id' => $resolvedBranchId,
                 'loan_product' => (string) $validated['loan_product'],
-                'customer_no' => (string) $customer['customerNo'],
-                'customer_full_name' => (string) $customer['fullName'],
-                'customer_nic' => (string) $customer['nic'],
-                'customer_mobile' => (string) $customer['mobile'],
-                'customer_address' => (string) $customer['address'],
+                'customer_no' => (string) $customerSnapshot['customerNo'],
+                'customer_full_name' => (string) $customerSnapshot['fullName'],
+                'customer_nic' => (string) $customerSnapshot['nic'],
+                'customer_mobile' => (string) $customerSnapshot['mobile'],
+                'customer_address' => (string) $customerSnapshot['address'],
                 'principal' => (float) $validated['principal'],
                 'annual_rate' => (float) $validated['annual_rate'],
                 'interest_rate_type' => (string) ($validated['interest_rate_type'] ?? 'fixed'),
@@ -292,7 +384,7 @@ class LoanRequestController extends Controller
                 'installments' => (int) $validated['installments'],
                 'installment_amount' => (float) $validated['installment_amount'],
                 'total_payable' => (float) $validated['total_payable'],
-                'customer_details' => $customer,
+                'customer_details' => $customerSnapshot,
                 'guarantor_details' => $validated['guarantor_details'] ?? null,
                 'status' => 'pending_approval',
                 'approval_level' => 1,
@@ -303,54 +395,7 @@ class LoanRequestController extends Controller
             $loanRequest->request_no = 'LREQ-' . str_pad((string) $loanRequest->id, 6, '0', STR_PAD_LEFT);
             $loanRequest->save();
 
-            $fullName = trim((string) ($customer['fullName'] ?? ''));
-            $nameParts = preg_split('/\s+/', $fullName, 2);
-            $firstName = trim((string) ($nameParts[0] ?? 'Customer'));
-            $lastName = trim((string) ($nameParts[1] ?? 'Customer'));
-            if ($lastName === '') {
-                $lastName = 'Customer';
-            }
-
-            $existingCustomer = Customer::query()
-                ->where('nic_passport', (string) ($customer['nic'] ?? ''))
-                ->first();
-
-            $customerRecord = null;
-            if ($existingCustomer) {
-                $existingCustomer->update([
-                    'customer_code' => (string) ($customer['customerNo'] ?? $existingCustomer->customer_code),
-                    'first_name' => $firstName,
-                    'last_name' => $lastName,
-                    'phone' => (string) ($customer['mobile'] ?? ''),
-                    'permanent_address' => (string) ($customer['address'] ?? ''),
-                    'current_address' => (string) ($customer['address'] ?? ''),
-                    'status' => 'active',
-                ]);
-                $customerRecord = $existingCustomer->fresh();
-            } else {
-                $customerCode = (string) ($customer['customerNo'] ?? '');
-                $emailBase = preg_replace('/[^a-z0-9]+/i', '', strtolower((string) ($customer['nic'] ?? ''))) ?: 'customer' . $loanRequest->id;
-                $customerRecord = Customer::create([
-                    'tenant_id' => 1,
-                    'branch_id' => $resolvedBranchId,
-                    'customer_code' => $customerCode,
-                    'first_name' => $firstName,
-                    'last_name' => $lastName,
-                    'email' => sprintf('%s-%d@deskoffinance.local', $emailBase, (int) $loanRequest->id),
-                    'phone' => (string) ($customer['mobile'] ?? ''),
-                    'nic_passport' => (string) ($customer['nic'] ?? ''),
-                    'date_of_birth' => '1990-01-01',
-                    'gender' => 'other',
-                    'permanent_address' => (string) ($customer['address'] ?? ''),
-                    'current_address' => (string) ($customer['address'] ?? ''),
-                    'created_by' => (int) ($user?->id ?? 1),
-                    'status' => 'active',
-                ]);
-            }
-
-            if ($customerRecord) {
-                $customerPortalCredentials = $this->ensureCustomerPortalAccess($customerRecord, (int) ($user?->id ?? 0));
-            }
+            $customerPortalCredentials = $this->ensureCustomerPortalAccess($customerRecord, (int) ($user?->id ?? 0));
 
             return $loanRequest;
         });

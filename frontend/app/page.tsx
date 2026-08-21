@@ -17,10 +17,30 @@ export default function Home() {
   const [modalMessage, setModalMessage] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [showForgotModal, setShowForgotModal] = useState(false);
+  const [businessName, setBusinessName] = useState('');
+  const [businessLogoUrl, setBusinessLogoUrl] = useState('');
   const router = useRouter();
 
   useEffect(() => {
     setMounted(true);
+
+    void (async () => {
+      try {
+        const response = await axios.get('/media/company/profile');
+        const name = String(response.data?.name || '').trim();
+        const logoUrl = String(response.data?.logo_url || '').trim();
+
+        if (name) {
+          setBusinessName(name);
+        }
+
+        if (logoUrl) {
+          setBusinessLogoUrl(logoUrl);
+        }
+      } catch {
+        setBusinessName('');
+      }
+    })();
   }, []);
 
   if (!mounted) {
@@ -35,11 +55,11 @@ export default function Home() {
     e.preventDefault();
     setLoading(true);
     try {
-      const normalizedEmail = email.trim().toLowerCase();
+      const normalizedLogin = email.trim();
       const normalizedPassword = password.trim();
 
       const response = await axios.post(`${getApiBaseUrl()}/login`, {
-        email: normalizedEmail,
+        login: normalizedLogin,
         password: normalizedPassword,
       });
       localStorage.setItem('token', response.data.token);
@@ -131,19 +151,24 @@ export default function Home() {
             Desk of Finance
           </div>
           <h1 className="mt-4 text-4xl font-black leading-tight text-slate-900 sm:text-5xl">
-            Global Capital Credit
+            Business
             <span className="block bg-gradient-to-r from-cyan-600 to-emerald-600 bg-clip-text text-transparent">
               Operations Portal
             </span>
           </h1>
+          {businessName ? (
+            <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">
+              Registered Business: {businessName}
+            </div>
+          ) : null}
           <p className="mt-4 max-w-lg text-sm leading-relaxed text-slate-600 sm:text-base">
             Manage lending, collections, and team workflows from one secure workspace designed for day-to-day field and office operations.
           </p>
 
           <div className="mt-6">
             <img
-              src="/media/company/logo"
-              alt="Company logo"
+              src={businessLogoUrl || '/icons/icon-192.png'}
+              alt={businessName ? `${businessName} logo` : 'Business logo'}
               onError={(event) => {
                 const target = event.currentTarget;
                 if (target.src.includes('/icons/icon-192.png')) return;
@@ -159,8 +184,8 @@ export default function Home() {
               <p className="mt-1 text-lg font-extrabold text-slate-900">Role Based</p>
             </div>
             <div className="rounded-2xl border border-cyan-100 bg-white/80 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Status</p>
-              <p className="mt-1 text-lg font-extrabold text-emerald-700">System Online</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">Business Preview</p>
+              <p className="mt-1 text-lg font-extrabold text-emerald-700">{businessName || 'Not configured yet'}</p>
             </div>
           </div>
         </div>
@@ -175,16 +200,16 @@ export default function Home() {
           <form className="mt-8 space-y-5" onSubmit={handleLogin}>
             <div>
               <label htmlFor="email" className="mb-2 block text-sm font-semibold text-slate-700">
-                Email address
+                User ID or Email
               </label>
               <input
                 id="email"
-                name="email"
-                type="email"
-                autoComplete="email"
+                name="login"
+                type="text"
+                autoComplete="username"
                 required
                 className="block w-full rounded-xl border border-cyan-100 bg-white px-4 py-3 text-sm text-slate-900 placeholder-slate-400 shadow-sm outline-none transition-all duration-200 focus:border-cyan-300 focus:ring-4 focus:ring-cyan-100"
-                placeholder="name@company.com"
+                placeholder="Enter user id or email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />

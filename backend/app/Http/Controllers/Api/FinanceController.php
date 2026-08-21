@@ -18,6 +18,7 @@ use App\Models\MicrofinanceLoanCollection;
 use App\Models\MicrofinanceLoanRequest;
 use App\Models\Mortgage;
 use App\Models\MortgagePayment;
+use App\Models\SavingsAccount;
 use App\Models\EmployeeWalletBankDeposit;
 use App\Models\EmployeeWalletCashHandover;
 use App\Services\SmsGatewayService;
@@ -74,6 +75,58 @@ class FinanceController extends Controller
 
         $branchId = (int) ($request->user()?->branch_id ?? 0);
         return $branchId > 0 ? $branchId : null;
+    }
+
+    private function resolveCustomerFromReference(string $reference): ?Customer
+    {
+        $normalized = strtoupper(trim($reference));
+        if ($normalized === '') {
+            return null;
+        }
+
+        if (ctype_digit($normalized) && strlen($normalized) <= 5) {
+            $serial = str_pad($normalized, 5, '0', STR_PAD_LEFT);
+            $bySerial = Customer::where('customer_code', 'like', '%-' . $serial)
+                ->orderByDesc('id')
+                ->first();
+            if ($bySerial) {
+                return $bySerial;
+            }
+        }
+
+        $byCode = Customer::whereRaw('UPPER(customer_code) = ?', [$normalized])->first();
+        if ($byCode) {
+            return $byCode;
+        }
+
+        $account = SavingsAccount::query()
+            ->with('customer')
+            ->where('account_type', 'investment')
+            ->whereRaw('UPPER(account_number) = ?', [$normalized])
+            ->first();
+
+        if ($account?->customer) {
+            return $account->customer;
+        }
+
+        return null;
+    }
+
+    private function resolveCanonicalCustomerNo(Customer $customer): string
+    {
+        $account = SavingsAccount::query()
+            ->where('customer_id', (int) $customer->id)
+            ->where('account_type', 'investment')
+            ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
+            ->orderBy('id')
+            ->first();
+
+        $accountNo = trim((string) ($account->account_number ?? ''));
+        if ($accountNo !== '') {
+            return $accountNo;
+        }
+
+        return (string) ($customer->customer_code ?? '');
     }
 
     private function periodGroupExpression(string $column, string $groupBy): string
@@ -1296,15 +1349,7 @@ class FinanceController extends Controller
         if (!empty($validated['customer_id'])) {
             $customer = Customer::findOrFail((int) $validated['customer_id']);
         } elseif (!empty($validated['customer_no'])) {
-            $customerNo = strtoupper(trim((string) $validated['customer_no']));
-            if (ctype_digit($customerNo) && strlen($customerNo) <= 5) {
-                $serial = str_pad($customerNo, 5, '0', STR_PAD_LEFT);
-                $customer = Customer::where('customer_code', 'like', '%-' . $serial)
-                    ->orderByDesc('id')
-                    ->first();
-            } else {
-                $customer = Customer::whereRaw('UPPER(customer_code) = ?', [$customerNo])->first();
-            }
+            $customer = $this->resolveCustomerFromReference((string) $validated['customer_no']);
             if (!$customer) {
                 return response()->json([
                     'message' => 'Customer not found for provided Customer No.',
@@ -1427,7 +1472,7 @@ class FinanceController extends Controller
                     'tenant_id' => (int) $finance->tenant_id,
                     'branch_id' => $finance->branch_id,
                     'customer_id' => $finance->customer_id,
-                    'customer_no' => $customer->customer_code,
+                    'customer_no' => $this->resolveCanonicalCustomerNo($customer),
                     'finance_type' => $finance->finance_type,
                     'product_type' => $finance->product_type,
                     'asset_reference' => $finance->asset_reference,

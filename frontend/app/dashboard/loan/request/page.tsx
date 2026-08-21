@@ -52,6 +52,21 @@ type CustomerDetails = {
   incomeSource: string;
 };
 
+type ExistingCustomer = {
+  id?: number;
+  customer_code?: string;
+  first_name?: string;
+  last_name?: string;
+  full_name_with_initials?: string;
+  nic_passport?: string;
+  old_nic?: string;
+  phone?: string;
+  current_address?: string;
+  permanent_address?: string;
+  monthly_income?: number | string;
+  additional_details?: unknown;
+};
+
 type GuarantorDetails = {
   fullName: string;
   nic: string;
@@ -162,43 +177,12 @@ function SkeletonBox({ className = "" }: { className?: string }) {
 const fieldClass =
   "w-full rounded-xl border border-cyan-100 bg-white px-3 py-2 text-sm text-slate-900 focus:border-cyan-300 focus:outline-none focus:ring-2 focus:ring-cyan-100";
 
-const readOnlyFieldClass =
-  "w-full rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2 text-sm text-slate-800";
-
-function codeSegment(value: string, maxLen = 4): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "GEN";
-
-  const fromWords = trimmed
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map((part) => part[0] || "")
-    .join("")
-    .toUpperCase();
-
-  if (fromWords.length >= 2) return fromWords.slice(0, maxLen);
-
-  const compact = trimmed.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return (compact || "GEN").slice(0, maxLen);
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-function formatCustomerNumberTimestamp(date: Date): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return (
-    `${date.getFullYear()}` +
-    `${pad(date.getMonth() + 1)}` +
-    `${pad(date.getDate())}` +
-    `${pad(date.getHours())}` +
-    `${pad(date.getMinutes())}` +
-    `${pad(date.getSeconds())}`
-  );
-}
-
-function buildCustomerNumber(branchName: string, loanProductKey: string, loanProductName: string): string {
-  const branchCode = codeSegment(branchName, 4);
-  const loanCode = codeSegment(loanProductKey.replace(/_/g, " ") || loanProductName, 4);
-  const timestamp = formatCustomerNumberTimestamp(new Date());
-  return `${branchCode}-${loanCode}-${timestamp}`;
+function asText(value: unknown): string {
+  return String(value ?? "").trim();
 }
 
 export default function NewLoanRequestPage() {
@@ -247,6 +231,12 @@ export default function NewLoanRequestPage() {
     additionalIncome: "",
     incomeSource: "",
   });
+  const [customerInputMode] = useState<"existing">("existing");
+  const [customerLookupQuery, setCustomerLookupQuery] = useState("");
+  const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
+  const [customerLookupError, setCustomerLookupError] = useState("");
+  const [customerLookupResults, setCustomerLookupResults] = useState<ExistingCustomer[]>([]);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<number>(0);
   const [guarantors, setGuarantors] = useState<GuarantorDetails[]>([
     {
       fullName: "",
@@ -264,25 +254,9 @@ export default function NewLoanRequestPage() {
   const [submitError, setSubmitError] = useState("");
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [documents, setDocuments] = useState<File[]>([]);
-  const [branchName, setBranchName] = useState("");
+  const [, setBranchName] = useState("");
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<string[]>([]);
   const [widgetNotice, setWidgetNotice] = useState("");
-
-  const generateCustomerNumber = useCallback(() => {
-    const product = loanProducts.find((item) => item.key === loanProduct);
-    return buildCustomerNumber(
-      branchName,
-      product?.key || loanProduct || "loan",
-      product?.name || "Loan"
-    );
-  }, [branchName, loanProduct, loanProducts]);
-
-  const applyGeneratedCustomerNumber = useCallback(() => {
-    setCustomerDetails((prev) => ({
-      ...prev,
-      customerNo: generateCustomerNumber(),
-    }));
-  }, [generateCustomerNumber]);
 
   const fetchWidgetPreferences = useCallback(async (authToken: string) => {
     try {
@@ -471,8 +445,100 @@ export default function NewLoanRequestPage() {
 
   useEffect(() => {
     if (activeStep !== 2) return;
-    applyGeneratedCustomerNumber();
-  }, [activeStep, loanProduct, branchName, applyGeneratedCustomerNumber]);
+    if (!selectedCustomerId) return;
+    setStepNotice("");
+  }, [activeStep, selectedCustomerId]);
+
+  const loadCustomerLookup = useCallback(
+    async (queryValue: string) => {
+      if (!token) return;
+
+      const keyword = queryValue.trim();
+      if (!keyword) {
+        setCustomerLookupResults([]);
+        setCustomerLookupError("");
+        return;
+      }
+
+      setCustomerLookupLoading(true);
+      setCustomerLookupError("");
+
+      try {
+        const response = await axios.get(`${apiBase}/customers`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/json",
+          },
+          params: {
+            q: keyword,
+            per_page: 12,
+          },
+        });
+
+        const rows = Array.isArray(response.data?.data) ? response.data.data : [];
+        setCustomerLookupResults(rows as ExistingCustomer[]);
+      } catch {
+        setCustomerLookupResults([]);
+        setCustomerLookupError("Failed to search customers.");
+      } finally {
+        setCustomerLookupLoading(false);
+      }
+    },
+    [apiBase, token]
+  );
+
+  const getCustomerDisplayName = useCallback((customer: ExistingCustomer): string => {
+    const withInitials = asText(customer.full_name_with_initials);
+    if (withInitials) return withInitials;
+
+    const firstName = asText(customer.first_name);
+    const lastName = asText(customer.last_name);
+    return `${firstName} ${lastName}`.trim();
+  }, []);
+
+  const applyCustomerFromLookup = useCallback(
+    (customer: ExistingCustomer) => {
+      const details = asRecord(customer.additional_details);
+      const banking = asRecord(details.banking_relationships);
+      const employment = asRecord(details.employment);
+      const business = asRecord(details.business_information);
+
+      const customerNo = asText(customer.customer_code);
+      const fullName = getCustomerDisplayName(customer);
+      const nic = asText(customer.nic_passport) || asText(customer.old_nic);
+      const mobile = asText(customer.phone);
+      const address = asText(customer.current_address) || asText(customer.permanent_address);
+
+      const bankName = asText(banking.primary_bank_name);
+      const bankBranch = asText(banking.bank_branch);
+      const bankAccountNo = asText(banking.account_number);
+
+      const businessName = asText(business.business_name);
+      const monthlyIncome = asText(employment.monthly_salary) || asText(customer.monthly_income);
+      const additionalIncome = asText(employment.additional_income);
+      const incomeSource = asText(employment.job_title) || asText(employment.employment_type);
+
+      setSelectedCustomerId(Number(customer.id || 0));
+      setCustomerLookupQuery([customerNo, fullName, nic].filter(Boolean).join(" | "));
+
+      setCustomerDetails((prev) => ({
+        ...prev,
+        customerNo: customerNo || prev.customerNo,
+        fullName: fullName || prev.fullName,
+        nic: nic || prev.nic,
+        mobile: mobile || prev.mobile,
+        address: address || prev.address,
+        bankName: bankName || prev.bankName,
+        bankBranch: bankBranch || prev.bankBranch,
+        bankAccountNo: bankAccountNo || prev.bankAccountNo,
+        businessName: businessName || prev.businessName,
+        monthlyIncome: monthlyIncome || prev.monthlyIncome,
+        additionalIncome: additionalIncome || prev.additionalIncome,
+        incomeSource: incomeSource || prev.incomeSource,
+      }));
+    },
+    [getCustomerDisplayName]
+  );
 
   const selectedProduct = useMemo(
     () => loanProducts.find((item) => item.key === loanProduct) || null,
@@ -808,17 +874,12 @@ export default function NewLoanRequestPage() {
     }
 
     if (step === 2) {
-      if (!customerDetails.customerNo.trim()) return "Customer Number is required.";
-      if (!customerDetails.fullName.trim()) return "Customer Full Name is required.";
-      if (!customerDetails.nic.trim()) return "Customer NIC / Passport is required.";
-      if (!customerDetails.mobile.trim()) return "Customer Mobile Number is required.";
-      if (!customerDetails.address.trim()) return "Customer Address is required.";
-      if (!customerDetails.bankName.trim()) return "Bank Name is required.";
-      if (!customerDetails.bankBranch.trim()) return "Bank Branch is required.";
-      if (!customerDetails.bankAccountNo.trim()) return "Bank Account No is required.";
-      const monthlyIncome = Number(customerDetails.monthlyIncome);
-      if (!Number.isFinite(monthlyIncome) || monthlyIncome <= 0) return "Customer monthly income is required.";
-      if (!customerDetails.incomeSource.trim()) return "Primary income source is required.";
+      if (selectedCustomerId <= 0) {
+        return "Please search and select an existing customer.";
+      }
+
+      const selectedCustomerCode = customerDetails.customerNo.trim();
+      if (!selectedCustomerCode) return "Selected customer record is incomplete. Please select another customer.";
       return null;
     }
 
@@ -936,7 +997,13 @@ export default function NewLoanRequestPage() {
       payload.append("installments", String(calculation.installments));
       payload.append("installment_amount", String(Number(calculation.installmentAmount.toFixed(2))));
       payload.append("total_payable", String(Number(calculation.totalPayable.toFixed(2))));
-      payload.append("customer_details", JSON.stringify(customerDetails));
+      payload.append(
+        "customer_details",
+        JSON.stringify({
+          ...customerDetails,
+          selectedCustomerId,
+        })
+      );
       payload.append("guarantor_details", JSON.stringify(nonEmptyGuarantors.length ? nonEmptyGuarantors : []));
       payload.append("required_approval_level", "2");
 
@@ -1353,173 +1420,107 @@ export default function NewLoanRequestPage() {
                 <p className="text-sm text-slate-600 mt-1">Capture complete applicant and income details.</p>
 
                 <div className="mt-6 rounded-xl border border-cyan-100 bg-white p-4 space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <FieldLabel htmlFor="customer-no">Customer number *</FieldLabel>
-                      <div className="flex gap-2">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                    <p className="text-xs font-bold uppercase tracking-wide text-slate-700">Customer Source</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setStepNotice("")}
+                        className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                          customerInputMode === "existing"
+                            ? "border-cyan-300 bg-cyan-50 text-cyan-800"
+                            : "border-slate-200 bg-white text-slate-700"
+                        }`}
+                      >
+                        Select Existing Customer
+                      </button>
+                    </div>
+
+                    {customerInputMode === "existing" ? (
+                      <div className="mt-3 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2">
                         <input
-                          id="customer-no"
-                          value={customerDetails.customerNo}
-                          readOnly
-                          placeholder="Auto-generated on open"
-                          className={readOnlyFieldClass}
-                          title="Branch + loan type + date/time"
+                          value={customerLookupQuery}
+                          onChange={(e) => setCustomerLookupQuery(e.target.value)}
+                          placeholder="Search by customer no, NIC, phone, or name"
+                          className={fieldClass}
                         />
                         <button
                           type="button"
-                          onClick={applyGeneratedCustomerNumber}
-                          className="shrink-0 px-3 py-2 rounded-xl border border-cyan-200 bg-cyan-50 text-xs font-semibold text-cyan-800 hover:bg-cyan-100"
+                          onClick={() => void loadCustomerLookup(customerLookupQuery)}
+                          className="px-4 py-2 rounded-xl border border-cyan-200 bg-cyan-50 text-sm font-semibold text-cyan-800 hover:bg-cyan-100"
+                          disabled={customerLookupLoading}
                         >
-                          Regenerate
+                          {customerLookupLoading ? "Searching..." : "Search"}
                         </button>
+
+                        {customerLookupError ? (
+                          <p className="md:col-span-2 text-xs text-rose-700">{customerLookupError}</p>
+                        ) : null}
+
+                        {customerLookupResults.length > 0 ? (
+                          <div className="md:col-span-2 rounded-xl border border-cyan-100 bg-white max-h-52 overflow-auto">
+                            {customerLookupResults.map((customer) => {
+                              const customerId = Number(customer.id || 0);
+                              const selected = customerId > 0 && selectedCustomerId === customerId;
+                              const name = getCustomerDisplayName(customer);
+                              const code = asText(customer.customer_code);
+                              const nic = asText(customer.nic_passport) || asText(customer.old_nic);
+                              const phone = asText(customer.phone);
+
+                              return (
+                                <button
+                                  type="button"
+                                  key={`lookup-customer-${customerId || code}`}
+                                  onClick={() => applyCustomerFromLookup(customer)}
+                                  className={`w-full border-b border-cyan-50 px-3 py-2 text-left hover:bg-cyan-50 ${
+                                    selected ? "bg-cyan-100/70" : "bg-white"
+                                  }`}
+                                >
+                                  <p className="text-xs font-semibold text-slate-900">
+                                    {name || "Unnamed Customer"}
+                                  </p>
+                                  <p className="text-[11px] text-slate-600">
+                                    {code || "-"} {nic ? `| ${nic}` : ""} {phone ? `| ${phone}` : ""}
+                                  </p>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
                       </div>
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        Format: branch – loan type – date/time
-                        {branchName ? ` (${branchName})` : ""}
-                        {selectedProduct ? ` · ${selectedProduct.name}` : ""}
+                    ) : null}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-700">Customer Number</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{customerDetails.customerNo || "-"}</p>
+                    </div>
+                    <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-700">Customer Name</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{customerDetails.fullName || "-"}</p>
+                    </div>
+                    <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-700">NIC / Passport</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{customerDetails.nic || "-"}</p>
+                    </div>
+                    <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-700">Mobile</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{customerDetails.mobile || "-"}</p>
+                    </div>
+                    <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-700">Bank</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">
+                        {[customerDetails.bankName, customerDetails.bankBranch].filter(Boolean).join(" - ") || "-"}
                       </p>
                     </div>
-                    <div>
-                      <FieldLabel htmlFor="customer-full-name">Full name *</FieldLabel>
-                      <input
-                        id="customer-full-name"
-                        value={customerDetails.fullName}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, fullName: e.target.value }))
-                        }
-                        placeholder="As per NIC / passport"
-                        className={fieldClass}
-                      />
+                    <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-700">Account Number</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{customerDetails.bankAccountNo || "-"}</p>
                     </div>
-                    <div>
-                      <FieldLabel htmlFor="customer-nic">NIC / passport number *</FieldLabel>
-                      <input
-                        id="customer-nic"
-                        value={customerDetails.nic}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, nic: e.target.value }))
-                        }
-                        placeholder="National ID or passport"
-                        className={fieldClass}
-                      />
-                    </div>
-                    <div>
-                      <FieldLabel htmlFor="customer-mobile">Mobile number *</FieldLabel>
-                      <input
-                        id="customer-mobile"
-                        type="tel"
-                        value={customerDetails.mobile}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, mobile: e.target.value }))
-                        }
-                        placeholder="e.g. 0771234567"
-                        className={fieldClass}
-                      />
-                    </div>
-                    <div>
-                      <FieldLabel htmlFor="customer-bank-name">Bank name *</FieldLabel>
-                      <input
-                        id="customer-bank-name"
-                        value={customerDetails.bankName}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, bankName: e.target.value }))
-                        }
-                        placeholder="e.g. Bank of Ceylon"
-                        className={fieldClass}
-                      />
-                    </div>
-                    <div>
-                      <FieldLabel htmlFor="customer-bank-branch">Bank branch *</FieldLabel>
-                      <input
-                        id="customer-bank-branch"
-                        value={customerDetails.bankBranch}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, bankBranch: e.target.value }))
-                        }
-                        placeholder="e.g. Eheliyagoda Branch"
-                        className={fieldClass}
-                      />
-                    </div>
-                    <div className="md:col-span-2">
-                      <FieldLabel htmlFor="customer-bank-account-no">Bank account no *</FieldLabel>
-                      <input
-                        id="customer-bank-account-no"
-                        value={customerDetails.bankAccountNo}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, bankAccountNo: e.target.value }))
-                        }
-                        placeholder="Enter account number"
-                        className={fieldClass}
-                      />
-                    </div>
-                    <div className="md:col-span-2">
-                      <FieldLabel htmlFor="customer-business" optional>
-                        Business name
-                      </FieldLabel>
-                      <input
-                        id="customer-business"
-                        value={customerDetails.businessName}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, businessName: e.target.value }))
-                        }
-                        placeholder="If applicant is a business"
-                        className={fieldClass}
-                      />
-                    </div>
-                    <div>
-                      <FieldLabel htmlFor="customer-monthly-income">Monthly income (LKR) *</FieldLabel>
-                      <input
-                        id="customer-monthly-income"
-                        type="number"
-                        min="0"
-                        value={customerDetails.monthlyIncome}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, monthlyIncome: e.target.value }))
-                        }
-                        placeholder="0.00"
-                        className={fieldClass}
-                      />
-                    </div>
-                    <div>
-                      <FieldLabel htmlFor="customer-income-source">Primary income source *</FieldLabel>
-                      <input
-                        id="customer-income-source"
-                        value={customerDetails.incomeSource}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, incomeSource: e.target.value }))
-                        }
-                        placeholder="e.g. Salary, business, farming"
-                        className={fieldClass}
-                      />
-                    </div>
-                    <div className="md:col-span-2">
-                      <FieldLabel htmlFor="customer-additional-income" optional>
-                        Additional income (LKR)
-                      </FieldLabel>
-                      <input
-                        id="customer-additional-income"
-                        type="number"
-                        min="0"
-                        value={customerDetails.additionalIncome}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, additionalIncome: e.target.value }))
-                        }
-                        placeholder="Other monthly income, if any"
-                        className={fieldClass}
-                      />
-                    </div>
-                    <div className="md:col-span-2">
-                      <FieldLabel htmlFor="customer-address">Residential / business address *</FieldLabel>
-                      <textarea
-                        id="customer-address"
-                        value={customerDetails.address}
-                        onChange={(e) =>
-                          setCustomerDetails((prev) => ({ ...prev, address: e.target.value }))
-                        }
-                        placeholder="Full address"
-                        className={fieldClass}
-                        rows={3}
-                      />
+                    <div className="md:col-span-2 rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-700">Address</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{customerDetails.address || "-"}</p>
                     </div>
                   </div>
                 </div>

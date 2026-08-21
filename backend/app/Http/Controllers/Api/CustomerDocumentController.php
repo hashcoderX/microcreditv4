@@ -46,4 +46,13 @@ class CustomerDocumentController extends Controller
         $document->delete();
         return response()->json(null, 204);
     }
+
+    public function download(Customer $customer, CustomerDocument $document)
+    {
+        if ($document->customer_id !== $customer->id) {
+            return response()->json(['message' => 'Not found'], 404);
+        }
+
+        return Storage::download($document->file_path, $document->original_name ?: null);
+    }
 }

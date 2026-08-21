@@ -6,6 +6,7 @@ use App\Models\Company;
 use App\Models\Employee;
 use App\Models\Candidate;
 use App\Models\CompanyAccount;
+use App\Models\CompanyLeadershipAssignment;
 use App\Models\Department;
 use App\Models\Designation;
 use App\Models\Role;
@@ -20,6 +21,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Throwable;
@@ -27,6 +29,72 @@ use ZipArchive;
 
 class CompanyController extends Controller
 {
+        /**
+         * @return array<int, string>
+         */
+        private function leadershipRoleTypes(): array
+        {
+            return [
+                CompanyLeadershipAssignment::ROLE_BUSINESS_OWNER,
+                CompanyLeadershipAssignment::ROLE_CEO,
+                CompanyLeadershipAssignment::ROLE_REGIONAL_MANAGER,
+                CompanyLeadershipAssignment::ROLE_ZONAL_MANAGER,
+            ];
+        }
+
+        /**
+         * @param array<string, mixed> $validated
+         * @return array<int, array{role_type:string,user_id:int}>
+         */
+        private function normalizeLeadershipAssignments(array $validated): array
+        {
+            $rows = $validated['leadership_assignments'] ?? [];
+            if (!is_array($rows)) {
+                return [];
+            }
+
+            return collect($rows)
+                ->filter(static fn ($row) => is_array($row))
+                ->map(static function (array $row): array {
+                    return [
+                        'role_type' => strtolower(trim((string) ($row['role_type'] ?? ''))),
+                        'user_id' => (int) ($row['user_id'] ?? 0),
+                    ];
+                })
+                ->filter(static fn (array $row): bool => $row['role_type'] !== '' && $row['user_id'] > 0)
+                ->unique(static fn (array $row): string => $row['role_type'] . '::' . $row['user_id'])
+                ->values()
+                ->all();
+        }
+
+        /**
+         * @param array<int, array{role_type:string,user_id:int}> $rows
+         */
+        private function leadershipUserIdByRole(array $rows, string $roleType): ?int
+        {
+            foreach ($rows as $row) {
+                if (($row['role_type'] ?? '') === $roleType && (int) ($row['user_id'] ?? 0) > 0) {
+                    return (int) $row['user_id'];
+                }
+            }
+
+            return null;
+        }
+
+        /**
+         * @param array<int, array{role_type:string,user_id:int}> $rows
+         */
+        private function syncLeadershipAssignments(Company $company, array $rows): void
+        {
+            $company->leadershipAssignments()->delete();
+
+            if (empty($rows)) {
+                return;
+            }
+
+            $company->leadershipAssignments()->createMany($rows);
+        }
+
         private function isSystemOnline(): bool
         {
             if (!Schema::hasTable('system_settings')) {
@@ -259,13 +327,25 @@ class CompanyController extends Controller
 
     public function index()
     {
-        $companies = Company::with('manager:id,name,email')->get();
+        $companies = Company::with([
+            'manager:id,name,email',
+            'businessOwner:id,name,email',
+            'ceo:id,name,email',
+            'regionalManager:id,name,email',
+            'leadershipAssignments.user:id,name,email',
+        ])->get();
         return response()->json($companies);
     }
 
     public function show(Company $company)
     {
-        return response()->json($company->load('manager:id,name,email'));
+        return response()->json($company->load([
+            'manager:id,name,email',
+            'businessOwner:id,name,email',
+            'ceo:id,name,email',
+            'regionalManager:id,name,email',
+            'leadershipAssignments.user:id,name,email',
+        ]));
     }
 
     public function managerCandidates()
@@ -275,11 +355,20 @@ class CompanyController extends Controller
             ->with(['designation:id,name', 'roles:id,name'])
             ->where(function ($query) {
                 $query->whereHas('designation', function ($designationQuery) {
-                    $designationQuery->where('name', 'like', '%manager%');
+                    $designationQuery->where('name', 'like', '%manager%')
+                        ->orWhere('name', 'like', '%ceo%')
+                        ->orWhere('name', 'like', '%owner%')
+                        ->orWhere('name', 'like', '%regional%')
+                        ->orWhere('name', 'like', '%admin%');
                 })->orWhereHas('roles', function ($roleQuery) {
                     $roleQuery->where('name', 'like', '%manager%')
-                        ->orWhere('name', 'like', '%admin%');
-                });
+                        ->orWhere('name', 'like', '%admin%')
+                        ->orWhere('name', 'like', '%owner%')
+                        ->orWhere('name', 'like', '%ceo%')
+                        ->orWhere('name', 'like', '%regional%');
+                })->orWhereRaw('LOWER(name) LIKE ?', ['%owner%'])
+                    ->orWhereRaw('LOWER(name) LIKE ?', ['%ceo%'])
+                    ->orWhereRaw('LOWER(name) LIKE ?', ['%regional%']);
             })
             ->orderBy('name')
             ->get();
@@ -294,11 +383,19 @@ class CompanyController extends Controller
             'email' => 'required|string|email|max:255|unique:companies',
             'address' => 'nullable|string',
             'phone' => 'nullable|string|max:20',
+            'secondary_phone' => 'nullable|string|max:30',
+            'whatsapp_no' => 'nullable|string|max:30',
             'website' => 'nullable|url',
             'country' => 'nullable|string|max:100',
             'currency' => 'nullable|string|max:10',
             'logo_path' => 'nullable|string|max:255',
             'manager_user_id' => 'nullable|exists:users,id',
+            'business_owner_user_id' => 'nullable|exists:users,id',
+            'ceo_user_id' => 'nullable|exists:users,id',
+            'regional_manager_user_id' => 'nullable|exists:users,id',
+            'leadership_assignments' => 'nullable|array',
+            'leadership_assignments.*.role_type' => ['required_with:leadership_assignments', Rule::in($this->leadershipRoleTypes())],
+            'leadership_assignments.*.user_id' => 'required_with:leadership_assignments|exists:users,id',
             'opening_asset' => 'nullable|numeric|min:0',
             'cash_opening_balance' => 'nullable|numeric|min:0',
             'bank_name' => 'nullable|string|max:190',
@@ -318,15 +415,36 @@ class CompanyController extends Controller
             'email',
             'address',
             'phone',
+            'secondary_phone',
+            'whatsapp_no',
             'website',
             'country',
             'currency',
             'logo_path',
             'manager_user_id',
+            'business_owner_user_id',
+            'ceo_user_id',
+            'regional_manager_user_id',
             'opening_asset',
         ])->all();
 
-        $company = DB::transaction(function () use ($companyPayload, $validated, $request) {
+        $leadershipAssignments = $this->normalizeLeadershipAssignments($validated);
+
+        $isFirstBranch = !Company::query()->exists();
+        $companyPayload['is_main_branch'] = $isFirstBranch;
+
+        if (!$isFirstBranch) {
+            $companyPayload['business_owner_user_id'] = null;
+            $companyPayload['ceo_user_id'] = null;
+            $companyPayload['regional_manager_user_id'] = null;
+            $leadershipAssignments = [];
+        } else {
+            $companyPayload['business_owner_user_id'] = $this->leadershipUserIdByRole($leadershipAssignments, CompanyLeadershipAssignment::ROLE_BUSINESS_OWNER);
+            $companyPayload['ceo_user_id'] = $this->leadershipUserIdByRole($leadershipAssignments, CompanyLeadershipAssignment::ROLE_CEO);
+            $companyPayload['regional_manager_user_id'] = $this->leadershipUserIdByRole($leadershipAssignments, CompanyLeadershipAssignment::ROLE_REGIONAL_MANAGER);
+        }
+
+        $company = DB::transaction(function () use ($companyPayload, $validated, $request, $leadershipAssignments) {
             $company = Company::create($companyPayload);
 
             CompanyAccount::provisionForCompany($company, [
@@ -340,10 +458,21 @@ class CompanyController extends Controller
                 'bank_accounts' => $validated['bank_accounts'] ?? null,
             ], $request->user()?->id);
 
+            if (!empty($leadershipAssignments)) {
+                $this->syncLeadershipAssignments($company, $leadershipAssignments);
+            }
+
             return $company;
         });
 
-        return response()->json($company->load(['manager:id,name,email', 'accounts']), 201);
+        return response()->json($company->load([
+            'manager:id,name,email',
+            'businessOwner:id,name,email',
+            'ceo:id,name,email',
+            'regionalManager:id,name,email',
+            'leadershipAssignments.user:id,name,email',
+            'accounts',
+        ]), 201);
     }
 
     public function update(Request $request, Company $company)
@@ -353,17 +482,50 @@ class CompanyController extends Controller
             'email' => 'required|string|email|max:255|unique:companies,email,' . $company->id,
             'address' => 'nullable|string',
             'phone' => 'nullable|string|max:20',
+            'secondary_phone' => 'nullable|string|max:30',
+            'whatsapp_no' => 'nullable|string|max:30',
             'website' => 'nullable|url',
             'country' => 'nullable|string|max:100',
             'currency' => 'nullable|string|max:10',
             'logo_path' => 'nullable|string|max:255',
             'manager_user_id' => 'nullable|exists:users,id',
+            'business_owner_user_id' => 'nullable|exists:users,id',
+            'ceo_user_id' => 'nullable|exists:users,id',
+            'regional_manager_user_id' => 'nullable|exists:users,id',
+            'leadership_assignments' => 'nullable|array',
+            'leadership_assignments.*.role_type' => ['required_with:leadership_assignments', Rule::in($this->leadershipRoleTypes())],
+            'leadership_assignments.*.user_id' => 'required_with:leadership_assignments|exists:users,id',
             'opening_asset' => 'nullable|numeric|min:0',
         ]);
 
-        $company->update($request->all());
+        $leadershipAssignments = $this->normalizeLeadershipAssignments($request->all());
+        $payload = $request->all();
+        unset($payload['is_main_branch']);
+        unset($payload['leadership_assignments']);
 
-        return response()->json($company->load('manager:id,name,email'));
+        if (!(bool) $company->is_main_branch) {
+            $payload['business_owner_user_id'] = null;
+            $payload['ceo_user_id'] = null;
+            $payload['regional_manager_user_id'] = null;
+            $leadershipAssignments = [];
+        } else {
+            $payload['business_owner_user_id'] = $this->leadershipUserIdByRole($leadershipAssignments, CompanyLeadershipAssignment::ROLE_BUSINESS_OWNER);
+            $payload['ceo_user_id'] = $this->leadershipUserIdByRole($leadershipAssignments, CompanyLeadershipAssignment::ROLE_CEO);
+            $payload['regional_manager_user_id'] = $this->leadershipUserIdByRole($leadershipAssignments, CompanyLeadershipAssignment::ROLE_REGIONAL_MANAGER);
+        }
+
+        DB::transaction(function () use ($company, $payload, $leadershipAssignments): void {
+            $company->update($payload);
+            $this->syncLeadershipAssignments($company, $leadershipAssignments);
+        });
+
+        return response()->json($company->load([
+            'manager:id,name,email',
+            'businessOwner:id,name,email',
+            'ceo:id,name,email',
+            'regionalManager:id,name,email',
+            'leadershipAssignments.user:id,name,email',
+        ]));
     }
 
     public function uploadLogo(Request $request, Company $company)
@@ -417,6 +579,8 @@ class CompanyController extends Controller
             'email' => $company->email,
             'address' => $company->address,
             'phone' => $company->phone,
+            'secondary_phone' => $company->secondary_phone,
+            'whatsapp_no' => $company->whatsapp_no,
             'website' => $company->website,
             'country' => $company->country,
             'currency' => $company->currency,
