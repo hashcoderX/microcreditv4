@@ -2,7 +2,7 @@
 
 import axios from 'axios';
 import { getApiBaseUrl, getBackendOrigin } from '@/lib/api';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -16,22 +16,33 @@ type LoanRow = {
   status?: string | null;
   refundable_amount?: number | string | null;
   loan_amount?: number | string | null;
+  installment_amount?: number | string | null;
+  arrears_balance?: number | string | null;
   due_date?: string | null;
   next_payment_date?: string | null;
+  center?: { id: number; name?: string | null; code?: string | null } | null;
+  group?: { id: number; name?: string | null; code?: string | null } | null;
 };
 
 type CollectionRow = {
   mf_loan_request_id: number | string;
   collected_amount?: number | string | null;
+  collection_date?: string | null;
 };
 
 type RepaymentRow = {
   loanId: number;
   customerNo: string;
   customerName: string;
+  centerName: string;
+  centerCode: string;
+  groupName: string;
+  groupCode: string;
   fieldOfficer: string;
   loanStatus: string;
   loanAmount: number;
+  dueAmount: number;
+  arrearsBalance: number;
   refundableAmount: number;
   collectedAmount: number;
   pendingAmount: number;
@@ -50,8 +61,11 @@ export default function RepaymentReportPage() {
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<RepaymentRow[]>([]);
+  const [collectionRows, setCollectionRows] = useState<CollectionRow[]>([]);
   const [officerFilter, setOfficerFilter] = useState('all');
   const [repaymentFilter, setRepaymentFilter] = useState<'all' | 'excellent' | 'good' | 'watch' | 'critical'>('all');
+  const [centerFilter, setCenterFilter] = useState('all');
+  const [reportMonth, setReportMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [loadingWidgets, setLoadingWidgets] = useState(true);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [widgetNotice, setWidgetNotice] = useState<{ open: boolean; title: string; message: string }>({
@@ -155,6 +169,7 @@ export default function RepaymentReportPage() {
 
         const loans: LoanRow[] = Array.isArray(loanRes.data) ? loanRes.data : [];
         const collections: CollectionRow[] = Array.isArray(collectionRes.data) ? collectionRes.data : [];
+        setCollectionRows(collections);
 
         const paidByLoan = new Map<number, number>();
         collections.forEach((collection) => {
@@ -195,9 +210,15 @@ export default function RepaymentReportPage() {
               loanId,
               customerNo: String(loan.customer_no || '-'),
               customerName: String(loan.customer_name || '-'),
+              centerName: String(loan.center?.name || 'Unassigned Center'),
+              centerCode: String(loan.center?.code || '-'),
+              groupName: String(loan.group?.name || 'Ungrouped'),
+              groupCode: String(loan.group?.code || '-'),
               fieldOfficer: String(loan.field_officer || 'Unassigned'),
               loanStatus: String(loan.status || '-'),
               loanAmount: Number(loan.loan_amount || 0),
+              dueAmount: Number(loan.installment_amount || 0),
+              arrearsBalance: Number(loan.arrears_balance || 0),
               refundableAmount,
               collectedAmount,
               pendingAmount,
@@ -213,6 +234,7 @@ export default function RepaymentReportPage() {
         setRows(mapped);
       } catch {
         setRows([]);
+        setCollectionRows([]);
       } finally {
         setLoading(false);
       }
@@ -223,6 +245,10 @@ export default function RepaymentReportPage() {
 
   const officerOptions = useMemo(() => {
     return Array.from(new Set(rows.map((row) => row.fieldOfficer))).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const centerOptions = useMemo(() => {
+    return Array.from(new Set(rows.map((row) => row.centerName))).sort((a, b) => a.localeCompare(b));
   }, [rows]);
 
   const filteredRows = useMemo(() => {
@@ -238,6 +264,85 @@ export default function RepaymentReportPage() {
       return true;
     });
   }, [rows, officerFilter, repaymentFilter]);
+
+  const monthPaidByLoan = useMemo(() => {
+    const monthKey = reportMonth.trim();
+    const map = new Map<number, number>();
+
+    collectionRows.forEach((row) => {
+      const loanId = Number(row.mf_loan_request_id || 0);
+      if (!loanId) return;
+
+      const rawDate = String(row.collection_date || '').slice(0, 10);
+      if (monthKey && rawDate && !rawDate.startsWith(monthKey)) return;
+
+      map.set(loanId, (map.get(loanId) || 0) + Number(row.collected_amount || 0));
+    });
+
+    return map;
+  }, [collectionRows, reportMonth]);
+
+  const centerReportRows = useMemo(() => {
+    return rows
+      .filter((row) => centerFilter === 'all' || row.centerName.toLowerCase() === centerFilter)
+      .sort((a, b) => {
+        if (a.centerName !== b.centerName) return a.centerName.localeCompare(b.centerName);
+        if (a.groupName !== b.groupName) return a.groupName.localeCompare(b.groupName);
+        return a.customerName.localeCompare(b.customerName);
+      });
+  }, [rows, centerFilter]);
+
+  const centerSectionSummary = useMemo(() => {
+    return centerReportRows.reduce(
+      (acc, row) => {
+        acc.members += 1;
+        acc.loanAmount += row.loanAmount;
+        acc.dueAmount += row.dueAmount;
+        acc.balance += row.pendingAmount;
+        acc.arrears += row.arrearsBalance;
+        acc.monthPaid += monthPaidByLoan.get(row.loanId) || 0;
+        return acc;
+      },
+      { members: 0, loanAmount: 0, dueAmount: 0, balance: 0, arrears: 0, monthPaid: 0 }
+    );
+  }, [centerReportRows, monthPaidByLoan]);
+
+  const centerGroupedRows = useMemo(() => {
+    const centerMap = new Map<
+      string,
+      {
+        key: string;
+        centerName: string;
+        centerCode: string;
+        rows: RepaymentRow[];
+        groupMap: Map<string, RepaymentRow[]>;
+      }
+    >();
+
+    centerReportRows.forEach((row) => {
+      const centerKey = `${row.centerCode}__${row.centerName}`;
+      if (!centerMap.has(centerKey)) {
+        centerMap.set(centerKey, {
+          key: centerKey,
+          centerName: row.centerName,
+          centerCode: row.centerCode,
+          rows: [],
+          groupMap: new Map<string, RepaymentRow[]>(),
+        });
+      }
+
+      const centerEntry = centerMap.get(centerKey)!;
+      centerEntry.rows.push(row);
+
+      const groupKey = `${row.groupCode}__${row.groupName}`;
+      if (!centerEntry.groupMap.has(groupKey)) {
+        centerEntry.groupMap.set(groupKey, []);
+      }
+      centerEntry.groupMap.get(groupKey)!.push(row);
+    });
+
+    return Array.from(centerMap.values());
+  }, [centerReportRows]);
 
   const summary = useMemo(() => {
     return filteredRows.reduce(
@@ -312,6 +417,7 @@ export default function RepaymentReportPage() {
   ];
   const visibleSummaryCards = summaryCards.filter((card) => !hiddenWidgetKeys.has(card.key));
   const showRepaymentAccountsSection = !hiddenWidgetKeys.has(`${widgetPrefix}accounts_section`);
+  const showCenterRepaymentSection = !hiddenWidgetKeys.has(`${widgetPrefix}center_section`);
 
   const formatDate = (value: string) => {
     if (!value || value === '-') return '-';
@@ -653,6 +759,186 @@ export default function RepaymentReportPage() {
                       ))}
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+        )}
+
+        {showCenterRepaymentSection && (
+        <div className="relative bg-white/86 backdrop-blur-xl rounded-3xl border border-cyan-100 shadow-[0_18px_40px_-24px_rgba(14,116,144,0.5)] p-4 md:p-5">
+          <WidgetCloseGate>
+            <button
+              type="button"
+              onClick={() => void hideWidget(`${widgetPrefix}center_section`)}
+              className="absolute right-4 top-4 z-10 inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-sm font-bold text-slate-600 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
+              aria-label="Hide center repayment widget"
+            >
+              ×
+            </button>
+          </WidgetCloseGate>
+
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="text-lg font-bold text-slate-900">Center-Based Repayment</h2>
+            <div className="flex items-end gap-2 flex-wrap">
+              <div>
+                <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Select Center</label>
+                <select
+                  value={centerFilter}
+                  onChange={(e) => setCenterFilter(e.target.value)}
+                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                >
+                  <option value="all">All Centers</option>
+                  {centerOptions.map((center) => (
+                    <option key={center} value={center.toLowerCase()}>
+                      {center}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Month</label>
+                <input
+                  type="month"
+                  value={reportMonth}
+                  onChange={(e) => setReportMonth(e.target.value)}
+                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
+            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+              <p className="text-xs uppercase tracking-wide text-cyan-700">Members</p>
+              <p className="text-xl font-extrabold text-slate-900">{centerSectionSummary.members}</p>
+            </div>
+            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+              <p className="text-xs uppercase tracking-wide text-cyan-700">Loan Amount</p>
+              <p className="text-xl font-extrabold text-slate-900">{formatMoney(centerSectionSummary.loanAmount)}</p>
+            </div>
+            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+              <p className="text-xs uppercase tracking-wide text-cyan-700">Due Amount</p>
+              <p className="text-xl font-extrabold text-slate-900">{formatMoney(centerSectionSummary.dueAmount)}</p>
+            </div>
+            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+              <p className="text-xs uppercase tracking-wide text-cyan-700">Total Balance</p>
+              <p className="text-xl font-extrabold text-rose-700">{formatMoney(centerSectionSummary.balance)}</p>
+            </div>
+            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+              <p className="text-xs uppercase tracking-wide text-cyan-700">Arrears</p>
+              <p className="text-xl font-extrabold text-amber-700">{formatMoney(centerSectionSummary.arrears)}</p>
+            </div>
+            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+              <p className="text-xs uppercase tracking-wide text-cyan-700">Paid ({reportMonth || 'All'})</p>
+              <p className="text-xl font-extrabold text-emerald-700">{formatMoney(centerSectionSummary.monthPaid)}</p>
+            </div>
+          </div>
+
+          {centerGroupedRows.length === 0 ? (
+            <div className="mt-4 rounded-2xl border border-cyan-100 bg-gradient-to-br from-cyan-100/60 to-teal-100/40 p-8 text-sm text-slate-700 text-center">
+              No center-based repayment data found.
+            </div>
+          ) : (
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-cyan-100">
+              <table className="min-w-full text-sm text-left text-slate-700 bg-white">
+                <thead className="bg-cyan-50/70 text-slate-700">
+                  <tr>
+                    <th className="px-3 py-2 font-semibold">Member No</th>
+                    <th className="px-3 py-2 font-semibold">Member Name</th>
+                    <th className="px-3 py-2 font-semibold">Loan Amount</th>
+                    <th className="px-3 py-2 font-semibold">Due Amount</th>
+                    <th className="px-3 py-2 font-semibold">Total Balance</th>
+                    <th className="px-3 py-2 font-semibold">Arrears</th>
+                    <th className="px-3 py-2 font-semibold">Paid ({reportMonth || 'All'})</th>
+                    <th className="px-3 py-2 font-semibold">Correction</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {centerGroupedRows.map((centerBlock) => {
+                    const centerTotal = centerBlock.rows.reduce(
+                      (acc, row) => {
+                        acc.loan += row.loanAmount;
+                        acc.due += row.dueAmount;
+                        acc.balance += row.pendingAmount;
+                        acc.arrears += row.arrearsBalance;
+                        acc.paid += monthPaidByLoan.get(row.loanId) || 0;
+                        return acc;
+                      },
+                      { loan: 0, due: 0, balance: 0, arrears: 0, paid: 0 }
+                    );
+
+                    return (
+                      <Fragment key={`center-block-${centerBlock.key}`}>
+                        <tr className="bg-slate-200/80 border-t border-slate-300">
+                          <td colSpan={8} className="px-3 py-2 font-bold text-slate-900 uppercase tracking-wide">
+                            {centerBlock.centerName} ({centerBlock.centerCode})
+                          </td>
+                        </tr>
+
+                        {Array.from(centerBlock.groupMap.entries()).map(([groupKey, groupRows]) => {
+                          const [groupCode, groupName] = groupKey.split('__');
+                          const groupTotal = groupRows.reduce(
+                            (acc, row) => {
+                              acc.loan += row.loanAmount;
+                              acc.due += row.dueAmount;
+                              acc.balance += row.pendingAmount;
+                              acc.arrears += row.arrearsBalance;
+                              acc.paid += monthPaidByLoan.get(row.loanId) || 0;
+                              return acc;
+                            },
+                            { loan: 0, due: 0, balance: 0, arrears: 0, paid: 0 }
+                          );
+
+                          return (
+                            <Fragment key={`group-block-${centerBlock.key}-${groupKey}`}>
+                              <tr className="bg-slate-100 border-t border-slate-200">
+                                <td colSpan={8} className="px-3 py-2 font-semibold text-slate-800">
+                                  Group {groupCode} - {groupName}
+                                </td>
+                              </tr>
+
+                              {groupRows.map((row) => (
+                                <tr key={`center-${centerBlock.key}-group-${groupKey}-loan-${row.loanId}`} className="border-b border-cyan-100 last:border-b-0 hover:bg-cyan-50/40 transition-colors">
+                                  <td className="px-3 py-2 font-semibold text-slate-900">{row.customerNo}</td>
+                                  <td className="px-3 py-2">{row.customerName}</td>
+                                  <td className="px-3 py-2">{formatMoney(row.loanAmount)}</td>
+                                  <td className="px-3 py-2">{formatMoney(row.dueAmount)}</td>
+                                  <td className="px-3 py-2 text-rose-700 font-semibold">{formatMoney(row.pendingAmount)}</td>
+                                  <td className="px-3 py-2 text-amber-700 font-semibold">{formatMoney(row.arrearsBalance)}</td>
+                                  <td className="px-3 py-2 text-emerald-700 font-semibold">{formatMoney(monthPaidByLoan.get(row.loanId) || 0)}</td>
+                                  <td className="px-3 py-2">-</td>
+                                </tr>
+                              ))}
+
+                              <tr className="bg-cyan-100/70 border-b border-cyan-200 font-bold">
+                                <td className="px-3 py-2">Group Total</td>
+                                <td className="px-3 py-2">-</td>
+                                <td className="px-3 py-2">{formatMoney(groupTotal.loan)}</td>
+                                <td className="px-3 py-2">{formatMoney(groupTotal.due)}</td>
+                                <td className="px-3 py-2">{formatMoney(groupTotal.balance)}</td>
+                                <td className="px-3 py-2">{formatMoney(groupTotal.arrears)}</td>
+                                <td className="px-3 py-2">{formatMoney(groupTotal.paid)}</td>
+                                <td className="px-3 py-2">-</td>
+                              </tr>
+                            </Fragment>
+                          );
+                        })}
+
+                        <tr className="bg-cyan-200/70 border-y border-cyan-300 font-extrabold text-slate-900">
+                          <td className="px-3 py-2">Center Total</td>
+                          <td className="px-3 py-2">-</td>
+                          <td className="px-3 py-2">{formatMoney(centerTotal.loan)}</td>
+                          <td className="px-3 py-2">{formatMoney(centerTotal.due)}</td>
+                          <td className="px-3 py-2">{formatMoney(centerTotal.balance)}</td>
+                          <td className="px-3 py-2">{formatMoney(centerTotal.arrears)}</td>
+                          <td className="px-3 py-2">{formatMoney(centerTotal.paid)}</td>
+                          <td className="px-3 py-2">-</td>
+                        </tr>
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

@@ -241,6 +241,8 @@ export default function SavingsTransactionsPage() {
 
   const showHeaderWidget = !hiddenWidgetKeys.has(`${widgetPrefix}header`);
   const showPostWidget = !hiddenWidgetKeys.has(`${widgetPrefix}post_transaction`);
+  const showDepositCardWidget = !hiddenWidgetKeys.has(`${widgetPrefix}deposit_card`);
+  const showWithdrawalCardWidget = !hiddenWidgetKeys.has(`${widgetPrefix}withdrawal_card`);
   const showRecentWidget = !hiddenWidgetKeys.has(`${widgetPrefix}recent_transactions`);
   const transactionColumns = [
     { key: 'date', label: 'Date' },
@@ -430,7 +432,18 @@ export default function SavingsTransactionsPage() {
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4 space-y-3">
+            {showDepositCardWidget ? (
+            <div className="relative rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4 space-y-3">
+              <WidgetCloseGate>
+                <button
+                  type="button"
+                  onClick={() => void hideWidget(`${widgetPrefix}deposit_card`)}
+                  className="absolute right-3 top-3 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-600 shadow-sm hover:bg-rose-50 hover:text-rose-700"
+                  aria-label="Hide deposit card widget"
+                >
+                  ×
+                </button>
+              </WidgetCloseGate>
               <div className="flex items-center gap-2">
                 <TrendingUp className="h-4 w-4 text-emerald-700" />
                 <h3 className="text-sm font-bold text-emerald-900">Deposit</h3>
@@ -460,8 +473,20 @@ export default function SavingsTransactionsPage() {
                 {postingDeposit ? 'Posting Deposit...' : 'Post Deposit'}
               </button>
             </div>
+            ) : null}
 
-            <div className="rounded-2xl border border-rose-200 bg-rose-50/40 p-4 space-y-3">
+            {showWithdrawalCardWidget ? (
+            <div className="relative rounded-2xl border border-rose-200 bg-rose-50/40 p-4 space-y-3">
+              <WidgetCloseGate>
+                <button
+                  type="button"
+                  onClick={() => void hideWidget(`${widgetPrefix}withdrawal_card`)}
+                  className="absolute right-3 top-3 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-600 shadow-sm hover:bg-rose-50 hover:text-rose-700"
+                  aria-label="Hide withdrawal card widget"
+                >
+                  ×
+                </button>
+              </WidgetCloseGate>
               <div className="flex items-center gap-2">
                 <TrendingDown className="h-4 w-4 text-rose-700" />
                 <h3 className="text-sm font-bold text-rose-900">Withdrawal</h3>
@@ -491,7 +516,14 @@ export default function SavingsTransactionsPage() {
                 {postingWithdrawal ? 'Posting Withdrawal...' : 'Post Withdrawal'}
               </button>
             </div>
+            ) : null}
           </div>
+
+          {!showDepositCardWidget && !showWithdrawalCardWidget ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Deposit and withdrawal cards are hidden. Restore hidden widgets from dashboard.
+            </div>
+          ) : null}
 
           {selectedAccount && (
             <div className="rounded-xl border border-orange-100 bg-orange-50/50 p-3 text-sm text-slate-700">
