@@ -118,7 +118,7 @@ class CustomerController extends Controller
     public function financeLookup(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'search_by' => ['required', 'in:nic_passport,passport,investment_account_no'],
+            'search_by' => ['required', 'in:nic_passport,passport,investment_account_no,savings_account_no'],
             'q' => ['required', 'string', 'max:120'],
         ]);
 
@@ -134,18 +134,19 @@ class CustomerController extends Controller
 
         $normalized = strtoupper($keyword);
         $customer = null;
-        $matchedInvestmentAccountNo = null;
+        $matchedSavingsAccountNo = null;
 
-        if ($searchBy === 'investment_account_no') {
+        if ($searchBy === 'investment_account_no' || $searchBy === 'savings_account_no') {
             $account = SavingsAccount::query()
                 ->with(['customer'])
-                ->where('account_type', 'investment')
+                ->whereIn('account_type', ['savings', 'investment'])
                 ->whereRaw('UPPER(account_number) = ?', [$normalized])
+                ->orderByRaw("CASE WHEN account_type = 'savings' THEN 0 ELSE 1 END")
                 ->first();
 
             if ($account && $account->customer) {
                 $customer = $account->customer;
-                $matchedInvestmentAccountNo = (string) ($account->account_number ?? '');
+                $matchedSavingsAccountNo = (string) ($account->account_number ?? '');
             }
         } elseif ($searchBy === 'passport') {
             $customer = Customer::query()
@@ -168,8 +169,8 @@ class CustomerController extends Controller
             ]);
         }
 
-        if ($matchedInvestmentAccountNo === null) {
-            $matchedInvestmentAccountNo = $this->resolvePrimaryInvestmentAccountNumber($customer);
+        if ($matchedSavingsAccountNo === null) {
+            $matchedSavingsAccountNo = $this->resolvePrimarySavingsAccountNumber($customer);
         }
 
         $customer->repairCustomerCodeIfNeeded();
@@ -178,7 +179,8 @@ class CustomerController extends Controller
             'found' => true,
             'search_by' => $searchBy,
             'matched_value' => $keyword,
-            'matched_investment_account_no' => $matchedInvestmentAccountNo,
+            'matched_investment_account_no' => $matchedSavingsAccountNo,
+            'matched_savings_account_no' => $matchedSavingsAccountNo,
             'data' => $customer->fresh(),
         ]);
     }
@@ -189,6 +191,7 @@ class CustomerController extends Controller
             'nic_passport' => ['nullable', 'string', 'max:120'],
             'passport_no' => ['nullable', 'string', 'max:120'],
             'investment_account_no' => ['nullable', 'string', 'max:120'],
+            'savings_account_no' => ['nullable', 'string', 'max:120'],
             'customer_no' => ['nullable', 'string', 'max:120'],
             'name' => ['nullable', 'string', 'max:190'],
             'phone' => ['nullable', 'string', 'max:120'],
@@ -198,12 +201,14 @@ class CustomerController extends Controller
         $nic = strtoupper(trim((string) ($validated['nic_passport'] ?? '')));
         $passport = strtoupper(trim((string) ($validated['passport_no'] ?? '')));
         $investmentAccount = strtoupper(trim((string) ($validated['investment_account_no'] ?? '')));
+        $savingsAccount = strtoupper(trim((string) ($validated['savings_account_no'] ?? '')));
+        $accountKeyword = $savingsAccount !== '' ? $savingsAccount : $investmentAccount;
         $customerNo = strtoupper(trim((string) ($validated['customer_no'] ?? '')));
         $name = trim((string) ($validated['name'] ?? ''));
         $phone = trim((string) ($validated['phone'] ?? ''));
         $limit = (int) ($validated['limit'] ?? 20);
 
-        if ($nic === '' && $passport === '' && $investmentAccount === '' && $customerNo === '' && $name === '' && $phone === '') {
+        if ($nic === '' && $passport === '' && $accountKeyword === '' && $customerNo === '' && $name === '' && $phone === '') {
             return response()->json([
                 'matches' => [],
                 'message' => 'Provide at least one search field.',
@@ -227,7 +232,7 @@ class CustomerController extends Controller
             $query->where(function ($q) use ($customerNo) {
                 $q->whereRaw('UPPER(customer_code) LIKE ?', ['%' . $customerNo . '%'])
                     ->orWhereHas('savingsAccounts', function ($accountQuery) use ($customerNo) {
-                        $accountQuery->where('account_type', 'investment')
+                        $accountQuery->whereIn('account_type', ['savings', 'investment'])
                             ->whereRaw('UPPER(account_number) LIKE ?', ['%' . $customerNo . '%']);
                     });
             });
@@ -245,23 +250,25 @@ class CustomerController extends Controller
             $query->where('phone', 'like', '%' . $phone . '%');
         }
 
-        if ($investmentAccount !== '') {
-            $query->whereHas('savingsAccounts', function ($q) use ($investmentAccount) {
-                $q->where('account_type', 'investment')
-                    ->whereRaw('UPPER(account_number) LIKE ?', ['%' . $investmentAccount . '%']);
+        if ($accountKeyword !== '') {
+            $query->whereHas('savingsAccounts', function ($q) use ($accountKeyword) {
+                $q->whereIn('account_type', ['savings', 'investment'])
+                    ->whereRaw('UPPER(account_number) LIKE ?', ['%' . $accountKeyword . '%']);
             });
         }
 
         $customers = $query
             ->with(['savingsAccounts' => function ($q) {
-                $q->where('account_type', 'investment')
+                $q->whereIn('account_type', ['savings', 'investment'])
+                    ->orderByRaw("CASE WHEN account_type = 'savings' THEN 0 ELSE 1 END")
+                    ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
                     ->select(['id', 'customer_id', 'account_number', 'account_type', 'status']);
             }])
             ->orderByDesc('id')
             ->limit($limit)
             ->get();
 
-        $matches = $customers->map(function (Customer $customer) use ($nic, $passport, $investmentAccount, $customerNo, $name, $phone) {
+        $matches = $customers->map(function (Customer $customer) use ($nic, $passport, $accountKeyword, $customerNo, $name, $phone) {
             $matchedBy = [];
             $customerCode = strtoupper(trim((string) ($customer->customer_code ?? '')));
             $customerNic = strtoupper(trim((string) ($customer->nic_passport ?? '')));
@@ -288,20 +295,21 @@ class CustomerController extends Controller
                 $matchedBy[] = 'phone';
             }
 
-            $matchedInvestment = null;
+            $matchedSavings = null;
             foreach ($customer->savingsAccounts as $account) {
                 $accountNo = strtoupper(trim((string) ($account->account_number ?? '')));
                 if (!$matchedCustomerNo && $customerNo !== '' && str_contains($accountNo, $customerNo)) {
                     $matchedBy[] = 'customer_no';
                     $matchedCustomerNo = true;
                 }
-                if ($investmentAccount === '' || str_contains($accountNo, $investmentAccount)) {
-                    $matchedInvestment = (string) ($account->account_number ?? '');
+                if ($accountKeyword === '' || str_contains($accountNo, $accountKeyword)) {
+                    $matchedSavings = (string) ($account->account_number ?? '');
                     break;
                 }
             }
-            if ($matchedInvestment !== null) {
+            if ($matchedSavings !== null) {
                 $matchedBy[] = 'investment_account_no';
+                $matchedBy[] = 'savings_account_no';
             }
 
             $customer->repairCustomerCodeIfNeeded();
@@ -309,7 +317,8 @@ class CustomerController extends Controller
             return [
                 'customer' => $customer->fresh(),
                 'matched_by' => array_values(array_unique($matchedBy)),
-                'matched_investment_account_no' => $matchedInvestment ?? $this->resolvePrimaryInvestmentAccountNumber($customer),
+                'matched_investment_account_no' => $matchedSavings ?? $this->resolvePrimarySavingsAccountNumber($customer),
+                'matched_savings_account_no' => $matchedSavings ?? $this->resolvePrimarySavingsAccountNumber($customer),
             ];
         })->values();
 
@@ -410,13 +419,14 @@ class CustomerController extends Controller
             return $byCode;
         }
 
-        $byInvestmentAccount = SavingsAccount::query()
+        $bySavingsAccount = SavingsAccount::query()
             ->with('customer')
-            ->where('account_type', 'investment')
+            ->whereIn('account_type', ['savings', 'investment'])
             ->whereRaw('UPPER(account_number) = ?', [$normalized])
+            ->orderByRaw("CASE WHEN account_type = 'savings' THEN 0 ELSE 1 END")
             ->first();
-        if ($byInvestmentAccount?->customer) {
-            return $byInvestmentAccount->customer;
+        if ($bySavingsAccount?->customer) {
+            return $bySavingsAccount->customer;
         }
 
         $byOldNic = Customer::whereRaw('UPPER(old_nic) = ?', [$normalized])->first();
@@ -427,11 +437,12 @@ class CustomerController extends Controller
         return Customer::whereRaw('UPPER(nic_passport) = ?', [$normalized])->first();
     }
 
-    private function resolvePrimaryInvestmentAccountNumber(Customer $customer): ?string
+    private function resolvePrimarySavingsAccountNumber(Customer $customer): ?string
     {
         $account = SavingsAccount::query()
             ->where('customer_id', (int) $customer->id)
-            ->where('account_type', 'investment')
+            ->whereIn('account_type', ['savings', 'investment'])
+            ->orderByRaw("CASE WHEN account_type = 'savings' THEN 0 ELSE 1 END")
             ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
             ->orderBy('id')
             ->first();

@@ -319,10 +319,12 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('finances/reports/loan-receivable', [AccountingReportsController::class, 'loanReceivableReport']);
     Route::get('finances/reports/interest-income', [AccountingReportsController::class, 'interestIncomeReport']);
     Route::get('finances/reports/loan-disbursement', [AccountingReportsController::class, 'loanDisbursementReport']);
+    Route::get('finances/assignment-options', [FinanceController::class, 'assignmentOptions']);
     Route::apiResource('finances', FinanceController::class)->only(['index', 'store', 'show']);
     Route::post('finances/{finance}/status', [FinanceController::class, 'updateStatus']);
     Route::get('finances/{finance}/collections', [FinanceController::class, 'collections']);
     Route::post('finances/{finance}/collections', [FinanceController::class, 'storeCollection']);
+    Route::delete('finances/{finance}/collections/{collection}', [FinanceController::class, 'destroyCollection']);
     Route::get('finances/{finance}/documents', [FinanceController::class, 'documents']);
     Route::post('finances/{finance}/documents', [FinanceController::class, 'storeDocument']);
     Route::get('finance-product-types', [FinanceProductTypeController::class, 'index']);

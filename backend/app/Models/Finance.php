@@ -20,6 +20,9 @@ class Finance extends Model
         'valuation_details',
         'guarantor_details',
         'repayment_plan',
+        'family_financial_details',
+        'evaluation_payload',
+        'evaluation_payload_version',
         'amount',
         'down_payment',
         'financed_amount',
@@ -41,6 +44,8 @@ class Finance extends Model
         'finance_end_date',
         'status',
         'start_date',
+        'branch_manager_user_id',
+        'responsible_officer_employee_id',
         'created_by',
     ];
 
@@ -58,6 +63,9 @@ class Finance extends Model
         'arrears' => 'decimal:2',
         'penalty' => 'decimal:2',
         'tenure_months' => 'integer',
+        'branch_manager_user_id' => 'integer',
+        'responsible_officer_employee_id' => 'integer',
+        'evaluation_payload_version' => 'integer',
         'start_date' => 'date',
         'due_date' => 'date',
         'next_collection_date' => 'date',
@@ -66,6 +74,8 @@ class Finance extends Model
         'valuation_details' => 'array',
         'guarantor_details' => 'array',
         'repayment_plan' => 'array',
+        'family_financial_details' => 'array',
+        'evaluation_payload' => 'array',
     ];
 
     public function customer()

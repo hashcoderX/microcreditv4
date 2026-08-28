@@ -61,10 +61,10 @@ function formatAmount(value: unknown): string {
 }
 
 const inputClass =
-  'w-full rounded-xl border border-cyan-200/80 bg-white px-3.5 py-2.5 text-sm text-black shadow-sm transition focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-200/80 placeholder:text-slate-400 [color-scheme:light]';
+  'w-full rounded-xl border border-cyan-200/80 bg-white/90 px-3 py-2 text-[13px] font-medium text-slate-900 shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition placeholder:text-slate-400 focus:border-cyan-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-200/80 [color-scheme:light]';
 
 const inputClassSm =
-  'w-full rounded-lg border border-cyan-200/80 bg-white px-2.5 py-1.5 text-xs text-black shadow-sm transition focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-200/80 placeholder:text-slate-400 [color-scheme:light]';
+  'w-full rounded-lg border border-cyan-200/80 bg-white/90 px-2.5 py-1.5 text-[11px] font-medium text-slate-900 shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition placeholder:text-slate-400 focus:border-cyan-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-200/80 [color-scheme:light]';
 
 function SectionHeader({
   title,
@@ -76,15 +76,15 @@ function SectionHeader({
   icon?: React.ComponentType<{ className?: string }>;
 }) {
   return (
-    <div className="flex items-start gap-3 rounded-2xl border border-cyan-100 bg-gradient-to-r from-cyan-50/80 to-blue-50/50 px-4 py-3">
+    <div className="flex items-start gap-3 rounded-2xl border border-cyan-100/90 bg-gradient-to-r from-cyan-50 via-white to-blue-50/70 px-4 py-2.5 shadow-[0_8px_24px_rgba(8,145,178,0.08)]">
       {Icon ? (
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-cyan-100 bg-white text-cyan-700">
-          <Icon className="h-5 w-5" />
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-cyan-100 bg-white/95 text-cyan-700 shadow-sm">
+          <Icon className="h-4.5 w-4.5" />
         </div>
       ) : null}
       <div>
-        <p className="text-sm font-bold text-slate-900">{title}</p>
-        <p className="text-xs text-slate-600 mt-0.5">{description}</p>
+        <p className="text-[13px] font-bold tracking-tight text-slate-900">{title}</p>
+        <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600">{description}</p>
       </div>
     </div>
   );
@@ -98,13 +98,13 @@ function RatePeriodToggle({
   onChange: (period: InterestRatePeriod) => void;
 }) {
   return (
-    <div className="inline-flex w-full sm:w-auto rounded-xl border border-cyan-200 bg-cyan-50/50 p-1">
+    <div className="inline-flex w-full sm:w-auto rounded-xl border border-cyan-200 bg-cyan-50/60 p-1 shadow-inner">
       {(['yearly', 'monthly'] as const).map((period) => (
         <button
           key={period}
           type="button"
           onClick={() => onChange(period)}
-          className={`flex-1 sm:flex-none rounded-lg px-4 py-2.5 text-sm font-semibold transition ${
+          className={`flex-1 sm:flex-none rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
             value === period
               ? 'bg-white text-cyan-900 shadow-sm border border-cyan-200'
               : 'text-slate-600 hover:text-slate-900'
@@ -146,7 +146,122 @@ type FinanceCustomerSearchMatch = {
   customer: CustomerDetail;
   matched_by?: string[];
   matched_investment_account_no?: string | null;
+  matched_savings_account_no?: string | null;
 };
+
+type BranchManagerOption = {
+  user_id?: number | null;
+  employee_id?: number | null;
+  name: string;
+  employee_code?: string;
+  designation?: string;
+};
+
+type ResponsibleOfficerOption = {
+  id: number;
+  name: string;
+  employee_code?: string;
+  designation?: string;
+};
+
+type FinanceIssueDraftSnapshot = {
+  registerStep: number;
+  regCustomerNo: string;
+  regCustomerSearchBy: 'nic_passport' | 'passport' | 'investment_account_no';
+  regCustomerSearchValue: string;
+  regMatchedInvestmentAccountNo: string;
+  regFinanceType: string;
+  regProductType: string;
+  regStartDate: string;
+  regResponsibleOfficerId: string;
+  regInterestRate: string;
+  regInterestRatePeriod: InterestRatePeriod;
+  regInterestType: 'fixed' | 'reducing';
+  regTenureMonths: string;
+  regFrequency: string;
+  regScheduleMode: 'auto' | 'fixed_day' | 'custom_date';
+  regFirstInstallmentDate: string;
+  regCollectionDayOfMonth: string;
+  regGraceDays: string;
+  regInstallmentMode: 'auto' | 'manual';
+  regManualInstallmentAmount: string;
+  regInstallmentPlan: RepaymentInstallmentRow[];
+  regVehicleNo: string;
+  regChassisNo: string;
+  regEngineNo: string;
+  regMakeModel: string;
+  regVehicleYear: string;
+  regAssetRef: string;
+  regAmount: string;
+  regLoanAmount: string;
+  regLoanDetails: string;
+  regDraftValue: string;
+  regDownPayment: string;
+  regValuationAmount: string;
+  regValuationDate: string;
+  regValuerName: string;
+  regGuarantors: GuarantorInput[];
+  regFamilyMembersCount: string;
+  regDependentsCount: string;
+  regEmploymentType: string;
+  regMainIncomeSource: string;
+  regMonthlyHouseholdIncome: string;
+  regMonthlyHouseholdExpenses: string;
+  regExistingLoanCommitments: string;
+  regBankingRelationship: string;
+  regFamilyFinancialNotes: string;
+  regEvaluationIncomeActivities: string[];
+  regEvaluationBusiness1: string;
+  regEvaluationBusiness1MonthlyIncome: string;
+  regEvaluationBusiness2: string;
+  regEvaluationBusiness2MonthlyIncome: string;
+  regEvaluationLoanReason: string;
+  regEvaluationHouseOwnership: string;
+  regEvaluationWallMaterial: string;
+  regEvaluationFloorMaterial: string;
+  regEvaluationRoofMaterial: string;
+  regEvaluationVehicleAssets: string;
+  regEvaluationOtherLoansDetails: string;
+  regEvaluationOtherLoansMonthlyInstallment: string;
+  regEvaluationLeasingDetails: string;
+  regEvaluationLeasingMonthlyInstallment: string;
+  regEvaluationOtherLiabilities: string;
+  regEvaluationFamilyExpenseBreakdown: Record<string, string>;
+  regEvaluationBusinessExpenseBreakdown: Record<string, string>;
+  regEvaluationFamilyIncomeWithoutBusiness: string;
+  regEvaluationFamilyIncomeItem1: string;
+  regEvaluationFamilyIncomeItem2: string;
+  regEvaluationFamilyIncomeItem3: string;
+  regEvaluationWageEarner1Name: string;
+  regEvaluationWageEarner1Salary: string;
+  regEvaluationWageEarner2Name: string;
+  regEvaluationWageEarner2Salary: string;
+  regEvaluationWageEarner3Name: string;
+  regEvaluationWageEarner3Salary: string;
+  regEvaluationRentOutHouse: string;
+  regEvaluationRentOutVehicle: string;
+  regEvaluationInterestCommission: string;
+  regEvaluationOtherIncome: string;
+  regEvaluationBusiness1UnitPrice: string;
+  regEvaluationBusiness1Units: string;
+  regEvaluationBusiness2UnitPrice: string;
+  regEvaluationBusiness2Units: string;
+  regEvaluationRecommendation: string;
+  vehicleImageNames: string[];
+  residenceImageNames: string[];
+  vehicleCrFileName: string;
+  documentNames: string[];
+};
+
+type FinanceIssueDraft = {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  label: string;
+  snapshot: FinanceIssueDraftSnapshot;
+};
+
+const FINANCE_ISSUE_DRAFTS_KEY = 'finance_issue_wizard_drafts_v1';
 
 function isCustomerDetail(value: unknown): value is CustomerDetail {
   if (!value || typeof value !== 'object') return false;
@@ -165,7 +280,9 @@ export default function IssueFinancePage() {
   const [regFinanceType, setRegFinanceType] = useState('vehicle');
   const [regProductType, setRegProductType] = useState('');
   const [regStartDate, setRegStartDate] = useState('');
-  const [regSubmissionMode, setRegSubmissionMode] = useState<'pending_approval' | 'active'>('pending_approval');
+  const [regResponsibleOfficerId, setRegResponsibleOfficerId] = useState('');
+  const [branchManagerOption, setBranchManagerOption] = useState<BranchManagerOption | null>(null);
+  const [responsibleOfficerOptions, setResponsibleOfficerOptions] = useState<ResponsibleOfficerOption[]>([]);
   const [regInterestRate, setRegInterestRate] = useState('18');
   const [regInterestRatePeriod, setRegInterestRatePeriod] = useState<InterestRatePeriod>('yearly');
   const [regInterestType, setRegInterestType] = useState<'fixed' | 'reducing'>('fixed');
@@ -203,6 +320,55 @@ export default function IssueFinancePage() {
     { name: '', nic: '', phone: '', address: '' },
   ]);
 
+  const [regVehicleImages, setRegVehicleImages] = useState<File[]>([]);
+  const [regVehicleCrFile, setRegVehicleCrFile] = useState<File | null>(null);
+  const [regResidenceImages, setRegResidenceImages] = useState<File[]>([]);
+  const [regFamilyMembersCount, setRegFamilyMembersCount] = useState('');
+  const [regDependentsCount, setRegDependentsCount] = useState('');
+  const [regEmploymentType, setRegEmploymentType] = useState('');
+  const [regMainIncomeSource, setRegMainIncomeSource] = useState('');
+  const [regMonthlyHouseholdIncome, setRegMonthlyHouseholdIncome] = useState('');
+  const [regMonthlyHouseholdExpenses, setRegMonthlyHouseholdExpenses] = useState('');
+  const [regExistingLoanCommitments, setRegExistingLoanCommitments] = useState('');
+  const [regBankingRelationship, setRegBankingRelationship] = useState('');
+  const [regFamilyFinancialNotes, setRegFamilyFinancialNotes] = useState('');
+  const [regEvaluationIncomeActivities, setRegEvaluationIncomeActivities] = useState<string[]>([]);
+  const [regEvaluationBusiness1, setRegEvaluationBusiness1] = useState('');
+  const [regEvaluationBusiness1MonthlyIncome, setRegEvaluationBusiness1MonthlyIncome] = useState('');
+  const [regEvaluationBusiness2, setRegEvaluationBusiness2] = useState('');
+  const [regEvaluationBusiness2MonthlyIncome, setRegEvaluationBusiness2MonthlyIncome] = useState('');
+  const [regEvaluationLoanReason, setRegEvaluationLoanReason] = useState('');
+  const [regEvaluationHouseOwnership, setRegEvaluationHouseOwnership] = useState('');
+  const [regEvaluationWallMaterial, setRegEvaluationWallMaterial] = useState('');
+  const [regEvaluationFloorMaterial, setRegEvaluationFloorMaterial] = useState('');
+  const [regEvaluationRoofMaterial, setRegEvaluationRoofMaterial] = useState('');
+  const [regEvaluationVehicleAssets, setRegEvaluationVehicleAssets] = useState('');
+  const [regEvaluationOtherLoansDetails, setRegEvaluationOtherLoansDetails] = useState('');
+  const [regEvaluationOtherLoansMonthlyInstallment, setRegEvaluationOtherLoansMonthlyInstallment] = useState('');
+  const [regEvaluationLeasingDetails, setRegEvaluationLeasingDetails] = useState('');
+  const [regEvaluationLeasingMonthlyInstallment, setRegEvaluationLeasingMonthlyInstallment] = useState('');
+  const [regEvaluationOtherLiabilities, setRegEvaluationOtherLiabilities] = useState('');
+  const [regEvaluationFamilyExpenseBreakdown, setRegEvaluationFamilyExpenseBreakdown] = useState<Record<string, string>>({});
+  const [regEvaluationBusinessExpenseBreakdown, setRegEvaluationBusinessExpenseBreakdown] = useState<Record<string, string>>({});
+  const [regEvaluationFamilyIncomeWithoutBusiness, setRegEvaluationFamilyIncomeWithoutBusiness] = useState('');
+  const [regEvaluationFamilyIncomeItem1, setRegEvaluationFamilyIncomeItem1] = useState('');
+  const [regEvaluationFamilyIncomeItem2, setRegEvaluationFamilyIncomeItem2] = useState('');
+  const [regEvaluationFamilyIncomeItem3, setRegEvaluationFamilyIncomeItem3] = useState('');
+  const [regEvaluationWageEarner1Name, setRegEvaluationWageEarner1Name] = useState('');
+  const [regEvaluationWageEarner1Salary, setRegEvaluationWageEarner1Salary] = useState('');
+  const [regEvaluationWageEarner2Name, setRegEvaluationWageEarner2Name] = useState('');
+  const [regEvaluationWageEarner2Salary, setRegEvaluationWageEarner2Salary] = useState('');
+  const [regEvaluationWageEarner3Name, setRegEvaluationWageEarner3Name] = useState('');
+  const [regEvaluationWageEarner3Salary, setRegEvaluationWageEarner3Salary] = useState('');
+  const [regEvaluationRentOutHouse, setRegEvaluationRentOutHouse] = useState('');
+  const [regEvaluationRentOutVehicle, setRegEvaluationRentOutVehicle] = useState('');
+  const [regEvaluationInterestCommission, setRegEvaluationInterestCommission] = useState('');
+  const [regEvaluationOtherIncome, setRegEvaluationOtherIncome] = useState('');
+  const [regEvaluationBusiness1UnitPrice, setRegEvaluationBusiness1UnitPrice] = useState('');
+  const [regEvaluationBusiness1Units, setRegEvaluationBusiness1Units] = useState('');
+  const [regEvaluationBusiness2UnitPrice, setRegEvaluationBusiness2UnitPrice] = useState('');
+  const [regEvaluationBusiness2Units, setRegEvaluationBusiness2Units] = useState('');
+  const [regEvaluationRecommendation, setRegEvaluationRecommendation] = useState('');
   const [regDocuments, setRegDocuments] = useState<File[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
   const [loadingCustomerDetail, setLoadingCustomerDetail] = useState(false);
@@ -233,6 +399,8 @@ export default function IssueFinancePage() {
   const [newProductFrequency, setNewProductFrequency] = useState<'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly'>('monthly');
   const [showNewProductInterestTerms, setShowNewProductInterestTerms] = useState(false);
   const [savingProductType, setSavingProductType] = useState(false);
+  const [activeDraftId, setActiveDraftId] = useState('');
+  const [savedDrafts, setSavedDrafts] = useState<FinanceIssueDraft[]>([]);
 
   const wizardStep3Label = regFinanceType === 'other'
     ? 'Loan'
@@ -246,7 +414,10 @@ export default function IssueFinancePage() {
     { id: 3, label: wizardStep3Label, hint: `${wizardStep3Label} and valuation details` },
     { id: 4, label: 'Guarantor', hint: 'Security party details' },
     { id: 5, label: 'Repayment', hint: 'Repayment plan and scheduling' },
-    { id: 6, label: 'Documents', hint: 'Supporting files upload' },
+    { id: 6, label: 'Family & Financial', hint: 'Household and financial profile' },
+    { id: 7, label: 'Residence Images', hint: 'Residence environment photos' },
+    { id: 8, label: 'Evaluation', hint: 'Income, liabilities, and recommendation' },
+    { id: 9, label: 'Documents', hint: 'Supporting files upload' },
   ];
 
   const activeWizardStep = useMemo(
@@ -294,6 +465,323 @@ export default function IssueFinancePage() {
     return Math.max(asset - down, 0);
   }, [effectiveAmountInput, regDownPayment]);
 
+  const incomeGenerationActivityOptions = [
+    'Trading',
+    'Service',
+    'Daily Work',
+    'Agriculture',
+    'Other',
+  ];
+
+  const familyExpenseRows = [
+    { no: '1.1', key: 'foods', label: 'Foods' },
+    { no: '1.2', key: 'electricity', label: 'Electricity' },
+    { no: '1.3', key: 'water', label: 'Water' },
+    { no: '1.4', key: 'gas', label: 'Gas' },
+    { no: '1.5', key: 'clothes', label: 'Clothes' },
+    { no: '1.6', key: 'mobile_telephone', label: 'Mobile Telephone' },
+    { no: '1.7', key: 'television', label: 'Television' },
+    { no: '1.8', key: 'transport', label: 'Transport' },
+    { no: '1.9', key: 'education', label: 'Education' },
+    { no: '1.10', key: 'entertainment', label: 'Entertainment' },
+    { no: '1.11', key: 'family_expenses_other', label: 'Family Expenses - Other' },
+  ] as const;
+
+  const businessExpenseRows = [
+    { no: '3.1', key: 'business_purchase', label: 'Business Purchase' },
+    { no: '3.2', key: 'salaries', label: 'Salaries' },
+    { no: '3.3', key: 'business_rent', label: 'Business Rent' },
+    { no: '3.4', key: 'utilities', label: 'Utilities' },
+    { no: '3.5', key: 'transport', label: 'Transport' },
+  ] as const;
+
+  const evaluationNumber = (value: string): number => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const updateFamilyExpenseValue = (key: string, value: string) => {
+    setRegEvaluationFamilyExpenseBreakdown((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  };
+
+  const updateBusinessExpenseValue = (key: string, value: string) => {
+    setRegEvaluationBusinessExpenseBreakdown((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  };
+
+  const familyExpenseTotal = familyExpenseRows.reduce((sum, row) => (
+    sum + evaluationNumber(regEvaluationFamilyExpenseBreakdown[row.key] || '')
+  ), 0);
+
+  const businessExpenseTotal = businessExpenseRows.reduce((sum, row) => (
+    sum + evaluationNumber(regEvaluationBusinessExpenseBreakdown[row.key] || '')
+  ), 0);
+
+  const familyWageContributionTotal =
+    evaluationNumber(regEvaluationWageEarner1Salary)
+    + evaluationNumber(regEvaluationWageEarner2Salary)
+    + evaluationNumber(regEvaluationWageEarner3Salary);
+
+  const businessIncome1 = evaluationNumber(regEvaluationBusiness1UnitPrice) * evaluationNumber(regEvaluationBusiness1Units);
+  const businessIncome2 = evaluationNumber(regEvaluationBusiness2UnitPrice) * evaluationNumber(regEvaluationBusiness2Units);
+  const businessIncomeTotal = businessIncome1 + businessIncome2;
+
+  const familyIncomeTotal =
+    evaluationNumber(regEvaluationFamilyIncomeWithoutBusiness)
+    + evaluationNumber(regEvaluationFamilyIncomeItem1)
+    + evaluationNumber(regEvaluationFamilyIncomeItem2)
+    + evaluationNumber(regEvaluationFamilyIncomeItem3)
+    + familyWageContributionTotal
+    + evaluationNumber(regEvaluationRentOutHouse)
+    + evaluationNumber(regEvaluationRentOutVehicle)
+    + evaluationNumber(regEvaluationInterestCommission)
+    + evaluationNumber(regEvaluationOtherIncome);
+
+  const totalIncomeWithBusiness = familyIncomeTotal + businessIncomeTotal;
+  const loanAndLeasingTotal =
+    evaluationNumber(regEvaluationOtherLoansMonthlyInstallment)
+    + evaluationNumber(regEvaluationLeasingMonthlyInstallment);
+  const loanPaymentsAndFamilyExpensesTotal = familyExpenseTotal + loanAndLeasingTotal;
+  const remainingCashWithFamily = totalIncomeWithBusiness - loanPaymentsAndFamilyExpensesTotal;
+  const averageCashPerWeek = remainingCashWithFamily / 4;
+
+  const persistDraftsToStorage = (drafts: FinanceIssueDraft[]) => {
+    try {
+      localStorage.setItem(FINANCE_ISSUE_DRAFTS_KEY, JSON.stringify(drafts));
+    } catch {
+      // ignore local storage failures
+    }
+  };
+
+  const buildDraftSnapshot = (): FinanceIssueDraftSnapshot => ({
+    registerStep,
+    regCustomerNo,
+    regCustomerSearchBy,
+    regCustomerSearchValue,
+    regMatchedInvestmentAccountNo,
+    regFinanceType,
+    regProductType,
+    regStartDate,
+    regResponsibleOfficerId,
+    regInterestRate,
+    regInterestRatePeriod,
+    regInterestType,
+    regTenureMonths,
+    regFrequency,
+    regScheduleMode,
+    regFirstInstallmentDate,
+    regCollectionDayOfMonth,
+    regGraceDays,
+    regInstallmentMode,
+    regManualInstallmentAmount,
+    regInstallmentPlan,
+    regVehicleNo,
+    regChassisNo,
+    regEngineNo,
+    regMakeModel,
+    regVehicleYear,
+    regAssetRef,
+    regAmount,
+    regLoanAmount,
+    regLoanDetails,
+    regDraftValue,
+    regDownPayment,
+    regValuationAmount,
+    regValuationDate,
+    regValuerName,
+    regGuarantors,
+    regFamilyMembersCount,
+    regDependentsCount,
+    regEmploymentType,
+    regMainIncomeSource,
+    regMonthlyHouseholdIncome,
+    regMonthlyHouseholdExpenses,
+    regExistingLoanCommitments,
+    regBankingRelationship,
+    regFamilyFinancialNotes,
+    regEvaluationIncomeActivities,
+    regEvaluationBusiness1,
+    regEvaluationBusiness1MonthlyIncome,
+    regEvaluationBusiness2,
+    regEvaluationBusiness2MonthlyIncome,
+    regEvaluationLoanReason,
+    regEvaluationHouseOwnership,
+    regEvaluationWallMaterial,
+    regEvaluationFloorMaterial,
+    regEvaluationRoofMaterial,
+    regEvaluationVehicleAssets,
+    regEvaluationOtherLoansDetails,
+    regEvaluationOtherLoansMonthlyInstallment,
+    regEvaluationLeasingDetails,
+    regEvaluationLeasingMonthlyInstallment,
+    regEvaluationOtherLiabilities,
+    regEvaluationFamilyExpenseBreakdown,
+    regEvaluationBusinessExpenseBreakdown,
+    regEvaluationFamilyIncomeWithoutBusiness,
+    regEvaluationFamilyIncomeItem1,
+    regEvaluationFamilyIncomeItem2,
+    regEvaluationFamilyIncomeItem3,
+    regEvaluationWageEarner1Name,
+    regEvaluationWageEarner1Salary,
+    regEvaluationWageEarner2Name,
+    regEvaluationWageEarner2Salary,
+    regEvaluationWageEarner3Name,
+    regEvaluationWageEarner3Salary,
+    regEvaluationRentOutHouse,
+    regEvaluationRentOutVehicle,
+    regEvaluationInterestCommission,
+    regEvaluationOtherIncome,
+    regEvaluationBusiness1UnitPrice,
+    regEvaluationBusiness1Units,
+    regEvaluationBusiness2UnitPrice,
+    regEvaluationBusiness2Units,
+    regEvaluationRecommendation,
+    vehicleImageNames: regVehicleImages.map((file) => file.name),
+    residenceImageNames: regResidenceImages.map((file) => file.name),
+    vehicleCrFileName: regVehicleCrFile?.name || '',
+    documentNames: regDocuments.map((file) => file.name),
+  });
+
+  const saveCurrentDraft = () => {
+    if (!regCustomerSearchValue.trim() && !regCustomerNo.trim() && !regProductType.trim()) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const labelBase = regCustomerNo.trim() || regCustomerSearchValue.trim() || 'Unidentified customer';
+    const label = `${labelBase} - ${regProductType || 'Finance Draft'}`;
+    const snapshot = buildDraftSnapshot();
+
+    const nextDraft: FinanceIssueDraft = {
+      id: activeDraftId || `draft-${Date.now()}`,
+      createdAt: now,
+      updatedAt: now,
+      label,
+      snapshot,
+    };
+
+    setSavedDrafts((prev) => {
+      const existing = prev.find((draft) => draft.id === nextDraft.id);
+      const merged = existing
+        ? prev.map((draft) => (draft.id === nextDraft.id ? { ...nextDraft, createdAt: existing.createdAt } : draft))
+        : [nextDraft, ...prev];
+      persistDraftsToStorage(merged);
+      return merged;
+    });
+
+    setActiveDraftId(nextDraft.id);
+  };
+
+  const loadDraftToForm = (draft: FinanceIssueDraft) => {
+    const d = draft.snapshot;
+    setActiveDraftId(draft.id);
+    setRegisterStep(d.registerStep || 1);
+    setRegCustomerNo(d.regCustomerNo || '');
+    setRegCustomerSearchBy(d.regCustomerSearchBy || 'nic_passport');
+    setRegCustomerSearchValue(d.regCustomerSearchValue || '');
+    setRegMatchedInvestmentAccountNo(d.regMatchedInvestmentAccountNo || '');
+    setRegFinanceType(d.regFinanceType || 'vehicle');
+    setRegProductType(d.regProductType || '');
+    setRegStartDate(d.regStartDate || '');
+    setRegResponsibleOfficerId(d.regResponsibleOfficerId || '');
+    setRegInterestRate(d.regInterestRate || '18');
+    setRegInterestRatePeriod(d.regInterestRatePeriod || 'yearly');
+    setRegInterestType(d.regInterestType || 'fixed');
+    setRegTenureMonths(d.regTenureMonths || '36');
+    setRegFrequency(d.regFrequency || 'monthly');
+    setRegScheduleMode(d.regScheduleMode || 'auto');
+    setRegFirstInstallmentDate(d.regFirstInstallmentDate || '');
+    setRegCollectionDayOfMonth(d.regCollectionDayOfMonth || '1');
+    setRegGraceDays(d.regGraceDays || '0');
+    setRegInstallmentMode(d.regInstallmentMode || 'auto');
+    setRegManualInstallmentAmount(d.regManualInstallmentAmount || '');
+    setRegInstallmentPlan(Array.isArray(d.regInstallmentPlan) ? d.regInstallmentPlan : []);
+    setRegVehicleNo(d.regVehicleNo || '');
+    setRegChassisNo(d.regChassisNo || '');
+    setRegEngineNo(d.regEngineNo || '');
+    setRegMakeModel(d.regMakeModel || '');
+    setRegVehicleYear(d.regVehicleYear || '');
+    setRegAssetRef(d.regAssetRef || '');
+    setRegAmount(d.regAmount || '');
+    setRegLoanAmount(d.regLoanAmount || '');
+    setRegLoanDetails(d.regLoanDetails || '');
+    setRegDraftValue(d.regDraftValue || '');
+    setRegDownPayment(d.regDownPayment || '');
+    setRegValuationAmount(d.regValuationAmount || '');
+    setRegValuationDate(d.regValuationDate || '');
+    setRegValuerName(d.regValuerName || '');
+    setRegGuarantors(Array.isArray(d.regGuarantors) && d.regGuarantors.length > 0 ? d.regGuarantors : [{ name: '', nic: '', phone: '', address: '' }]);
+    setRegFamilyMembersCount(d.regFamilyMembersCount || '');
+    setRegDependentsCount(d.regDependentsCount || '');
+    setRegEmploymentType(d.regEmploymentType || '');
+    setRegMainIncomeSource(d.regMainIncomeSource || '');
+    setRegMonthlyHouseholdIncome(d.regMonthlyHouseholdIncome || '');
+    setRegMonthlyHouseholdExpenses(d.regMonthlyHouseholdExpenses || '');
+    setRegExistingLoanCommitments(d.regExistingLoanCommitments || '');
+    setRegBankingRelationship(d.regBankingRelationship || '');
+    setRegFamilyFinancialNotes(d.regFamilyFinancialNotes || '');
+    setRegEvaluationIncomeActivities(Array.isArray(d.regEvaluationIncomeActivities) ? d.regEvaluationIncomeActivities : []);
+    setRegEvaluationBusiness1(d.regEvaluationBusiness1 || '');
+    setRegEvaluationBusiness1MonthlyIncome(d.regEvaluationBusiness1MonthlyIncome || '');
+    setRegEvaluationBusiness2(d.regEvaluationBusiness2 || '');
+    setRegEvaluationBusiness2MonthlyIncome(d.regEvaluationBusiness2MonthlyIncome || '');
+    setRegEvaluationLoanReason(d.regEvaluationLoanReason || '');
+    setRegEvaluationHouseOwnership(d.regEvaluationHouseOwnership || '');
+    setRegEvaluationWallMaterial(d.regEvaluationWallMaterial || '');
+    setRegEvaluationFloorMaterial(d.regEvaluationFloorMaterial || '');
+    setRegEvaluationRoofMaterial(d.regEvaluationRoofMaterial || '');
+    setRegEvaluationVehicleAssets(d.regEvaluationVehicleAssets || '');
+    setRegEvaluationOtherLoansDetails(d.regEvaluationOtherLoansDetails || '');
+    setRegEvaluationOtherLoansMonthlyInstallment(d.regEvaluationOtherLoansMonthlyInstallment || '');
+    setRegEvaluationLeasingDetails(d.regEvaluationLeasingDetails || '');
+    setRegEvaluationLeasingMonthlyInstallment(d.regEvaluationLeasingMonthlyInstallment || '');
+    setRegEvaluationOtherLiabilities(d.regEvaluationOtherLiabilities || '');
+    setRegEvaluationFamilyExpenseBreakdown(d.regEvaluationFamilyExpenseBreakdown || {});
+    setRegEvaluationBusinessExpenseBreakdown(d.regEvaluationBusinessExpenseBreakdown || {});
+    setRegEvaluationFamilyIncomeWithoutBusiness(d.regEvaluationFamilyIncomeWithoutBusiness || '');
+    setRegEvaluationFamilyIncomeItem1(d.regEvaluationFamilyIncomeItem1 || '');
+    setRegEvaluationFamilyIncomeItem2(d.regEvaluationFamilyIncomeItem2 || '');
+    setRegEvaluationFamilyIncomeItem3(d.regEvaluationFamilyIncomeItem3 || '');
+    setRegEvaluationWageEarner1Name(d.regEvaluationWageEarner1Name || '');
+    setRegEvaluationWageEarner1Salary(d.regEvaluationWageEarner1Salary || '');
+    setRegEvaluationWageEarner2Name(d.regEvaluationWageEarner2Name || '');
+    setRegEvaluationWageEarner2Salary(d.regEvaluationWageEarner2Salary || '');
+    setRegEvaluationWageEarner3Name(d.regEvaluationWageEarner3Name || '');
+    setRegEvaluationWageEarner3Salary(d.regEvaluationWageEarner3Salary || '');
+    setRegEvaluationRentOutHouse(d.regEvaluationRentOutHouse || '');
+    setRegEvaluationRentOutVehicle(d.regEvaluationRentOutVehicle || '');
+    setRegEvaluationInterestCommission(d.regEvaluationInterestCommission || '');
+    setRegEvaluationOtherIncome(d.regEvaluationOtherIncome || '');
+    setRegEvaluationBusiness1UnitPrice(d.regEvaluationBusiness1UnitPrice || '');
+    setRegEvaluationBusiness1Units(d.regEvaluationBusiness1Units || '');
+    setRegEvaluationBusiness2UnitPrice(d.regEvaluationBusiness2UnitPrice || '');
+    setRegEvaluationBusiness2Units(d.regEvaluationBusiness2Units || '');
+    setRegEvaluationRecommendation(d.regEvaluationRecommendation || '');
+
+    // File objects cannot be restored from localStorage; user should reattach files.
+    setRegVehicleImages([]);
+    setRegVehicleCrFile(null);
+    setRegResidenceImages([]);
+    setRegDocuments([]);
+  };
+
+  const deleteDraft = (draftId: string) => {
+    setSavedDrafts((prev) => {
+      const next = prev.filter((draft) => draft.id !== draftId);
+      persistDraftsToStorage(next);
+      return next;
+    });
+
+    if (activeDraftId === draftId) {
+      setActiveDraftId('');
+    }
+  };
+
   useEffect(() => {
     if (isDraftLoanSelected && registerStep === 5) {
       setRegisterStep(6);
@@ -310,14 +798,54 @@ export default function IssueFinancePage() {
   }, [router]);
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem(FINANCE_ISSUE_DRAFTS_KEY);
+      if (!raw) {
+        setSavedDrafts([]);
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as FinanceIssueDraft[];
+      setSavedDrafts(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setSavedDrafts([]);
+    }
+  }, []);
+
+  useEffect(() => {
     if (!token) return;
 
     const run = async () => {
-      await fetchProductTypes(token);
+      await Promise.all([fetchProductTypes(token), fetchAssignmentOptions(token)]);
     };
 
     run();
   }, [token]);
+
+  const fetchAssignmentOptions = async (authToken: string, customerReference?: string) => {
+    try {
+      const response = await axios.get('/api/finances/assignment-options', {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: 'application/json',
+        },
+        params: {
+          customer_no: (customerReference || '').trim() || undefined,
+        },
+      });
+
+      const branchManager = response.data?.branch_manager || null;
+      const officers = Array.isArray(response.data?.responsible_officers)
+        ? response.data.responsible_officers
+        : [];
+
+      setBranchManagerOption(branchManager as BranchManagerOption | null);
+      setResponsibleOfficerOptions(officers as ResponsibleOfficerOption[]);
+    } catch {
+      setBranchManagerOption(null);
+      setResponsibleOfficerOptions([]);
+    }
+  };
 
   const fetchProductTypes = async (authToken: string) => {
     try {
@@ -726,12 +1254,17 @@ export default function IssueFinancePage() {
 
   const selectAdvancedSearchMatch = (match: FinanceCustomerSearchMatch) => {
     if (!match || !isCustomerDetail(match.customer)) return;
-    const matchedAccountNo = String(match.matched_investment_account_no || '').trim();
+    const matchedAccountNo = String(match.matched_savings_account_no || match.matched_investment_account_no || '').trim();
     applyCustomerDetailToForm(match.customer, matchedAccountNo || null);
     setRegMatchedInvestmentAccountNo(matchedAccountNo);
     setErrorMessage('');
     setShowCustomerSuggestions(false);
     setCustomerSuggestions([]);
+
+    if (token) {
+      const fallbackCustomerRef = String(match.customer.customer_code || '').trim();
+      void fetchAssignmentOptions(token, matchedAccountNo || fallbackCustomerRef);
+    }
   };
 
   const mapQuickSearchParams = (searchBy: 'nic_passport' | 'passport' | 'investment_account_no', value: string) => {
@@ -783,8 +1316,8 @@ export default function IssueFinancePage() {
     const customer = match.customer;
     if (!isCustomerDetail(customer)) return;
 
-    if (regCustomerSearchBy === 'investment_account_no' && match.matched_investment_account_no) {
-      setRegCustomerSearchValue(String(match.matched_investment_account_no));
+    if (regCustomerSearchBy === 'investment_account_no' && (match.matched_savings_account_no || match.matched_investment_account_no)) {
+      setRegCustomerSearchValue(String(match.matched_savings_account_no || match.matched_investment_account_no));
     } else if (regCustomerSearchBy === 'passport') {
       setRegCustomerSearchValue(String(customer.passport_no || customer.nic_passport || customer.customer_code || ''));
     } else {
@@ -820,6 +1353,7 @@ export default function IssueFinancePage() {
         found?: boolean;
         data?: unknown;
         matched_investment_account_no?: string | null;
+        matched_savings_account_no?: string | null;
         message?: string;
       };
 
@@ -831,10 +1365,12 @@ export default function IssueFinancePage() {
         return false;
       }
 
-      const matchedAccountNo = String(payload.matched_investment_account_no || '').trim();
+      const matchedAccountNo = String(payload.matched_savings_account_no || payload.matched_investment_account_no || '').trim();
       applyCustomerDetailToForm(customer, matchedAccountNo || null);
       setRegMatchedInvestmentAccountNo(matchedAccountNo);
       setAdvancedSearchMatches([]);
+      const fallbackCustomerRef = String(customer.customer_code || '').trim();
+      await fetchAssignmentOptions(authToken, matchedAccountNo || fallbackCustomerRef);
       return true;
     } catch (error: unknown) {
       setRegCustomerDetail(null);
@@ -945,6 +1481,9 @@ export default function IssueFinancePage() {
 
     const nextStep = visibleWizardSteps[currentIndex + 1];
     if (nextStep) {
+      if (registerStep >= 3) {
+        saveCurrentDraft();
+      }
       setRegisterStep(nextStep.id);
     }
   };
@@ -1059,7 +1598,8 @@ export default function IssueFinancePage() {
             ? Number(normalizedManualRows[0]?.amount || manualInstallment)
             : undefined,
           start_date: regStartDate || undefined,
-          status: regSubmissionMode,
+          status: 'pending_approval',
+          responsible_officer_employee_id: Number(regResponsibleOfficerId || 0) || undefined,
           vehicle_details: isVehicleFinanceSelected
             ? {
               vehicle_no: regVehicleNo || null,
@@ -1091,6 +1631,63 @@ export default function IssueFinancePage() {
               phone: g.phone || null,
               address: g.address || null,
             })),
+          family_financial_details: {
+            family_members_count: Number(regFamilyMembersCount || 0) || null,
+            dependents_count: Number(regDependentsCount || 0) || null,
+            employment_type: regEmploymentType || null,
+            main_income_source: regMainIncomeSource || null,
+            monthly_household_income: Number(regMonthlyHouseholdIncome || 0) || null,
+            monthly_household_expenses: Number(regMonthlyHouseholdExpenses || 0) || null,
+            existing_loan_commitments: Number(regExistingLoanCommitments || 0) || null,
+            banking_relationship: regBankingRelationship || null,
+            notes: regFamilyFinancialNotes || null,
+          },
+          evaluation_payload_version: 2,
+          evaluation_payload: {
+            income_generation_activities: regEvaluationIncomeActivities,
+            business_1: regEvaluationBusiness1 || null,
+            business_1_monthly_income: Number(regEvaluationBusiness1MonthlyIncome || 0) || null,
+            business_2: regEvaluationBusiness2 || null,
+            business_2_monthly_income: Number(regEvaluationBusiness2MonthlyIncome || 0) || null,
+            loan_reason: regEvaluationLoanReason || null,
+            house_ownership: regEvaluationHouseOwnership || null,
+            wall_material: regEvaluationWallMaterial || null,
+            floor_material: regEvaluationFloorMaterial || null,
+            roof_material: regEvaluationRoofMaterial || null,
+            vehicle_assets: regEvaluationVehicleAssets || null,
+            other_loans_details: regEvaluationOtherLoansDetails || null,
+            other_loans_monthly_installment: Number(regEvaluationOtherLoansMonthlyInstallment || 0) || null,
+            leasing_details: regEvaluationLeasingDetails || null,
+            leasing_monthly_installment: Number(regEvaluationLeasingMonthlyInstallment || 0) || null,
+            family_expense_breakdown: regEvaluationFamilyExpenseBreakdown,
+            business_expense_breakdown: regEvaluationBusinessExpenseBreakdown,
+            family_income_without_business: Number(regEvaluationFamilyIncomeWithoutBusiness || 0) || null,
+            family_income_item_1: Number(regEvaluationFamilyIncomeItem1 || 0) || null,
+            family_income_item_2: Number(regEvaluationFamilyIncomeItem2 || 0) || null,
+            family_income_item_3: Number(regEvaluationFamilyIncomeItem3 || 0) || null,
+            family_wage_earners: [
+              { name: regEvaluationWageEarner1Name || null, salary: Number(regEvaluationWageEarner1Salary || 0) || null },
+              { name: regEvaluationWageEarner2Name || null, salary: Number(regEvaluationWageEarner2Salary || 0) || null },
+              { name: regEvaluationWageEarner3Name || null, salary: Number(regEvaluationWageEarner3Salary || 0) || null },
+            ],
+            family_rent_out_house: Number(regEvaluationRentOutHouse || 0) || null,
+            family_rent_out_vehicle: Number(regEvaluationRentOutVehicle || 0) || null,
+            family_interest_commission: Number(regEvaluationInterestCommission || 0) || null,
+            other_income: Number(regEvaluationOtherIncome || 0) || null,
+            business_1_unit_selling_price: Number(regEvaluationBusiness1UnitPrice || 0) || null,
+            business_1_units: Number(regEvaluationBusiness1Units || 0) || null,
+            business_2_unit_selling_price: Number(regEvaluationBusiness2UnitPrice || 0) || null,
+            business_2_units: Number(regEvaluationBusiness2Units || 0) || null,
+            total_family_expenses_a: Number(familyExpenseTotal.toFixed(2)),
+            total_business_expenses_b: Number(businessExpenseTotal.toFixed(2)),
+            total_income_family_c: Number(totalIncomeWithBusiness.toFixed(2)),
+            loan_payments_and_family_expenses_d: Number(loanPaymentsAndFamilyExpensesTotal.toFixed(2)),
+            remaining_cash_with_family_e: Number(remainingCashWithFamily.toFixed(2)),
+            average_cash_per_week: Number(averageCashPerWeek.toFixed(2)),
+            assets_summary: regEvaluationVehicleAssets || null,
+            liabilities_summary: regEvaluationOtherLiabilities || null,
+            recommendation: regEvaluationRecommendation || null,
+          },
           repayment_plan: isDraftLoanSelected ? undefined : {
             schedule_mode: regScheduleMode,
             first_installment_date: regFirstInstallmentDate || null,
@@ -1112,6 +1709,64 @@ export default function IssueFinancePage() {
       );
 
       const financeId = Number(createResponse?.data?.id || 0);
+
+      if (financeId > 0 && regVehicleCrFile) {
+        const formData = new FormData();
+        formData.append('document_type', 'finance_vehicle_cr');
+        formData.append('file', regVehicleCrFile);
+
+        await axios.post(
+          `/api/finances/${financeId}/documents`,
+          formData,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/json',
+              'Content-Type': 'multipart/form-data',
+            },
+          },
+        );
+      }
+
+      if (financeId > 0 && regVehicleImages.length > 0) {
+        for (const file of regVehicleImages) {
+          const formData = new FormData();
+          formData.append('document_type', 'finance_vehicle_image');
+          formData.append('file', file);
+
+          await axios.post(
+            `/api/finances/${financeId}/documents`,
+            formData,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/json',
+                'Content-Type': 'multipart/form-data',
+              },
+            },
+          );
+        }
+      }
+
+      if (financeId > 0 && regResidenceImages.length > 0) {
+        for (const file of regResidenceImages) {
+          const formData = new FormData();
+          formData.append('document_type', 'finance_residence_image');
+          formData.append('file', file);
+
+          await axios.post(
+            `/api/finances/${financeId}/documents`,
+            formData,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/json',
+                'Content-Type': 'multipart/form-data',
+              },
+            },
+          );
+        }
+      }
 
       if (financeId > 0 && regDocuments.length > 0) {
         for (const file of regDocuments) {
@@ -1166,25 +1821,26 @@ export default function IssueFinancePage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50 p-4 sm:p-6 relative overflow-hidden">
-      <div className="pointer-events-none absolute inset-0 opacity-40">
-        <div className="absolute -top-20 left-14 h-72 w-72 rounded-full bg-blue-300 blur-3xl" />
-        <div className="absolute top-20 right-8 h-80 w-80 rounded-full bg-cyan-300 blur-3xl" />
-        <div className="absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-teal-300 blur-3xl" />
+    <div className="min-h-screen bg-[radial-gradient(circle_at_12%_16%,rgba(14,165,233,0.18),transparent_30%),radial-gradient(circle_at_86%_12%,rgba(6,182,212,0.16),transparent_32%),radial-gradient(circle_at_52%_84%,rgba(45,212,191,0.15),transparent_30%),linear-gradient(135deg,#effbff_0%,#f3fcff_45%,#f6fdfb_100%)] p-4 sm:p-6 relative overflow-hidden">
+      <div className="pointer-events-none absolute inset-0 opacity-45">
+        <div className="absolute -top-20 left-14 h-72 w-72 rounded-full bg-blue-300/80 blur-3xl" />
+        <div className="absolute top-20 right-8 h-80 w-80 rounded-full bg-cyan-300/75 blur-3xl" />
+        <div className="absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-teal-300/70 blur-3xl" />
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(14,116,144,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(14,116,144,0.06)_1px,transparent_1px)] bg-[size:26px_26px]" />
       </div>
 
       <div className="relative z-10 max-w-7xl mx-auto space-y-5">
-        <div className="rounded-3xl border border-white/80 bg-white/95 shadow-xl overflow-hidden">
-          <div className="bg-gradient-to-r from-cyan-600 via-blue-600 to-cyan-500 px-6 py-6">
+        <div className="rounded-3xl border border-white/80 bg-white/88 backdrop-blur-md shadow-[0_22px_40px_rgba(14,116,144,0.14)] overflow-hidden">
+          <div className="bg-gradient-to-r from-cyan-700 via-sky-700 to-teal-600 px-5 py-5 sm:px-6 sm:py-6">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
               <div className="flex items-start gap-4">
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/20 backdrop-blur">
-                  <Banknote className="h-7 w-7 text-white" />
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/35 bg-white/20 backdrop-blur">
+                  <Banknote className="h-6 w-6 text-white" />
                 </div>
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-cyan-100">Finance Module</p>
-                  <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Issue Finance</h1>
-                  <p className="text-sm text-cyan-50/95 mt-1 max-w-xl">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-100">Finance Module</p>
+                  <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">Issue Finance</h1>
+                  <p className="mt-1 max-w-xl text-xs text-cyan-50/95 sm:text-[13px]">
                     Register vehicle and asset finance with customer onboarding, terms, and repayment planning.
                   </p>
                 </div>
@@ -1192,7 +1848,7 @@ export default function IssueFinancePage() {
               <button
                 type="button"
                 onClick={() => router.push('/dashboard/finance')}
-                className="inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/20 transition"
+                className="inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/20 transition"
               >
                 <ArrowLeft className="h-4 w-4" />
                 Finance Dashboard
@@ -1200,14 +1856,14 @@ export default function IssueFinancePage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 divide-x divide-cyan-100 border-t border-cyan-100/80 bg-cyan-50/40">
+          <div className="grid grid-cols-3 divide-x divide-cyan-100 border-t border-cyan-100/80 bg-gradient-to-r from-cyan-50/70 via-white to-teal-50/60">
             <div className="px-4 py-3 text-center sm:text-left">
               <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Product types</p>
-              <p className="text-xl font-extrabold text-slate-900 tabular-nums">{productTypes.length}</p>
+              <p className="text-lg font-extrabold text-slate-900 tabular-nums">{productTypes.length}</p>
             </div>
             <div className="px-4 py-3 text-center sm:text-left">
               <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Wizard progress</p>
-              <p className="text-xl font-extrabold text-cyan-800 tabular-nums">
+              <p className="text-lg font-extrabold text-cyan-800 tabular-nums">
                 {activeWizardIndex + 1}/{visibleWizardSteps.length}
               </p>
             </div>
@@ -1228,14 +1884,14 @@ export default function IssueFinancePage() {
         )}
 
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-5 items-start">
-          <div className="rounded-3xl border border-cyan-100 bg-white/95 shadow-lg overflow-hidden flex flex-col">
+          <div className="rounded-3xl border border-cyan-100/90 bg-white/88 backdrop-blur-md shadow-[0_18px_36px_rgba(14,116,144,0.12)] overflow-hidden flex flex-col">
             <div className="px-5 sm:px-6 pt-5 pb-4 border-b border-cyan-100 bg-gradient-to-r from-cyan-50/80 to-blue-50/50">
               <div className="flex items-center justify-between gap-3 mb-3">
                 <div>
                   <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-700">
                     Step {activeWizardIndex + 1} of {visibleWizardSteps.length}
                   </p>
-                  <p className="text-sm font-semibold text-slate-800 mt-0.5">{activeWizardStep.hint}</p>
+                  <p className="text-xs font-semibold text-slate-700 mt-0.5">{activeWizardStep.hint}</p>
                 </div>
                 <span className="rounded-full bg-white border border-cyan-200 px-3 py-1 text-xs font-bold text-cyan-800">
                   {Math.round(progressPercent)}%
@@ -1258,7 +1914,7 @@ export default function IssueFinancePage() {
                     key={step.id}
                     type="button"
                     onClick={() => setRegisterStep(step.id)}
-                    className={`min-w-[7.5rem] flex-1 px-3 py-3 text-center transition border-b-2 ${
+                    className={`min-w-[7.25rem] flex-1 px-2.5 py-2.5 text-center transition border-b-2 ${
                       isActive
                         ? 'border-cyan-500 bg-cyan-50/60'
                         : isDone
@@ -1267,7 +1923,7 @@ export default function IssueFinancePage() {
                     }`}
                   >
                     <span
-                      className={`inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold mb-1 ${
+                      className={`mb-1 inline-flex h-6.5 w-6.5 items-center justify-center rounded-full text-[11px] font-bold ${
                         isActive
                           ? 'bg-cyan-600 text-white'
                           : isDone
@@ -1277,13 +1933,13 @@ export default function IssueFinancePage() {
                     >
                       {isDone ? <Check className="h-3.5 w-3.5" /> : step.id}
                     </span>
-                    <span className="block text-[10px] sm:text-[11px] font-bold uppercase tracking-wide text-black">{step.label}</span>
+                    <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-800 sm:text-[11px]">{step.label}</span>
                   </button>
                 );
               })}
             </div>
 
-          <div className="p-5 sm:p-6 space-y-5 overflow-y-auto bg-slate-50/30 flex-1">
+          <div className="p-4 sm:p-5 space-y-4 overflow-y-auto bg-gradient-to-b from-slate-50/75 to-cyan-50/35 text-[13px] flex-1">
             {registerStep === 1 && (
               <div className="space-y-4">
                 <SectionHeader
@@ -1302,7 +1958,7 @@ export default function IssueFinancePage() {
                       >
                         <option value="nic_passport">NIC</option>
                         <option value="passport">Passport</option>
-                        <option value="investment_account_no">Investment Account No</option>
+                        <option value="investment_account_no">Savings Account No</option>
                       </select>
                       <input
                         value={regCustomerSearchValue}
@@ -1312,7 +1968,7 @@ export default function IssueFinancePage() {
                           setShowCustomerSuggestions(true);
                         }}
                         className={inputClass}
-                        placeholder={regCustomerSearchBy === 'investment_account_no' ? 'Enter investment account no' : regCustomerSearchBy === 'passport' ? 'Enter passport number' : 'Enter NIC'}
+                        placeholder={regCustomerSearchBy === 'investment_account_no' ? 'Enter savings account no' : regCustomerSearchBy === 'passport' ? 'Enter passport number' : 'Enter NIC'}
                       />
                       {showCustomerSuggestions && (loadingCustomerSuggestions || customerSuggestions.length > 0) && (
                         <div className="relative md:col-start-2">
@@ -1332,7 +1988,7 @@ export default function IssueFinancePage() {
                                   >
                                     <p className="font-semibold text-slate-900">{fullName}</p>
                                     <p className="mt-0.5 text-slate-600">No: {customer.customer_code || '-'} | NIC: {customer.nic_passport || '-'}</p>
-                                    <p className="mt-0.5 text-slate-500">Investment: {match.matched_investment_account_no || '-'}</p>
+                                    <p className="mt-0.5 text-slate-500">Savings: {match.matched_savings_account_no || match.matched_investment_account_no || '-'}</p>
                                   </button>
                                 );
                               })
@@ -1369,7 +2025,7 @@ export default function IssueFinancePage() {
                         <p className="text-sm font-semibold text-slate-900">{regCustomerNo || '-'}</p>
                       </div>
                       <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Investment Account No</p>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Savings Account No</p>
                         <p className="text-sm font-semibold text-slate-900">{regMatchedInvestmentAccountNo || '-'}</p>
                       </div>
                     </div>
@@ -1526,16 +2182,31 @@ export default function IssueFinancePage() {
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 rounded-xl border border-cyan-100 bg-white p-4">
                   <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Approval Option</label>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Auto Assigned Branch Manager</label>
+                    <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2.5 text-sm text-slate-900 min-h-[44px] flex items-center">
+                      {branchManagerOption
+                        ? `${branchManagerOption.name}${branchManagerOption.employee_code ? ` (${branchManagerOption.employee_code})` : ''}`
+                        : 'No branch manager found for this branch.'}
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500">Loan is automatically assigned to branch manager for approval handling.</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Responsible Officer (Optional)</label>
                     <select
-                      value={regSubmissionMode}
-                      onChange={(e) => setRegSubmissionMode(e.target.value as 'pending_approval' | 'active')}
+                      value={regResponsibleOfficerId}
+                      onChange={(e) => setRegResponsibleOfficerId(e.target.value)}
                       className={inputClass}
                     >
-                      <option value="pending_approval">Send for Approval</option>
-                      <option value="active">Activate Immediately</option>
+                      <option value="">Select responsible officer</option>
+                      {responsibleOfficerOptions.map((officer) => (
+                        <option key={officer.id} value={String(officer.id)}>
+                          {officer.name}
+                          {officer.employee_code ? ` (${officer.employee_code})` : ''}
+                          {officer.designation ? ` - ${officer.designation}` : ''}
+                        </option>
+                      ))}
                     </select>
-                    <p className="mt-1 text-[11px] text-slate-500">Default is approval flow. Records will not be active until approved.</p>
+                    <p className="mt-1 text-[11px] text-slate-500">Choose officer responsible for follow-up and collections.</p>
                   </div>
                 </div>
 
@@ -1567,7 +2238,7 @@ export default function IssueFinancePage() {
                       >
                         <option value="nic_passport">NIC</option>
                         <option value="passport">Passport</option>
-                        <option value="investment_account_no">Investment Account No</option>
+                        <option value="investment_account_no">Savings Account No</option>
                       </select>
                     </div>
                     <div>
@@ -1580,7 +2251,7 @@ export default function IssueFinancePage() {
                           setShowCustomerSuggestions(true);
                         }}
                         className={inputClass}
-                        placeholder={regCustomerSearchBy === 'investment_account_no' ? 'Enter investment account no' : regCustomerSearchBy === 'passport' ? 'Enter passport number' : 'Enter NIC'}
+                        placeholder={regCustomerSearchBy === 'investment_account_no' ? 'Enter savings account no' : regCustomerSearchBy === 'passport' ? 'Enter passport number' : 'Enter NIC'}
                       />
                       {showCustomerSuggestions && (loadingCustomerSuggestions || customerSuggestions.length > 0) && (
                         <div className="relative">
@@ -1600,7 +2271,7 @@ export default function IssueFinancePage() {
                                   >
                                     <p className="font-semibold text-slate-900">{fullName}</p>
                                     <p className="mt-0.5 text-slate-600">No: {customer.customer_code || '-'} | NIC: {customer.nic_passport || '-'}</p>
-                                    <p className="mt-0.5 text-slate-500">Investment: {match.matched_investment_account_no || '-'}</p>
+                                    <p className="mt-0.5 text-slate-500">Savings: {match.matched_savings_account_no || match.matched_investment_account_no || '-'}</p>
                                   </button>
                                 );
                               })
@@ -1614,7 +2285,7 @@ export default function IssueFinancePage() {
                       onClick={async () => {
                         if (!token) return;
                         const ok = await searchCustomerForFinance(token);
-                        if (!ok) setErrorMessage('Customer not found. Check NIC/Passport/Investment account and search again.');
+                        if (!ok) setErrorMessage('Customer not found. Check NIC/Passport/Savings account and search again.');
                         else setErrorMessage('');
                       }}
                       disabled={searchingCustomer}
@@ -1640,7 +2311,7 @@ export default function IssueFinancePage() {
                       <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
                         <input value={advancedSearchNic} onChange={(e) => setAdvancedSearchNic(e.target.value)} className={inputClassSm} placeholder="NIC / Old NIC" />
                         <input value={advancedSearchPassport} onChange={(e) => setAdvancedSearchPassport(e.target.value)} className={inputClassSm} placeholder="Passport No" />
-                        <input value={advancedSearchInvestmentAccountNo} onChange={(e) => setAdvancedSearchInvestmentAccountNo(e.target.value)} className={inputClassSm} placeholder="Investment Account No" />
+                        <input value={advancedSearchInvestmentAccountNo} onChange={(e) => setAdvancedSearchInvestmentAccountNo(e.target.value)} className={inputClassSm} placeholder="Savings Account No" />
                         <input value={advancedSearchCustomerNo} onChange={(e) => setAdvancedSearchCustomerNo(e.target.value)} className={inputClassSm} placeholder="Customer No" />
                         <input value={advancedSearchName} onChange={(e) => setAdvancedSearchName(e.target.value)} className={inputClassSm} placeholder="Customer Name" />
                         <input value={advancedSearchPhone} onChange={(e) => setAdvancedSearchPhone(e.target.value)} className={inputClassSm} placeholder="Phone" />
@@ -1682,7 +2353,7 @@ export default function IssueFinancePage() {
                                 <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">Customer</th>
                                 <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">Customer No</th>
                                 <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">NIC/Passport</th>
-                                <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">Investment Account</th>
+                                <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">Savings Account</th>
                                 <th className="px-3 py-2 text-left font-bold uppercase tracking-wide text-indigo-700">Action</th>
                               </tr>
                             </thead>
@@ -1692,7 +2363,7 @@ export default function IssueFinancePage() {
                                   <td className="px-3 py-2 text-slate-800">{`${match.customer.first_name || ''} ${match.customer.last_name || ''}`.trim() || '-'}</td>
                                   <td className="px-3 py-2 text-slate-700">{match.customer.customer_code || '-'}</td>
                                   <td className="px-3 py-2 text-slate-700">{match.customer.nic_passport || match.customer.passport_no || '-'}</td>
-                                  <td className="px-3 py-2 text-slate-700">{match.matched_investment_account_no || '-'}</td>
+                                  <td className="px-3 py-2 text-slate-700">{match.matched_savings_account_no || match.matched_investment_account_no || '-'}</td>
                                   <td className="px-3 py-2">
                                     <button
                                       type="button"
@@ -1737,7 +2408,7 @@ export default function IssueFinancePage() {
                         <p className="font-semibold">{regCustomerDetail.email || '-'}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Investment Account</p>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Savings Account</p>
                         <p className="font-semibold">{regMatchedInvestmentAccountNo || '-'}</p>
                       </div>
                     </div>
@@ -1764,18 +2435,88 @@ export default function IssueFinancePage() {
                   }
                 />
                 {isVehicleFinanceSelected && (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Vehicle No</label>
-                      <input value={regVehicleNo} onChange={(e) => setRegVehicleNo(e.target.value)} className={inputClass} placeholder="e.g. CAB-1234" />
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Vehicle No</label>
+                        <input value={regVehicleNo} onChange={(e) => setRegVehicleNo(e.target.value)} className={inputClass} placeholder="e.g. CAB-1234" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Chassis No</label>
+                        <input value={regChassisNo} onChange={(e) => setRegChassisNo(e.target.value)} className={inputClass} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Engine No</label>
+                        <input value={regEngineNo} onChange={(e) => setRegEngineNo(e.target.value)} className={inputClass} />
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Chassis No</label>
-                      <input value={regChassisNo} onChange={(e) => setRegChassisNo(e.target.value)} className={inputClass} />
+
+                    <div className="rounded-2xl border-2 border-dashed border-cyan-200 bg-white p-4">
+                      <p className="text-sm font-semibold text-slate-800">Vehicle CR</p>
+                      <p className="mt-1 text-xs text-slate-500">Upload vehicle registration certificate as a separate file.</p>
+                      <input
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          setRegVehicleCrFile(file);
+                          e.currentTarget.value = '';
+                        }}
+                        className="mt-3 w-full max-w-md text-sm text-slate-700 file:mr-3 file:rounded-lg file:border-0 file:bg-cyan-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-cyan-700"
+                      />
+
+                      {regVehicleCrFile ? (
+                        <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-cyan-100 bg-cyan-50/40 px-3 py-2 text-xs text-slate-700">
+                          <span className="truncate">{regVehicleCrFile.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setRegVehicleCrFile(null)}
+                            className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 font-semibold text-rose-700 hover:bg-rose-100"
+                          >
+                            <X className="h-3 w-3" />
+                            Remove
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Engine No</label>
-                      <input value={regEngineNo} onChange={(e) => setRegEngineNo(e.target.value)} className={inputClass} />
+
+                    <div className="rounded-2xl border-2 border-dashed border-cyan-200 bg-white p-4">
+                      <p className="text-sm font-semibold text-slate-800">Vehicle Images</p>
+                      <p className="mt-1 text-xs text-slate-500">Upload multiple vehicle photos (front, back, sides, interior, documents).</p>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        onChange={(e) => {
+                          const incoming = Array.from(e.target.files || []);
+                          if (incoming.length === 0) return;
+                          setRegVehicleImages((prev) => {
+                            const existingKeys = new Set(prev.map((f) => `${f.name}-${f.size}-${f.lastModified}`));
+                            const uniqueIncoming = incoming.filter((f) => !existingKeys.has(`${f.name}-${f.size}-${f.lastModified}`));
+                            return [...prev, ...uniqueIncoming];
+                          });
+                          e.currentTarget.value = '';
+                        }}
+                        className="mt-3 w-full max-w-md text-sm text-slate-700 file:mr-3 file:rounded-lg file:border-0 file:bg-cyan-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-cyan-700"
+                      />
+
+                      {regVehicleImages.length > 0 ? (
+                        <div className="mt-3 space-y-2 rounded-xl border border-cyan-100 bg-cyan-50/40 p-3">
+                          {regVehicleImages.map((file, index) => (
+                            <div key={`${file.name}-${file.size}-${index}`} className="flex items-center justify-between gap-2 rounded-lg bg-white px-3 py-2 text-xs text-slate-700 border border-cyan-100">
+                              <span className="truncate">{file.name}</span>
+                              <button
+                                type="button"
+                                onClick={() => setRegVehicleImages((prev) => prev.filter((_, i) => i !== index))}
+                                className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 font-semibold text-rose-700 hover:bg-rose-100"
+                              >
+                                <X className="h-3 w-3" />
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 )}
@@ -2116,6 +2857,295 @@ export default function IssueFinancePage() {
             {registerStep === 6 && (
               <div className="space-y-4">
                 <SectionHeader
+                  icon={User}
+                  title="Family & financial"
+                  description="Capture household and financial profile similar to microfinance onboarding."
+                />
+
+                <div className="rounded-xl border border-cyan-100 bg-white p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Family Members Count</label>
+                    <input value={regFamilyMembersCount} onChange={(e) => setRegFamilyMembersCount(e.target.value)} className={inputClass} placeholder="e.g. 4" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Dependents Count</label>
+                    <input value={regDependentsCount} onChange={(e) => setRegDependentsCount(e.target.value)} className={inputClass} placeholder="e.g. 2" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Employment Type</label>
+                    <input value={regEmploymentType} onChange={(e) => setRegEmploymentType(e.target.value)} className={inputClass} placeholder="e.g. Salaried / Business" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Main Income Source</label>
+                    <input value={regMainIncomeSource} onChange={(e) => setRegMainIncomeSource(e.target.value)} className={inputClass} placeholder="Primary income source" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Monthly Household Income</label>
+                    <input value={regMonthlyHouseholdIncome} onChange={(e) => setRegMonthlyHouseholdIncome(e.target.value)} className={inputClass} placeholder="0.00" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Monthly Household Expenses</label>
+                    <input value={regMonthlyHouseholdExpenses} onChange={(e) => setRegMonthlyHouseholdExpenses(e.target.value)} className={inputClass} placeholder="0.00" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Existing Loan Commitments</label>
+                    <input value={regExistingLoanCommitments} onChange={(e) => setRegExistingLoanCommitments(e.target.value)} className={inputClass} placeholder="0.00" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Banking Relationship</label>
+                    <input value={regBankingRelationship} onChange={(e) => setRegBankingRelationship(e.target.value)} className={inputClass} placeholder="Bank / account relationship" />
+                  </div>
+                  <div className="md:col-span-3">
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Notes</label>
+                    <textarea value={regFamilyFinancialNotes} onChange={(e) => setRegFamilyFinancialNotes(e.target.value)} className={`${inputClass} min-h-[92px]`} placeholder="Family and financial background notes" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {registerStep === 7 && (
+              <div className="space-y-4">
+                <SectionHeader
+                  icon={Car}
+                  title="Residence images"
+                  description="Upload residence environment photos similar to microfinance loan request."
+                />
+                <div className="rounded-2xl border-2 border-dashed border-cyan-200 bg-white p-6 text-center">
+                  <p className="text-sm font-semibold text-slate-800">Attach residence images</p>
+                  <p className="text-xs text-slate-500 mt-1">House front, interior, environment, utilities, and related proof images.</p>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={(e) => {
+                      const incoming = Array.from(e.target.files || []);
+                      if (incoming.length === 0) return;
+                      setRegResidenceImages((prev) => {
+                        const existingKeys = new Set(prev.map((f) => `${f.name}-${f.size}-${f.lastModified}`));
+                        const uniqueIncoming = incoming.filter((f) => !existingKeys.has(`${f.name}-${f.size}-${f.lastModified}`));
+                        return [...prev, ...uniqueIncoming];
+                      });
+                      e.currentTarget.value = '';
+                    }}
+                    className="mt-4 w-full max-w-md mx-auto text-sm text-slate-700 file:mr-3 file:rounded-lg file:border-0 file:bg-cyan-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-cyan-700"
+                  />
+                </div>
+                {regResidenceImages.length > 0 && (
+                  <div className="rounded-xl border border-cyan-100 bg-cyan-50/40 p-3 text-xs text-slate-700 space-y-2">
+                    {regResidenceImages.map((f, index) => (
+                      <div key={`${f.name}-${index}`} className="flex items-center justify-between gap-2 rounded-lg bg-white px-3 py-2 border border-cyan-100">
+                        <span className="truncate">{f.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setRegResidenceImages((prev) => prev.filter((_, i) => i !== index))}
+                          className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 font-semibold text-rose-700 hover:bg-rose-100"
+                        >
+                          <X className="h-3 w-3" />
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {registerStep === 8 && (
+              <div className="space-y-4">
+                <SectionHeader
+                  icon={Calculator}
+                  title="Evaluation"
+                  description="Capture income activities, liabilities, household expenses, business flow, and recommendation."
+                />
+
+                <div className="rounded-xl border border-cyan-100 bg-white p-4 space-y-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Income Generation Activities</p>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                      {incomeGenerationActivityOptions.map((item) => {
+                        const checked = regEvaluationIncomeActivities.includes(item);
+                        return (
+                          <label key={item} className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold cursor-pointer ${checked ? 'border-cyan-300 bg-cyan-50 text-cyan-800' : 'border-slate-200 bg-white text-slate-700'}`}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                setRegEvaluationIncomeActivities((prev) => {
+                                  if (e.target.checked) return [...prev, item];
+                                  return prev.filter((entry) => entry !== item);
+                                });
+                              }}
+                            />
+                            {item}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Business 1</label>
+                      <input value={regEvaluationBusiness1} onChange={(e) => setRegEvaluationBusiness1(e.target.value)} className={inputClassSm} placeholder="Business / activity" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Monthly Income (LKR)</label>
+                      <input value={regEvaluationBusiness1MonthlyIncome} onChange={(e) => setRegEvaluationBusiness1MonthlyIncome(e.target.value)} className={inputClassSm} placeholder="0.00" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Business 2</label>
+                      <input value={regEvaluationBusiness2} onChange={(e) => setRegEvaluationBusiness2(e.target.value)} className={inputClassSm} placeholder="Business / activity" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Monthly Income (LKR)</label>
+                      <input value={regEvaluationBusiness2MonthlyIncome} onChange={(e) => setRegEvaluationBusiness2MonthlyIncome(e.target.value)} className={inputClassSm} placeholder="0.00" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Reason for Requested Loan</label>
+                      <input value={regEvaluationLoanReason} onChange={(e) => setRegEvaluationLoanReason(e.target.value)} className={inputClassSm} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">House Ownership</label>
+                      <input value={regEvaluationHouseOwnership} onChange={(e) => setRegEvaluationHouseOwnership(e.target.value)} className={inputClassSm} placeholder="Own / Rent / Parent" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Vehicle Assets</label>
+                      <input value={regEvaluationVehicleAssets} onChange={(e) => setRegEvaluationVehicleAssets(e.target.value)} className={inputClassSm} placeholder="Type and count" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Wall Material</label>
+                      <input value={regEvaluationWallMaterial} onChange={(e) => setRegEvaluationWallMaterial(e.target.value)} className={inputClassSm} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Floor Material</label>
+                      <input value={regEvaluationFloorMaterial} onChange={(e) => setRegEvaluationFloorMaterial(e.target.value)} className={inputClassSm} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Roof Material</label>
+                      <input value={regEvaluationRoofMaterial} onChange={(e) => setRegEvaluationRoofMaterial(e.target.value)} className={inputClassSm} />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="rounded-lg border border-cyan-100 p-3">
+                      <p className="text-xs font-bold uppercase tracking-wide text-slate-600 mb-2">Other Loans</p>
+                      <input value={regEvaluationOtherLoansDetails} onChange={(e) => setRegEvaluationOtherLoansDetails(e.target.value)} className={inputClassSm} placeholder="Loan details" />
+                      <input value={regEvaluationOtherLoansMonthlyInstallment} onChange={(e) => setRegEvaluationOtherLoansMonthlyInstallment(e.target.value)} className={`${inputClassSm} mt-2`} placeholder="Monthly installment total (LKR)" />
+                    </div>
+                    <div className="rounded-lg border border-cyan-100 p-3">
+                      <p className="text-xs font-bold uppercase tracking-wide text-slate-600 mb-2">Leasing Facility</p>
+                      <input value={regEvaluationLeasingDetails} onChange={(e) => setRegEvaluationLeasingDetails(e.target.value)} className={inputClassSm} placeholder="Leasing details" />
+                      <input value={regEvaluationLeasingMonthlyInstallment} onChange={(e) => setRegEvaluationLeasingMonthlyInstallment(e.target.value)} className={`${inputClassSm} mt-2`} placeholder="Monthly installment total (LKR)" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                    <div className="rounded-lg border border-cyan-100 overflow-hidden">
+                      <div className="bg-cyan-50 px-3 py-2 text-xs font-bold uppercase tracking-wide text-cyan-800">A. Family Expenses</div>
+                      <div className="p-3 space-y-2">
+                        {familyExpenseRows.map((row) => (
+                          <div key={row.key} className="grid grid-cols-[52px_1fr_120px] gap-2 items-center">
+                            <span className="text-[11px] font-semibold text-slate-500">{row.no}</span>
+                            <span className="text-xs text-slate-700">{row.label}</span>
+                            <input value={regEvaluationFamilyExpenseBreakdown[row.key] || ''} onChange={(e) => updateFamilyExpenseValue(row.key, e.target.value)} className={inputClassSm} placeholder="0.00" />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="bg-cyan-50 px-3 py-2 text-xs font-bold text-slate-900">Total: {formatAmount(familyExpenseTotal)}</div>
+                    </div>
+
+                    <div className="rounded-lg border border-cyan-100 overflow-hidden">
+                      <div className="bg-cyan-50 px-3 py-2 text-xs font-bold uppercase tracking-wide text-cyan-800">B. Family Income</div>
+                      <div className="p-3 grid grid-cols-1 gap-2">
+                        <input value={regEvaluationFamilyIncomeWithoutBusiness} onChange={(e) => setRegEvaluationFamilyIncomeWithoutBusiness(e.target.value)} className={inputClassSm} placeholder="Income without business" />
+                        <input value={regEvaluationFamilyIncomeItem1} onChange={(e) => setRegEvaluationFamilyIncomeItem1(e.target.value)} className={inputClassSm} placeholder="Income item 1" />
+                        <input value={regEvaluationFamilyIncomeItem2} onChange={(e) => setRegEvaluationFamilyIncomeItem2(e.target.value)} className={inputClassSm} placeholder="Income item 2" />
+                        <input value={regEvaluationFamilyIncomeItem3} onChange={(e) => setRegEvaluationFamilyIncomeItem3(e.target.value)} className={inputClassSm} placeholder="Income item 3" />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <input value={regEvaluationWageEarner1Name} onChange={(e) => setRegEvaluationWageEarner1Name(e.target.value)} className={inputClassSm} placeholder="Wage earner 1 name" />
+                          <input value={regEvaluationWageEarner1Salary} onChange={(e) => setRegEvaluationWageEarner1Salary(e.target.value)} className={inputClassSm} placeholder="Wage earner 1 salary" />
+                          <input value={regEvaluationWageEarner2Name} onChange={(e) => setRegEvaluationWageEarner2Name(e.target.value)} className={inputClassSm} placeholder="Wage earner 2 name" />
+                          <input value={regEvaluationWageEarner2Salary} onChange={(e) => setRegEvaluationWageEarner2Salary(e.target.value)} className={inputClassSm} placeholder="Wage earner 2 salary" />
+                          <input value={regEvaluationWageEarner3Name} onChange={(e) => setRegEvaluationWageEarner3Name(e.target.value)} className={inputClassSm} placeholder="Wage earner 3 name" />
+                          <input value={regEvaluationWageEarner3Salary} onChange={(e) => setRegEvaluationWageEarner3Salary(e.target.value)} className={inputClassSm} placeholder="Wage earner 3 salary" />
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <input value={regEvaluationRentOutHouse} onChange={(e) => setRegEvaluationRentOutHouse(e.target.value)} className={inputClassSm} placeholder="Rent out house" />
+                          <input value={regEvaluationRentOutVehicle} onChange={(e) => setRegEvaluationRentOutVehicle(e.target.value)} className={inputClassSm} placeholder="Rent out vehicle" />
+                          <input value={regEvaluationInterestCommission} onChange={(e) => setRegEvaluationInterestCommission(e.target.value)} className={inputClassSm} placeholder="Interest / commission" />
+                          <input value={regEvaluationOtherIncome} onChange={(e) => setRegEvaluationOtherIncome(e.target.value)} className={inputClassSm} placeholder="Other income" />
+                        </div>
+                      </div>
+                      <div className="bg-cyan-50 px-3 py-2 text-xs font-bold text-slate-900">Total: {formatAmount(familyIncomeTotal)}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                    <div className="rounded-lg border border-cyan-100 overflow-hidden">
+                      <div className="bg-cyan-50 px-3 py-2 text-xs font-bold uppercase tracking-wide text-cyan-800">C. Business Expenses</div>
+                      <div className="p-3 space-y-2">
+                        {businessExpenseRows.map((row) => (
+                          <div key={row.key} className="grid grid-cols-[52px_1fr_120px] gap-2 items-center">
+                            <span className="text-[11px] font-semibold text-slate-500">{row.no}</span>
+                            <span className="text-xs text-slate-700">{row.label}</span>
+                            <input value={regEvaluationBusinessExpenseBreakdown[row.key] || ''} onChange={(e) => updateBusinessExpenseValue(row.key, e.target.value)} className={inputClassSm} placeholder="0.00" />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="bg-cyan-50 px-3 py-2 text-xs font-bold text-slate-900">Total: {formatAmount(businessExpenseTotal)}</div>
+                    </div>
+
+                    <div className="rounded-lg border border-cyan-100 overflow-hidden">
+                      <div className="bg-cyan-50 px-3 py-2 text-xs font-bold uppercase tracking-wide text-cyan-800">D. Business Income</div>
+                      <div className="p-3 space-y-2">
+                        <div className="grid grid-cols-2 gap-2">
+                          <input value={regEvaluationBusiness1UnitPrice} onChange={(e) => setRegEvaluationBusiness1UnitPrice(e.target.value)} className={inputClassSm} placeholder="Business 1 unit selling price" />
+                          <input value={regEvaluationBusiness1Units} onChange={(e) => setRegEvaluationBusiness1Units(e.target.value)} className={inputClassSm} placeholder="Business 1 units" />
+                          <input value={regEvaluationBusiness2UnitPrice} onChange={(e) => setRegEvaluationBusiness2UnitPrice(e.target.value)} className={inputClassSm} placeholder="Business 2 unit selling price" />
+                          <input value={regEvaluationBusiness2Units} onChange={(e) => setRegEvaluationBusiness2Units(e.target.value)} className={inputClassSm} placeholder="Business 2 units" />
+                        </div>
+                      </div>
+                      <div className="bg-cyan-50 px-3 py-2 text-xs font-bold text-slate-900">Total: {formatAmount(businessIncomeTotal)}</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-cyan-100 bg-cyan-50/30 p-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">
+                    <div className="rounded-lg bg-white border border-cyan-100 p-2">
+                      <p className="font-semibold text-slate-600">Total Income with Business (C)</p>
+                      <p className="text-sm font-bold text-slate-900">{formatAmount(totalIncomeWithBusiness)}</p>
+                    </div>
+                    <div className="rounded-lg bg-white border border-cyan-100 p-2">
+                      <p className="font-semibold text-slate-600">Loan + Leasing Monthly (D)</p>
+                      <p className="text-sm font-bold text-slate-900">{formatAmount(loanAndLeasingTotal)}</p>
+                    </div>
+                    <div className="rounded-lg bg-white border border-cyan-100 p-2">
+                      <p className="font-semibold text-slate-600">Loan + Family Expenses (E)</p>
+                      <p className="text-sm font-bold text-slate-900">{formatAmount(loanPaymentsAndFamilyExpensesTotal)}</p>
+                    </div>
+                    <div className="rounded-lg bg-white border border-cyan-100 p-2">
+                      <p className="font-semibold text-slate-600">Remaining / Week</p>
+                      <p className="text-sm font-bold text-emerald-700">{formatAmount(averageCashPerWeek)}</p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Liabilities Summary</label>
+                    <textarea value={regEvaluationOtherLiabilities} onChange={(e) => setRegEvaluationOtherLiabilities(e.target.value)} className={`${inputClass} min-h-[76px]`} placeholder="Outstanding loans, guarantees, and liabilities" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Officer Recommendation</label>
+                    <textarea value={regEvaluationRecommendation} onChange={(e) => setRegEvaluationRecommendation(e.target.value)} className={`${inputClass} min-h-[100px]`} placeholder="Final recommendation and risk remarks" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {registerStep === 9 && (
+              <div className="space-y-4">
+                <SectionHeader
                   icon={FileText}
                   title="Supporting documents"
                   description="Upload files now or add them later after registration."
@@ -2149,6 +3179,15 @@ export default function IssueFinancePage() {
             </div>
 
             <div className="flex items-center gap-2">
+              {registerStep >= 3 && (
+                <button
+                  type="button"
+                  onClick={saveCurrentDraft}
+                  className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800 hover:bg-amber-100 transition"
+                >
+                  Save Draft
+                </button>
+              )}
               {registerStep > 1 && (
                 <button
                   type="button"
@@ -2188,12 +3227,12 @@ export default function IssueFinancePage() {
         </div>
 
           <aside className="xl:sticky xl:top-6 space-y-4">
-            <div className="rounded-3xl border border-cyan-100 bg-white/95 shadow-lg overflow-hidden">
-              <div className="bg-gradient-to-r from-cyan-600 to-blue-600 px-4 py-3">
+            <div className="rounded-3xl border border-cyan-100 bg-white/88 backdrop-blur-md shadow-[0_16px_30px_rgba(14,116,144,0.12)] overflow-hidden">
+              <div className="bg-gradient-to-r from-cyan-700 to-blue-700 px-4 py-3">
                 <p className="text-[10px] font-bold uppercase tracking-wider text-cyan-100">Application summary</p>
                 <p className="text-sm font-bold text-white mt-0.5">Live preview</p>
               </div>
-              <div className="p-4 space-y-3 text-sm">
+              <div className="p-4 space-y-3 text-[13px]">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Customer</p>
                   <p className="font-semibold text-slate-900 mt-0.5">{applicationSummary.customerLabel}</p>
@@ -2249,7 +3288,7 @@ export default function IssueFinancePage() {
               </div>
             </div>
 
-            <div className="rounded-3xl border border-cyan-100 bg-white/95 shadow-lg p-4">
+            <div className="rounded-3xl border border-cyan-100 bg-white/88 backdrop-blur-md shadow-[0_16px_30px_rgba(14,116,144,0.1)] p-4">
               <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-3">Step checklist</p>
               <ul className="space-y-2">
                 {visibleWizardSteps.map((step) => {
@@ -2284,6 +3323,63 @@ export default function IssueFinancePage() {
               </ul>
             </div>
           </aside>
+        </div>
+
+        <div className="mt-6 rounded-3xl border border-amber-200 bg-white/88 backdrop-blur-md shadow-[0_18px_34px_rgba(217,119,6,0.16)] overflow-hidden">
+          <div className="bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 px-5 py-3">
+            <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-amber-100">Continue later</p>
+            <h3 className="text-sm font-bold text-white">Started drafts</h3>
+          </div>
+          <div className="p-4">
+            {savedDrafts.length === 0 ? (
+              <p className="text-sm text-slate-500">No started drafts yet. Complete up to step 3 and click Save Draft.</p>
+            ) : (
+              <div className="space-y-3">
+                {savedDrafts.map((draft) => (
+                  <div key={draft.id} className="rounded-xl border border-amber-100 bg-amber-50/50 p-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900 truncate">{draft.label}</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Step {draft.snapshot.registerStep || 1} · Updated {new Date(draft.updatedAt).toLocaleString()}
+                      </p>
+                      {draft.snapshot.vehicleImageNames.length > 0 || draft.snapshot.vehicleCrFileName || draft.snapshot.residenceImageNames.length > 0 || draft.snapshot.documentNames.length > 0 ? (
+                        <p className="text-[11px] text-amber-700 mt-1">
+                          Saved file names: {[
+                            ...draft.snapshot.vehicleImageNames,
+                            ...(draft.snapshot.vehicleCrFileName ? [draft.snapshot.vehicleCrFileName] : []),
+                            ...draft.snapshot.residenceImageNames,
+                            ...draft.snapshot.documentNames,
+                          ].join(', ')}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => loadDraftToForm(draft)}
+                        className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 transition"
+                      >
+                        Resume
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteDraft(draft.id)}
+                        className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeDraftId && (
+              <p className="mt-3 text-xs font-semibold text-emerald-700">
+                Active draft loaded. Continue from the saved step and reattach files before final submit.
+              </p>
+            )}
+          </div>
         </div>
 
         {showProductTypeModal && (

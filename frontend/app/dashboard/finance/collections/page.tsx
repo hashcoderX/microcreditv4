@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import axios from 'axios';
 import { getApiBaseUrl } from '@/lib/api';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
-import { ArrowLeft, CalendarDays, Eye, HandCoins, Search, ShieldCheck, Users, Wallet } from 'lucide-react';
+import { ArrowLeft, CalendarDays, Eye, HandCoins, Search, ShieldCheck, Trash2, Users, Wallet } from 'lucide-react';
 
 type FinanceRow = {
   id: number;
@@ -234,6 +234,7 @@ export default function FinanceCollectionsPage() {
   const [chequeDate, setChequeDate] = useState('');
   const [chequeBank, setChequeBank] = useState('');
   const [collectionError, setCollectionError] = useState('');
+  const [deletingCollectionId, setDeletingCollectionId] = useState<number | null>(null);
   const [lastCalculation, setLastCalculation] = useState<{
     interest: number;
     interest_paid: number;
@@ -540,6 +541,40 @@ export default function FinanceCollectionsPage() {
       setCollectionError('Failed to post collection.');
     } finally {
       setCollecting(false);
+    }
+  };
+
+  const deleteCollection = async (collectionId: number) => {
+    if (!token || !selectedRecord) return;
+
+    const shouldDelete = window.confirm('Delete this payment? Loan balances and schedule will be recalculated from remaining payments.');
+    if (!shouldDelete) return;
+
+    try {
+      setDeletingCollectionId(collectionId);
+      setCollectionError('');
+
+      const response = await fetch(`/api/finances/${selectedRecord.id}/collections/${collectionId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        setCollectionError(String(payload?.message || 'Failed to delete payment.'));
+        return;
+      }
+
+      setLastCalculation(null);
+      await openFullRecord(selectedRecord.id);
+      await fetchFinanceRows(token);
+    } catch {
+      setCollectionError('Failed to delete payment.');
+    } finally {
+      setDeletingCollectionId(null);
     }
   };
 
@@ -1167,6 +1202,7 @@ export default function FinanceCollectionsPage() {
                               <th className="px-2 py-2 font-semibold">{isSelectedRecordDraft ? 'Draft Value' : 'Capital'}</th>
                               <th className="px-2 py-2 font-semibold">Arrears</th>
                               <th className="px-2 py-2 font-semibold">{isSelectedRecordDraft ? 'Draft Balance' : 'Balance'}</th>
+                              <th className="px-2 py-2 font-semibold">Action</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1186,6 +1222,17 @@ export default function FinanceCollectionsPage() {
                                 <td className="px-2 py-2">{formatAmount(item.principal_paid)}</td>
                                 <td className="px-2 py-2">{formatAmount(item.arrears)}</td>
                                 <td className="px-2 py-2">{formatAmount(item.remaining_capital)}</td>
+                                <td className="px-2 py-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteCollection(item.id)}
+                                    disabled={deletingCollectionId === item.id || collecting || detailLoading}
+                                    className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                    {deletingCollectionId === item.id ? 'Deleting...' : 'Delete'}
+                                  </button>
+                                </td>
                               </tr>
                             ))}
                           </tbody>

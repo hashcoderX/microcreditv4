@@ -21,6 +21,8 @@ use App\Models\MortgagePayment;
 use App\Models\SavingsAccount;
 use App\Models\EmployeeWalletBankDeposit;
 use App\Models\EmployeeWalletCashHandover;
+use App\Models\Employee;
+use App\Models\User;
 use App\Services\SmsGatewayService;
 use App\Services\WhatsappGatewayService;
 use App\Services\SpeedDraftCalculator;
@@ -77,6 +79,140 @@ class FinanceController extends Controller
         return $branchId > 0 ? $branchId : null;
     }
 
+    private function resolveBranchManagerUserId(int $branchId): ?int
+    {
+        if ($branchId <= 0) {
+            return null;
+        }
+
+        $manager = User::query()
+            ->with(['designation:id,name'])
+            ->where('branch_id', $branchId)
+            ->where(function ($query) {
+                $query
+                    ->whereHas('designation', function ($designationQuery) {
+                        $designationQuery->whereRaw('LOWER(name) LIKE ?', ['%branch manager%']);
+                    })
+                    ->orWhereHas('employee.designation', function ($designationQuery) {
+                        $designationQuery->whereRaw('LOWER(name) LIKE ?', ['%branch manager%']);
+                    })
+                    ->orWhereHas('roles', function ($roleQuery) {
+                        $roleQuery->whereRaw('LOWER(name) LIKE ?', ['%branch manager%']);
+                    });
+            })
+            ->orderBy('id')
+            ->first();
+
+        return $manager ? (int) $manager->id : null;
+    }
+
+    private function resolveBranchManagerEmployee(int $branchId): ?Employee
+    {
+        if ($branchId <= 0) {
+            return null;
+        }
+
+        return Employee::query()
+            ->with(['designation:id,name'])
+            ->where('branch_id', $branchId)
+            ->whereHas('designation', function ($query) {
+                $query->whereRaw('LOWER(name) LIKE ?', ['%branch manager%']);
+            })
+            ->orderByRaw("CASE WHEN status IS NULL OR LOWER(status) = 'active' THEN 0 ELSE 1 END")
+            ->orderBy('id')
+            ->first();
+    }
+
+    public function assignmentOptions(Request $request): JsonResponse
+    {
+        $branchId = $this->scopedBranchId($request);
+        $customerNo = trim((string) $request->get('customer_no', ''));
+
+        if (($branchId === null || $branchId <= 0) && $customerNo !== '') {
+            $customer = $this->resolveCustomerFromReference($customerNo);
+            $branchFromCustomer = (int) ($customer?->branch_id ?? 0);
+            if ($branchFromCustomer > 0) {
+                $branchId = $branchFromCustomer;
+            }
+        }
+
+        if ($branchId === null) {
+            $branchId = (int) ($request->get('branch_id', 0));
+        }
+
+        if (!$branchId || $branchId <= 0) {
+            return response()->json([
+                'branch_id' => null,
+                'branch_manager' => null,
+                'responsible_officers' => [],
+            ]);
+        }
+
+        $branchManagerUser = User::query()
+            ->with(['employee:id,first_name,last_name,employee_code', 'designation:id,name'])
+            ->where('branch_id', $branchId)
+            ->where(function ($query) {
+                $query
+                    ->whereHas('designation', function ($designationQuery) {
+                        $designationQuery->whereRaw('LOWER(name) LIKE ?', ['%branch manager%']);
+                    })
+                    ->orWhereHas('employee.designation', function ($designationQuery) {
+                        $designationQuery->whereRaw('LOWER(name) LIKE ?', ['%branch manager%']);
+                    })
+                    ->orWhereHas('roles', function ($roleQuery) {
+                        $roleQuery->whereRaw('LOWER(name) LIKE ?', ['%branch manager%']);
+                    });
+            })
+            ->orderBy('id')
+            ->first();
+
+        $branchManagerEmployee = $this->resolveBranchManagerEmployee($branchId);
+
+        $branchManager = null;
+        if ($branchManagerUser || $branchManagerEmployee) {
+            $employee = $branchManagerUser?->employee ?: $branchManagerEmployee;
+            $fullName = trim((string) ($employee?->first_name ?? '') . ' ' . (string) ($employee?->last_name ?? ''));
+            $branchManager = [
+                'user_id' => $branchManagerUser ? (int) $branchManagerUser->id : null,
+                'employee_id' => $employee ? (int) $employee->id : null,
+                'name' => $fullName !== '' ? $fullName : (string) ($branchManagerUser?->name ?? 'N/A'),
+                'employee_code' => (string) ($employee?->employee_code ?? ''),
+                'designation' => (string) ($employee?->designation?->name ?? $branchManagerUser?->designation?->name ?? ''),
+            ];
+        }
+
+        $responsibleOfficers = Employee::query()
+            ->with(['designation:id,name'])
+            ->where('branch_id', $branchId)
+            ->whereHas('designation', function ($query) {
+                $query->where(function ($designationQuery) {
+                    $designationQuery
+                        ->whereRaw('LOWER(name) LIKE ?', ['%credit officer%'])
+                        ->orWhereRaw('LOWER(name) LIKE ?', ['%collection officer%'])
+                        ->orWhereRaw('LOWER(name) LIKE ?', ['%loan officer%']);
+                });
+            })
+            ->orderBy('first_name')
+            ->orderBy('last_name')
+            ->get()
+            ->map(function (Employee $employee) {
+                $fullName = trim((string) ($employee->first_name ?? '') . ' ' . (string) ($employee->last_name ?? ''));
+                return [
+                    'id' => (int) $employee->id,
+                    'name' => $fullName !== '' ? $fullName : 'N/A',
+                    'employee_code' => (string) ($employee->employee_code ?? ''),
+                    'designation' => (string) ($employee->designation?->name ?? ''),
+                ];
+            })
+            ->values();
+
+        return response()->json([
+            'branch_id' => $branchId,
+            'branch_manager' => $branchManager,
+            'responsible_officers' => $responsibleOfficers,
+        ]);
+    }
+
     private function resolveCustomerFromReference(string $reference): ?Customer
     {
         $normalized = strtoupper(trim($reference));
@@ -101,8 +237,9 @@ class FinanceController extends Controller
 
         $account = SavingsAccount::query()
             ->with('customer')
-            ->where('account_type', 'investment')
+            ->whereIn('account_type', ['savings', 'investment'])
             ->whereRaw('UPPER(account_number) = ?', [$normalized])
+            ->orderByRaw("CASE WHEN account_type = 'savings' THEN 0 ELSE 1 END")
             ->first();
 
         if ($account?->customer) {
@@ -116,7 +253,8 @@ class FinanceController extends Controller
     {
         $account = SavingsAccount::query()
             ->where('customer_id', (int) $customer->id)
-            ->where('account_type', 'investment')
+            ->whereIn('account_type', ['savings', 'investment'])
+            ->orderByRaw("CASE WHEN account_type = 'savings' THEN 0 ELSE 1 END")
             ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
             ->orderBy('id')
             ->first();
@@ -1335,9 +1473,13 @@ class FinanceController extends Controller
             'manual_installment_amount' => ['nullable', 'numeric', 'min:0.01'],
             'start_date' => ['nullable', 'date'],
             'status' => ['nullable', 'in:pending_approval,active'],
+            'responsible_officer_employee_id' => ['nullable', 'integer', 'exists:employees,id'],
             'vehicle_details' => ['nullable', 'array'],
             'valuation_details' => ['nullable', 'array'],
             'guarantor_details' => ['nullable', 'array'],
+            'family_financial_details' => ['nullable', 'array'],
+            'evaluation_payload_version' => ['nullable', 'integer', 'min:1', 'max:10'],
+            'evaluation_payload' => ['nullable', 'array'],
             'repayment_plan' => ['nullable', 'array'],
             'repayment_plan.installments' => ['nullable', 'array'],
             'repayment_plan.installments.*.installment_no' => ['nullable', 'integer', 'min:1'],
@@ -1368,6 +1510,23 @@ class FinanceController extends Controller
             return response()->json([
                 'message' => 'You can create finance records only for customers in your branch.',
             ], 403);
+        }
+
+        $customerBranchId = (int) ($customer->branch_id ?? 0);
+        $responsibleOfficerId = (int) ($validated['responsible_officer_employee_id'] ?? 0);
+        if ($responsibleOfficerId > 0) {
+            $officer = Employee::query()->find($responsibleOfficerId);
+            if (!$officer) {
+                return response()->json([
+                    'message' => 'Selected responsible officer was not found.',
+                ], 422);
+            }
+
+            if ($customerBranchId > 0 && (int) ($officer->branch_id ?? 0) !== $customerBranchId) {
+                return response()->json([
+                    'message' => 'Responsible officer must belong to the same branch as the customer.',
+                ], 422);
+            }
         }
 
         $downPayment = (float) ($validated['down_payment'] ?? 0);
@@ -1433,8 +1592,9 @@ class FinanceController extends Controller
 
         $effectiveFrequency = $isDraftLoan ? 'monthly' : ($validated['installment_frequency'] ?? 'monthly');
 
-        $result = DB::transaction(function () use ($validated, $user, $customer, $financedAmount, $installmentAmount, $repaymentPlan, $isDraftLoan, $effectiveFrequency) {
+        $result = DB::transaction(function () use ($validated, $user, $customer, $financedAmount, $installmentAmount, $repaymentPlan, $isDraftLoan, $effectiveFrequency, $customerBranchId, $responsibleOfficerId) {
             $initialStatus = (string) ($validated['status'] ?? 'pending_approval');
+            $branchManagerUserId = $this->resolveBranchManagerUserId($customerBranchId);
 
             $finance = Finance::create([
                 'tenant_id' => 1,
@@ -1446,6 +1606,9 @@ class FinanceController extends Controller
                 'vehicle_details' => $validated['vehicle_details'] ?? null,
                 'valuation_details' => $validated['valuation_details'] ?? null,
                 'guarantor_details' => $validated['guarantor_details'] ?? null,
+                'family_financial_details' => $validated['family_financial_details'] ?? null,
+                'evaluation_payload' => $validated['evaluation_payload'] ?? null,
+                'evaluation_payload_version' => $validated['evaluation_payload_version'] ?? null,
                 'repayment_plan' => $repaymentPlan,
                 'amount' => $validated['amount'],
                 'down_payment' => $validated['down_payment'] ?? 0,
@@ -1457,6 +1620,8 @@ class FinanceController extends Controller
                 'installment_amount' => $installmentAmount,
                 'status' => $initialStatus,
                 'start_date' => $validated['start_date'] ?? now()->toDateString(),
+                'branch_manager_user_id' => $branchManagerUserId,
+                'responsible_officer_employee_id' => $responsibleOfficerId > 0 ? $responsibleOfficerId : null,
                 'created_by' => $user?->id,
             ]);
 
@@ -1510,6 +1675,8 @@ class FinanceController extends Controller
         return response()->json([
             'id' => $finance->id,
             'status' => $finance->status,
+            'branch_manager_user_id' => $finance->branch_manager_user_id,
+            'responsible_officer_employee_id' => $finance->responsible_officer_employee_id,
             'installment_amount' => $finance->installment_amount,
             'draft_loan_id' => $draftLoanId,
             'saved_table' => $draftLoanId ? 'draft_loans' : 'finances',
@@ -2049,6 +2216,268 @@ class FinanceController extends Controller
         ], 201);
     }
 
+    public function destroyCollection(Request $request, int $id, int $collectionId): JsonResponse
+    {
+        $finance = $this->resolveFinanceOrFail($request, $id);
+
+        $collection = FinanceCollection::query()
+            ->where('finance_id', $finance->id)
+            ->whereKey($collectionId)
+            ->first();
+
+        if (!$collection) {
+            return response()->json([
+                'message' => 'Collection payment not found for this finance record.',
+            ], 404);
+        }
+
+        DB::transaction(function () use ($finance, $collection): void {
+            $collection->delete();
+
+            /** @var Finance $lockedFinance */
+            $lockedFinance = Finance::query()->whereKey($finance->id)->lockForUpdate()->firstOrFail();
+            $this->recalculateFinanceCollectionsState($lockedFinance);
+        });
+
+        return response()->json([
+            'message' => 'Collection payment deleted and loan values recovered successfully.',
+        ]);
+    }
+
+    private function recalculateFinanceCollectionsState(Finance $finance): void
+    {
+        $isSpeedDraft = self::isDraftLoanProductType((string) ($finance->product_type ?? ''));
+
+        $existingPlan = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
+        $planRows = $this->extractInstallmentPlanRows($existingPlan);
+
+        $this->initializeApprovalTrackingFields($finance);
+
+        if (!empty($planRows)) {
+            $resetPlan = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
+            $resetPlan['next_installment_index'] = 0;
+            $resetPlan['installments'] = $planRows;
+            $resetPlan['total_planned_amount'] = round(array_sum(array_map(static fn ($row) => (float) $row['amount'], $planRows)), 2);
+            $finance->repayment_plan = $resetPlan;
+        }
+
+        if (!in_array((string) $finance->status, ['pending_approval', 'rejected'], true)) {
+            $finance->status = 'active';
+        }
+
+        $finance->save();
+
+        $collections = FinanceCollection::query()
+            ->where('finance_id', $finance->id)
+            ->orderBy('payment_date')
+            ->orderBy('id')
+            ->get();
+
+        if ($collections->isEmpty()) {
+            $this->syncDraftLoanFromFinance($finance);
+            return;
+        }
+
+        $installmentsPerYear = $isSpeedDraft
+            ? 12
+            : match (strtolower((string) $finance->installment_frequency)) {
+                'daily' => 365,
+                'weekly' => 52,
+                'quarterly' => 4,
+                'yearly' => 1,
+                default => 12,
+            };
+        $periodRatePercent = $installmentsPerYear > 0
+            ? ((float) $finance->interest_rate) / $installmentsPerYear
+            : (float) $finance->interest_rate;
+        $periodRateDecimal = $periodRatePercent / 100;
+
+        $planState = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
+        $currentInstallmentIndex = 0;
+        $openingOutstanding = (float) $finance->balance_amount;
+        $runningTotalPaid = 0.0;
+        $runningBalance = (float) $finance->balance_amount;
+        $runningArrears = 0.0;
+        $runningCapital = (float) $finance->financed_amount;
+
+        $speedDraftInterestPaidByPeriod = [];
+
+        foreach ($collections as $entry) {
+            $paymentAmount = round((float) $entry->payment_amount, 2);
+            $paymentDate = Carbon::parse((string) $entry->payment_date);
+            $paidInterestInPeriod = 0.0;
+
+            if ($isSpeedDraft) {
+                $periodKey = $paymentDate->format('Y-m');
+                $paidInterestInPeriod = round((float) ($speedDraftInterestPaidByPeriod[$periodKey] ?? 0), 2);
+            }
+
+            $calculation = $isSpeedDraft
+                ? $this->speedDraftCalculator->calculateSpeedDraftMonthlyPaymentWithHistory(
+                    $runningCapital,
+                    $periodRatePercent,
+                    $paymentAmount,
+                    $paidInterestInPeriod,
+                )
+                : $this->speedDraftCalculator->calculateMonthlyPayment(
+                    $runningCapital,
+                    $periodRatePercent,
+                    $paymentAmount,
+                    $runningArrears,
+                );
+
+            $paidTowardOutstanding = round(min($paymentAmount, $openingOutstanding), 2);
+            $txnOverPayment = round(max($paymentAmount - $paidTowardOutstanding, 0), 2);
+            $newTotalPaid = round($runningTotalPaid + $paidTowardOutstanding, 2);
+            $newBalance = $isSpeedDraft
+                ? round((float) $calculation['new_capital'], 2)
+                : round(max($openingOutstanding - $paidTowardOutstanding, 0), 2);
+            $nextDueDate = $isSpeedDraft
+                ? $this->computeNextDueDate($paymentDate, 'monthly')
+                : $this->computeNextDueDate($paymentDate, (string) $finance->installment_frequency);
+            $nextDueInterest = round(((float) $calculation['new_capital']) * $periodRateDecimal, 2);
+            $dueCapitalAmount = $isSpeedDraft ? 0.0 : $this->computeDueCapitalAmount($finance);
+
+            $currentPlanRow = $planRows[$currentInstallmentIndex] ?? null;
+            $currentDueAmount = $currentPlanRow
+                ? round((float) ($currentPlanRow['amount'] ?? $finance->installment_amount), 2)
+                : round((float) $finance->due_amount > 0 ? (float) $finance->due_amount : (float) $finance->installment_amount, 2);
+
+            $graceDays = max(0, (int) ($planState['grace_period_days'] ?? 0));
+            $currentDueDate = $currentPlanRow && !empty($currentPlanRow['payment_date'])
+                ? Carbon::parse((string) $currentPlanRow['payment_date'])
+                : ($finance->due_date ? Carbon::parse((string) $finance->due_date) : $paymentDate);
+            $graceEndDate = (clone $currentDueDate)->addDays($graceDays);
+            $isPastGrace = $paymentDate->gt($graceEndDate);
+            $uncoveredDue = round(max($currentDueAmount - $paymentAmount, 0), 2);
+            $scheduleArrears = ($isSpeedDraft || !$isPastGrace) ? 0.0 : $uncoveredDue;
+            $finalArrears = $isSpeedDraft
+                ? round((float) $calculation['new_arrears'], 2)
+                : round(max((float) $calculation['new_arrears'], $scheduleArrears), 2);
+
+            $advanceInstallment = $paymentAmount + 0.0001 >= $currentDueAmount;
+            $updatedInstallmentIndex = $currentInstallmentIndex;
+            $nextPlanRow = null;
+            if (!$isSpeedDraft && !empty($planRows)) {
+                $updatedInstallmentIndex = $currentInstallmentIndex + ($advanceInstallment ? 1 : 0);
+                $nextPlanRow = $planRows[$updatedInstallmentIndex] ?? null;
+                $planState['next_installment_index'] = $updatedInstallmentIndex;
+            }
+
+            $entry->forceFill([
+                'refund_amount' => $txnOverPayment,
+                'interest_charged' => round((float) $calculation['interest'], 2),
+                'interest_paid' => round((float) $calculation['interest_paid'], 2),
+                'principal_paid' => round((float) $calculation['principal_paid'], 2),
+                'arrears' => $finalArrears,
+                'remaining_capital' => round((float) $calculation['new_capital'], 2),
+                'meta' => [
+                    'model' => $isSpeedDraft ? 'speed_draft_interest_first' : 'standard_interest_first',
+                    'opening_capital' => round($runningCapital, 2),
+                    'opening_arrears' => round($runningArrears, 2),
+                    'interest_rate_period' => round($periodRatePercent, 4),
+                    'interest_paid_in_period_before' => round($paidInterestInPeriod, 2),
+                    'due_amount' => $currentDueAmount,
+                ],
+            ]);
+            $entry->save();
+
+            if ($calculation['new_capital'] <= 0.0 && $calculation['new_arrears'] <= 0.0) {
+                $finance->forceFill([
+                    'status' => 'settled',
+                    'refund_amount' => $newBalance,
+                    'total_paid_amount' => $newTotalPaid,
+                    'balance_amount' => 0.00,
+                    'installment_amount' => $isSpeedDraft ? 0.00 : $finance->installment_amount,
+                    'due_amount' => 0.00,
+                    'due_capital_amount' => 0.00,
+                    'due_interest_amount' => 0.00,
+                    'arrears' => 0.00,
+                    'due_date' => null,
+                    'next_collection_date' => null,
+                    'repayment_plan' => !empty($planState) ? $planState : null,
+                ]);
+            } else {
+                $finance->forceFill([
+                    'status' => in_array((string) $finance->status, ['pending_approval', 'rejected'], true)
+                        ? $finance->status
+                        : 'active',
+                    'refund_amount' => $newBalance,
+                    'total_paid_amount' => $newTotalPaid,
+                    'balance_amount' => $newBalance,
+                    'installment_amount' => $isSpeedDraft ? $nextDueInterest : $finance->installment_amount,
+                    'due_amount' => $isSpeedDraft
+                        ? $nextDueInterest
+                        : ($nextPlanRow
+                            ? round((float) ($nextPlanRow['amount'] ?? $finance->installment_amount), 2)
+                            : ($currentPlanRow
+                                ? round((float) ($currentPlanRow['amount'] ?? $finance->installment_amount), 2)
+                                : round((float) $finance->installment_amount, 2))),
+                    'due_capital_amount' => $dueCapitalAmount,
+                    'due_interest_amount' => $nextDueInterest,
+                    'arrears' => $finalArrears,
+                    'due_date' => $isSpeedDraft
+                        ? $nextDueDate->toDateString()
+                        : ($nextPlanRow
+                            ? Carbon::parse((string) $nextPlanRow['payment_date'])->toDateString()
+                            : ($currentPlanRow
+                                ? Carbon::parse((string) $currentPlanRow['payment_date'])->toDateString()
+                                : $nextDueDate->toDateString())),
+                    'next_collection_date' => $isSpeedDraft
+                        ? $nextDueDate->toDateString()
+                        : ($nextPlanRow
+                            ? Carbon::parse((string) $nextPlanRow['payment_date'])->toDateString()
+                            : ($currentPlanRow
+                                ? Carbon::parse((string) $currentPlanRow['payment_date'])->toDateString()
+                                : $nextDueDate->toDateString())),
+                    'repayment_plan' => !empty($planState) ? $planState : null,
+                ]);
+            }
+
+            $finance->save();
+
+            if ($isSpeedDraft) {
+                $periodKey = $paymentDate->format('Y-m');
+                $speedDraftInterestPaidByPeriod[$periodKey] = round(
+                    ((float) ($speedDraftInterestPaidByPeriod[$periodKey] ?? 0)) + (float) $calculation['interest_paid'],
+                    2,
+                );
+            }
+
+            $runningTotalPaid = $newTotalPaid;
+            $runningBalance = $newBalance;
+            $openingOutstanding = $runningBalance;
+            $runningCapital = round((float) $calculation['new_capital'], 2);
+            $runningArrears = $finalArrears;
+            $currentInstallmentIndex = $updatedInstallmentIndex;
+        }
+
+        $this->syncDraftLoanFromFinance($finance);
+    }
+
+    private function syncDraftLoanFromFinance(Finance $finance): void
+    {
+        if (!self::isDraftLoanProductType((string) ($finance->product_type ?? ''))) {
+            return;
+        }
+
+        $draftLoan = DraftLoan::where('finance_id', $finance->id)->first();
+        if (!$draftLoan) {
+            return;
+        }
+
+        $draftLoan->forceFill([
+            'status' => $finance->status,
+            'interest_amount' => round((float) ($finance->due_interest_amount ?? 0), 2),
+            'due_amount' => round((float) ($finance->due_amount ?? 0), 2),
+            'total_paid_amount' => round((float) ($finance->total_paid_amount ?? 0), 2),
+            'balance_amount' => round((float) ($finance->balance_amount ?? 0), 2),
+            'due_date' => $finance->due_date,
+            'next_collection_date' => $finance->next_collection_date,
+        ]);
+        $draftLoan->save();
+    }
+
     public function documents(Request $request, int $id): JsonResponse
     {
         $finance = $this->resolveFinanceOrFail($request, $id);
@@ -2062,7 +2491,7 @@ class FinanceController extends Controller
     {
         $request->validate([
             'document_type' => ['required', 'string', 'max:100'],
-            'file' => ['required', 'file', 'mimes:pdf,doc,docx,jpg,jpeg,png', 'max:10240'],
+            'file' => ['required', 'file', 'mimes:pdf,doc,docx,jpg,jpeg,png,webp', 'max:10240'],
         ]);
 
         $finance = $this->resolveFinanceOrFail($request, $id);
