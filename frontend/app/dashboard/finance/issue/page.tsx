@@ -406,7 +406,11 @@ export default function IssueFinancePage() {
     ? 'Loan'
     : regFinanceType === 'equipment'
       ? 'Equipment'
-      : 'Vehicle';
+      : regFinanceType === 'land'
+        ? 'Land'
+        : regFinanceType === 'gold'
+          ? 'Gold'
+          : 'Vehicle';
 
   const wizardSteps = [
     { id: 1, label: 'Basic', hint: 'Product setup and finance terms' },
@@ -455,7 +459,80 @@ export default function IssueFinancePage() {
     [activeWizardIndex, visibleWizardSteps.length],
   );
   const isVehicleFinanceSelected = regFinanceType === 'vehicle';
+  const isLandFinanceSelected = regFinanceType === 'land';
+  const isGoldFinanceSelected = regFinanceType === 'gold';
+  const isEquipmentFinanceSelected = regFinanceType === 'equipment';
   const isOtherFinanceSelected = regFinanceType === 'other';
+  const isCollateralFinanceSelected = isVehicleFinanceSelected || isLandFinanceSelected || isGoldFinanceSelected;
+  const assetTypeLabel = isVehicleFinanceSelected
+    ? 'Vehicle'
+    : isLandFinanceSelected
+      ? 'Land'
+      : isGoldFinanceSelected
+        ? 'Gold'
+        : isEquipmentFinanceSelected
+          ? 'Equipment'
+          : 'Asset';
+  const assetPrimaryFieldLabel = isVehicleFinanceSelected
+    ? 'Vehicle No'
+    : isLandFinanceSelected
+      ? 'Land No'
+      : 'Gold Item Ref';
+  const assetSecondaryFieldLabel = isVehicleFinanceSelected
+    ? 'Chassis No'
+    : isLandFinanceSelected
+      ? 'Deed No'
+      : 'Certificate No';
+  const assetThirdFieldLabel = isVehicleFinanceSelected
+    ? 'Engine No'
+    : isLandFinanceSelected
+      ? 'Survey / Plot No'
+      : 'Purity (Karat)';
+  const assetPrimaryPlaceholder = isVehicleFinanceSelected
+    ? 'e.g. CAB-1234'
+    : isLandFinanceSelected
+      ? 'e.g. LAND-001'
+      : 'e.g. GOLD-ITEM-001';
+  const assetDescriptorLabel = isLandFinanceSelected
+    ? 'Land Location / Description'
+    : isGoldFinanceSelected
+      ? 'Item Type / Description'
+      : 'Make / Model';
+  const assetDescriptorPlaceholder = isLandFinanceSelected
+    ? 'e.g. Kurunegala - 12 perches residential land'
+    : isGoldFinanceSelected
+      ? 'e.g. Necklace / 22K'
+      : 'e.g. Toyota Axio';
+  const assetYearOrMeasureLabel = isLandFinanceSelected
+    ? 'Land Extent (Perch / Acre)'
+    : isGoldFinanceSelected
+      ? 'Weight (g)'
+      : 'Year';
+  const assetYearOrMeasurePlaceholder = isLandFinanceSelected
+    ? 'e.g. 20 Perch'
+    : isGoldFinanceSelected
+      ? 'e.g. 35.5'
+      : 'e.g. 2020';
+  const collateralDocumentTitle = isLandFinanceSelected
+    ? 'Land Deed / Registration'
+    : isGoldFinanceSelected
+      ? 'Gold Certificate / Purchase Receipt'
+      : 'Vehicle CR';
+  const collateralDocumentHint = isLandFinanceSelected
+    ? 'Upload land deed, registration copy, or ownership proof as a separate file.'
+    : isGoldFinanceSelected
+      ? 'Upload gold certificate, receipt, or valuation proof as a separate file.'
+      : 'Upload vehicle registration certificate as a separate file.';
+  const collateralImagesTitle = isLandFinanceSelected
+    ? 'Land Images'
+    : isGoldFinanceSelected
+      ? 'Gold Images'
+      : 'Vehicle Images';
+  const collateralImagesHint = isLandFinanceSelected
+    ? 'Upload multiple land photos (front boundary, access road, and surrounding views).'
+    : isGoldFinanceSelected
+      ? 'Upload multiple gold item photos from different angles and close-up details.'
+      : 'Upload multiple vehicle photos (front, back, sides, interior, documents).';
   const effectiveAmountInput = isOtherFinanceSelected ? regLoanAmount : regAmount;
   const financedPreview = useMemo(() => {
     const asset = Number(effectiveAmountInput);
@@ -1551,7 +1628,7 @@ export default function IssueFinancePage() {
     }
 
     if (isDraftLoanSelected && Number.isFinite(draftValue) && draftValue > amount) {
-      setErrorMessage(isOtherFinanceSelected ? 'Draft Value cannot be greater than Loan Amount.' : 'Draft Value cannot be greater than Vehicle Value.');
+      setErrorMessage(isOtherFinanceSelected ? 'Draft Value cannot be greater than Loan Amount.' : `Draft Value cannot be greater than ${assetTypeLabel} Value.`);
       setRegisterStep(3);
       return;
     }
@@ -1574,6 +1651,16 @@ export default function IssueFinancePage() {
     const effectiveDownPayment = isDraftLoanSelected && Number.isFinite(draftValue) && draftValue > 0
       ? Math.max(amount - draftValue, 0)
       : (Number.isFinite(down) ? down : 0);
+    const collateralDocumentType = isLandFinanceSelected
+      ? 'finance_land_deed'
+      : isGoldFinanceSelected
+        ? 'finance_gold_certificate'
+        : 'finance_vehicle_cr';
+    const collateralImageType = isLandFinanceSelected
+      ? 'finance_land_image'
+      : isGoldFinanceSelected
+        ? 'finance_gold_image'
+        : 'finance_vehicle_image';
 
     try {
       setSavingRegister(true);
@@ -1607,14 +1694,19 @@ export default function IssueFinancePage() {
               engine_no: regEngineNo || null,
               make_model: regMakeModel || null,
               year: regVehicleYear || null,
+              asset_category: regFinanceType,
             }
             : isOtherFinanceSelected
               ? {
                 loan_details: regLoanDetails || null,
               }
               : {
+                vehicle_no: regVehicleNo || null,
+                chassis_no: regChassisNo || null,
+                engine_no: regEngineNo || null,
                 make_model: regMakeModel || null,
                 year: regVehicleYear || null,
+                asset_category: regFinanceType,
               },
           valuation_details: isOtherFinanceSelected
             ? null
@@ -1712,7 +1804,7 @@ export default function IssueFinancePage() {
 
       if (financeId > 0 && regVehicleCrFile) {
         const formData = new FormData();
-        formData.append('document_type', 'finance_vehicle_cr');
+        formData.append('document_type', collateralDocumentType);
         formData.append('file', regVehicleCrFile);
 
         await axios.post(
@@ -1731,7 +1823,7 @@ export default function IssueFinancePage() {
       if (financeId > 0 && regVehicleImages.length > 0) {
         for (const file of regVehicleImages) {
           const formData = new FormData();
-          formData.append('document_type', 'finance_vehicle_image');
+          formData.append('document_type', collateralImageType);
           formData.append('file', file);
 
           await axios.post(
@@ -1788,7 +1880,7 @@ export default function IssueFinancePage() {
         }
       }
 
-      router.push('/dashboard/finance');
+      router.push('/dashboard/action-center');
     } catch (error: unknown) {
       const fallback = 'Failed to register finance agreement.';
       if (axios.isAxiosError(error)) {
@@ -2036,6 +2128,8 @@ export default function IssueFinancePage() {
                     <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Finance Type</label>
                     <select value={regFinanceType} onChange={(e) => setRegFinanceType(e.target.value)} className={inputClass}>
                       <option value="vehicle">Vehicle</option>
+                      <option value="land">Land</option>
+                      <option value="gold">Gold</option>
                       <option value="equipment">Equipment</option>
                       <option value="other">Other</option>
                     </select>
@@ -2425,35 +2519,39 @@ export default function IssueFinancePage() {
               <div className="space-y-4">
                 <SectionHeader
                   icon={Car}
-                  title={isVehicleFinanceSelected ? 'Vehicle & valuation' : isOtherFinanceSelected ? 'Loan details' : 'Equipment & valuation'}
+                  title={isOtherFinanceSelected ? 'Loan details' : `${assetTypeLabel} details & valuation`}
                   description={
-                    isVehicleFinanceSelected
-                      ? 'Capture vehicle identity, asset value, and professional valuation figures.'
-                      : isOtherFinanceSelected
-                        ? 'Capture loan amount and loan details for Other finance type.'
-                        : 'Capture equipment value and supporting valuation figures.'
+                    isOtherFinanceSelected
+                      ? 'Capture loan amount and loan details for Other finance type.'
+                      : isLandFinanceSelected
+                        ? 'Capture land ownership identifiers, land value, and valuation details.'
+                        : isGoldFinanceSelected
+                          ? 'Capture gold item identifiers, value, and valuation details.'
+                          : isVehicleFinanceSelected
+                            ? 'Capture vehicle identity, asset value, and professional valuation figures.'
+                            : 'Capture equipment value and supporting valuation figures.'
                   }
                 />
-                {isVehicleFinanceSelected && (
+                {isCollateralFinanceSelected && (
                   <div className="space-y-4">
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div>
-                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Vehicle No</label>
-                        <input value={regVehicleNo} onChange={(e) => setRegVehicleNo(e.target.value)} className={inputClass} placeholder="e.g. CAB-1234" />
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">{assetPrimaryFieldLabel}</label>
+                        <input value={regVehicleNo} onChange={(e) => setRegVehicleNo(e.target.value)} className={inputClass} placeholder={assetPrimaryPlaceholder} />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Chassis No</label>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">{assetSecondaryFieldLabel}</label>
                         <input value={regChassisNo} onChange={(e) => setRegChassisNo(e.target.value)} className={inputClass} />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Engine No</label>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">{assetThirdFieldLabel}</label>
                         <input value={regEngineNo} onChange={(e) => setRegEngineNo(e.target.value)} className={inputClass} />
                       </div>
                     </div>
 
                     <div className="rounded-2xl border-2 border-dashed border-cyan-200 bg-white p-4">
-                      <p className="text-sm font-semibold text-slate-800">Vehicle CR</p>
-                      <p className="mt-1 text-xs text-slate-500">Upload vehicle registration certificate as a separate file.</p>
+                      <p className="text-sm font-semibold text-slate-800">{collateralDocumentTitle}</p>
+                      <p className="mt-1 text-xs text-slate-500">{collateralDocumentHint}</p>
                       <input
                         type="file"
                         accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx"
@@ -2481,8 +2579,8 @@ export default function IssueFinancePage() {
                     </div>
 
                     <div className="rounded-2xl border-2 border-dashed border-cyan-200 bg-white p-4">
-                      <p className="text-sm font-semibold text-slate-800">Vehicle Images</p>
-                      <p className="mt-1 text-xs text-slate-500">Upload multiple vehicle photos (front, back, sides, interior, documents).</p>
+                      <p className="text-sm font-semibold text-slate-800">{collateralImagesTitle}</p>
+                      <p className="mt-1 text-xs text-slate-500">{collateralImagesHint}</p>
                       <input
                         type="file"
                         accept="image/*"
@@ -2546,12 +2644,12 @@ export default function IssueFinancePage() {
                   <>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div>
-                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Make / Model</label>
-                        <input value={regMakeModel} onChange={(e) => setRegMakeModel(e.target.value)} className={inputClass} placeholder="e.g. Toyota Axio" />
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">{assetDescriptorLabel}</label>
+                        <input value={regMakeModel} onChange={(e) => setRegMakeModel(e.target.value)} className={inputClass} placeholder={assetDescriptorPlaceholder} />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Year</label>
-                        <input value={regVehicleYear} onChange={(e) => setRegVehicleYear(e.target.value)} className={inputClass} placeholder="e.g. 2020" />
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">{assetYearOrMeasureLabel}</label>
+                        <input value={regVehicleYear} onChange={(e) => setRegVehicleYear(e.target.value)} className={inputClass} placeholder={assetYearOrMeasurePlaceholder} />
                       </div>
                       <div>
                         <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Asset Reference</label>
@@ -2561,7 +2659,7 @@ export default function IssueFinancePage() {
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div>
-                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">{isVehicleFinanceSelected ? 'Vehicle Value' : 'Equipment Value'}</label>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">{`${assetTypeLabel} Value`}</label>
                         <input value={regAmount} onChange={(e) => setRegAmount(e.target.value)} className={inputClass} placeholder="Total value" />
                       </div>
                       {isDraftLoanSelected && (
@@ -2587,7 +2685,7 @@ export default function IssueFinancePage() {
                           readOnly={isDraftLoanSelected && Number.isFinite(Number(regDraftValue)) && Number(regDraftValue) > 0}
                         />
                         {isDraftLoanSelected && (
-                          <p className="mt-1 text-[11px] text-slate-500">For Speed Draft, Down Payment is auto-derived as Vehicle Value - Draft Value.</p>
+                          <p className="mt-1 text-[11px] text-slate-500">For Speed Draft, Down Payment is auto-derived as {assetTypeLabel} Value - Draft Value.</p>
                         )}
                       </div>
                       <div>

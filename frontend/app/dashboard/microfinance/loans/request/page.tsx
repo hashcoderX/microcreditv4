@@ -4386,7 +4386,7 @@ export default function RequestLoanPage() {
                     <div className="rounded-xl border border-blue-200 bg-white/95 p-4">
                       <div>
                         <h3 className="text-sm font-bold uppercase tracking-wide text-blue-800">Product Loan Details</h3>
-                        <p className="mt-1 text-xs text-slate-600">Loan terms are auto-filled from selected product. Only loan amount and loan request date are editable.</p>
+                        <p className="mt-1 text-xs text-slate-600">Loan terms are auto-filled from selected product. You can adjust loan amount, terms count, and loan request date.</p>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
                         <div>
@@ -4449,12 +4449,12 @@ export default function RequestLoanPage() {
                         <div>
                           <label className="fieldLabel">Terms Count ({termUnitLabel})</label>
                           <input
-                            className="input bg-slate-100"
+                            className="input"
                             type="number"
                             min="1"
                             step="1"
                             value={form.terms_count || ''}
-                            readOnly
+                            onChange={(e) => setForm((p) => ({ ...p, terms_count: e.target.value }))}
                           />
                         </div>
                         <div>

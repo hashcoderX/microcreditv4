@@ -12,6 +12,7 @@ use App\Models\DraftLoan;
 use App\Models\Finance;
 use App\Models\FinanceCollection;
 use App\Models\FinanceDocument;
+use App\Models\UserNotification;
 use App\Models\LoanRequest;
 use App\Models\LoanRequestCollection;
 use App\Models\MicrofinanceLoanCollection;
@@ -1672,6 +1673,8 @@ class FinanceController extends Controller
         $finance = $result['finance'];
         $draftLoanId = $result['draft_loan_id'];
 
+        $this->notifyFinanceCreated($finance, $customer, $request->user());
+
         return response()->json([
             'id' => $finance->id,
             'status' => $finance->status,
@@ -1681,6 +1684,88 @@ class FinanceController extends Controller
             'draft_loan_id' => $draftLoanId,
             'saved_table' => $draftLoanId ? 'draft_loans' : 'finances',
         ], 201);
+    }
+
+    private function notifyFinanceCreated(Finance $finance, ?Customer $customer, ?User $actor): void
+    {
+        try {
+            $recipientIds = [];
+
+            $branchManagerUserId = (int) ($finance->branch_manager_user_id ?? 0);
+            if ($branchManagerUserId > 0) {
+                $recipientIds[] = $branchManagerUserId;
+            }
+
+            $officerEmployeeId = (int) ($finance->responsible_officer_employee_id ?? 0);
+            if ($officerEmployeeId > 0) {
+                $officerUserId = (int) User::query()
+                    ->where('employee_id', $officerEmployeeId)
+                    ->value('id');
+                if ($officerUserId > 0) {
+                    $recipientIds[] = $officerUserId;
+                }
+            }
+
+            $actorUserId = (int) ($actor?->id ?? 0);
+            if ($actorUserId > 0) {
+                $recipientIds[] = $actorUserId;
+            }
+
+            $recipientIds = array_values(array_unique(array_filter($recipientIds, static fn ($id) => (int) $id > 0)));
+            if (empty($recipientIds)) {
+                return;
+            }
+
+            $customerName = trim(
+                ((string) ($customer?->first_name ?? '')) . ' ' .
+                ((string) ($customer?->last_name ?? ''))
+            );
+            if ($customerName === '') {
+                $customerName = 'Customer';
+            }
+
+            $customerNo = $this->resolveCanonicalCustomerNo($customer);
+            $financeRef = 'FIN-' . str_pad((string) $finance->id, 6, '0', STR_PAD_LEFT);
+            $financeAmount = number_format((float) ($finance->amount ?? 0), 2, '.', ',');
+
+            foreach ($recipientIds as $recipientId) {
+                UserNotification::query()->create([
+                    'user_id' => $recipientId,
+                    'title' => 'New Finance Registration',
+                    'message' => sprintf('%s submitted %s for %s LKR. Please review.', $customerName, $financeRef, $financeAmount),
+                    'type' => 'finance',
+                    'is_read' => false,
+                    'is_important' => true,
+                    'action_url' => '/dashboard/action-center',
+                    'meta' => [
+                        'finance_id' => (int) $finance->id,
+                        'finance_ref' => $financeRef,
+                        'customer_no' => $customerNo,
+                        'status' => (string) ($finance->status ?? 'pending_approval'),
+                    ],
+                ]);
+
+                UserNotification::query()->create([
+                    'user_id' => $recipientId,
+                    'title' => 'Finance Workflow Started',
+                    'message' => sprintf('%s is now in Step 1: Basic details and terms.', $financeRef),
+                    'type' => 'step_1',
+                    'is_read' => false,
+                    'is_important' => true,
+                    'action_url' => '/dashboard/action-center',
+                    'meta' => [
+                        'finance_id' => (int) $finance->id,
+                        'finance_ref' => $financeRef,
+                        'customer_no' => $customerNo,
+                        'workflow_step' => 1,
+                        'workflow_step_title' => 'Basic details and terms',
+                        'status' => (string) ($finance->status ?? 'pending_approval'),
+                    ],
+                ]);
+            }
+        } catch (\Throwable) {
+            // Do not fail finance registration if notification creation fails.
+        }
     }
 
     private static function isDraftLoanProductType(string $productType): bool
