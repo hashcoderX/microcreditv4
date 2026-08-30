@@ -33,12 +33,14 @@ function amount(v: unknown): string {
 }
 
 export default function SavingsDepositsPage() {
+  const OVERVIEW_PAGE_SIZE = 10;
   const router = useRouter();
   const [token, setToken] = useState('');
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [widgetNotice, setWidgetNotice] = useState('');
   const [loading, setLoading] = useState(true);
   const [accounts, setAccounts] = useState<SavingsAccountRow[]>([]);
+  const [overviewPage, setOverviewPage] = useState(1);
   const widgetPrefix = 'savings_deposits_widget_';
 
   const fetchWidgetPreferences = async (authToken: string) => {
@@ -170,11 +172,23 @@ export default function SavingsDepositsPage() {
     { key: 'status', label: 'Status' },
   ] as const;
   const visibleTableColumns = tableColumns.filter((col) => !hiddenWidgetKeys.has(`${widgetPrefix}col_${col.key}`));
+  const overviewPageCount = Math.max(1, Math.ceil(accounts.length / OVERVIEW_PAGE_SIZE));
+  const safeOverviewPage = Math.min(Math.max(overviewPage, 1), overviewPageCount);
+  const pagedAccounts = useMemo(
+    () => accounts.slice((safeOverviewPage - 1) * OVERVIEW_PAGE_SIZE, safeOverviewPage * OVERVIEW_PAGE_SIZE),
+    [accounts, safeOverviewPage],
+  );
+  const overviewRangeStart = accounts.length === 0 ? 0 : (safeOverviewPage - 1) * OVERVIEW_PAGE_SIZE + 1;
+  const overviewRangeEnd = Math.min(safeOverviewPage * OVERVIEW_PAGE_SIZE, accounts.length);
   const isAnyWidgetVisible =
     showHeaderWidget ||
     visibleStatCards.length > 0 ||
     visibleActionCards.length > 0 ||
     showOverviewWidget;
+
+  useEffect(() => {
+    setOverviewPage((prev) => Math.min(Math.max(prev, 1), Math.max(1, Math.ceil(accounts.length / OVERVIEW_PAGE_SIZE))));
+  }, [accounts.length]);
 
 
   if (!token) {
@@ -323,60 +337,91 @@ export default function SavingsDepositsPage() {
           ) : visibleTableColumns.length === 0 ? (
             <div className="py-8 text-sm text-amber-800">All table columns are hidden. Restore hidden widgets from dashboard.</div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-orange-100">
-                    {visibleTableColumns.map((column) => (
-                      <th key={column.key} className="py-2 pr-3 relative">
-                        {column.label}
-                        <WidgetCloseGate>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              void hideWidget(`${widgetPrefix}col_${column.key}`);
-                            }}
-                            className="absolute right-0 top-0 inline-flex h-4 w-4 items-center justify-center rounded-full border border-orange-200 bg-white text-[10px] font-bold text-orange-700 hover:bg-rose-50 hover:text-rose-700"
-                            aria-label={`Hide ${column.label} column`}
-                          >
-                            ×
-                          </button>
-                        </WidgetCloseGate>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {accounts.slice(0, 20).map((row) => (
-                    <tr key={row.id} className="border-b border-orange-50 text-slate-700">
-                      {visibleTableColumns.map((column) => {
-                        if (column.key === 'account_number') {
-                          return <td key={column.key} className="py-2 pr-3 font-semibold">{row.account_number || '-'}</td>;
-                        }
-                        if (column.key === 'customer') {
-                          return <td key={column.key} className="py-2 pr-3">{row.customer?.customer_code || '-'} - {row.customer?.first_name || ''} {row.customer?.last_name || ''}</td>;
-                        }
-                        if (column.key === 'type') {
-                          return <td key={column.key} className="py-2 pr-3 capitalize">{String(row.account_type || '-').replace('_', ' ')}</td>;
-                        }
-                        if (column.key === 'opening_deposit') {
-                          return <td key={column.key} className="py-2 pr-3">{amount(row.opening_deposit)}</td>;
-                        }
-                        if (column.key === 'balance') {
-                          return <td key={column.key} className="py-2 pr-3">{amount(row.balance)}</td>;
-                        }
-                        if (column.key === 'rate') {
-                          return <td key={column.key} className="py-2 pr-3">{amount(row.interest_rate)}</td>;
-                        }
-                        return <td key={column.key} className="py-2 pr-3 capitalize">{row.status || '-'}</td>;
-                      })}
+            <>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-orange-100">
+                      {visibleTableColumns.map((column) => (
+                        <th key={column.key} className="py-2 pr-3 relative">
+                          {column.label}
+                          <WidgetCloseGate>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void hideWidget(`${widgetPrefix}col_${column.key}`);
+                              }}
+                              className="absolute right-0 top-0 inline-flex h-4 w-4 items-center justify-center rounded-full border border-orange-200 bg-white text-[10px] font-bold text-orange-700 hover:bg-rose-50 hover:text-rose-700"
+                              aria-label={`Hide ${column.label} column`}
+                            >
+                              ×
+                            </button>
+                          </WidgetCloseGate>
+                        </th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {pagedAccounts.map((row) => (
+                      <tr key={row.id} className="border-b border-orange-50 text-slate-700">
+                        {visibleTableColumns.map((column) => {
+                          if (column.key === 'account_number') {
+                            return <td key={column.key} className="py-2 pr-3 font-semibold">{row.account_number || '-'}</td>;
+                          }
+                          if (column.key === 'customer') {
+                            return <td key={column.key} className="py-2 pr-3">{row.customer?.customer_code || '-'} - {row.customer?.first_name || ''} {row.customer?.last_name || ''}</td>;
+                          }
+                          if (column.key === 'type') {
+                            return <td key={column.key} className="py-2 pr-3 capitalize">{String(row.account_type || '-').replace('_', ' ')}</td>;
+                          }
+                          if (column.key === 'opening_deposit') {
+                            return <td key={column.key} className="py-2 pr-3">{amount(row.opening_deposit)}</td>;
+                          }
+                          if (column.key === 'balance') {
+                            return <td key={column.key} className="py-2 pr-3">{amount(row.balance)}</td>;
+                          }
+                          if (column.key === 'rate') {
+                            return <td key={column.key} className="py-2 pr-3">{amount(row.interest_rate)}</td>;
+                          }
+                          return <td key={column.key} className="py-2 pr-3 capitalize">{row.status || '-'}</td>;
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {accounts.length > 0 && (
+                <div className="flex flex-col gap-2 border-t border-orange-100 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs text-slate-600">
+                    Showing {overviewRangeStart} - {overviewRangeEnd} of {accounts.length}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setOverviewPage((prev) => Math.max(prev - 1, 1))}
+                      disabled={safeOverviewPage <= 1}
+                      className="rounded-lg border border-orange-200 bg-white px-3 py-1.5 text-xs font-semibold text-orange-800 disabled:opacity-50"
+                    >
+                      Previous
+                    </button>
+                    <span className="text-xs font-semibold text-slate-600">
+                      Page {safeOverviewPage} / {overviewPageCount}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setOverviewPage((prev) => Math.min(prev + 1, overviewPageCount))}
+                      disabled={safeOverviewPage >= overviewPageCount}
+                      className="rounded-lg border border-orange-200 bg-white px-3 py-1.5 text-xs font-semibold text-orange-800 disabled:opacity-50"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
         ) : null}
