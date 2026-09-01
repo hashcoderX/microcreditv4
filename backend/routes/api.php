@@ -64,6 +64,14 @@ Route::get('/user', function (Request $request) {
         'roles.permissions:id,name,module,description',
     ]);
 
+    if ($user) {
+        $user->ensureExecutiveAdminRole();
+        $user->load([
+            'roles:id,name,description',
+            'roles.permissions:id,name,module,description',
+        ]);
+    }
+
     if (
         $user &&
         $user->roles->isEmpty() &&

@@ -24,6 +24,63 @@ class User extends Authenticatable
             return $email === strtolower($defaultEmail) || $email === strtolower($configuredEmail);
         }
 
+    private function normalizeAccessText(?string $value): string
+    {
+        return strtolower(trim((string) $value));
+    }
+
+    public function hasExecutiveDesignationAccess(): bool
+    {
+        $designationName = $this->normalizeAccessText((string) optional($this->designation)->name);
+
+        if ($designationName === '') {
+            return false;
+        }
+
+        return str_contains($designationName, 'managing director')
+            || str_contains($designationName, 'business owner');
+    }
+
+    public function ensureExecutiveAdminRole(): void
+    {
+        if (!$this->hasExecutiveDesignationAccess()) {
+            return;
+        }
+
+        $roles = $this->relationLoaded('roles')
+            ? $this->roles
+            : $this->roles()->get(['id', 'name']);
+
+        $alreadyPrivileged = $roles->contains(function ($role) {
+            $name = $this->normalizeAccessText((string) ($role->name ?? ''));
+            return $name !== ''
+                && (str_contains($name, 'admin') || str_contains($name, 'super admin') || str_contains($name, 'md'));
+        });
+
+        if ($alreadyPrivileged) {
+            return;
+        }
+
+        $adminRole = Role::query()
+            ->where(function ($query) {
+                $query->whereRaw('LOWER(name) LIKE ?', ['%super admin%'])
+                    ->orWhereRaw('LOWER(name) LIKE ?', ['%admin%']);
+            })
+            ->orderByRaw("CASE WHEN LOWER(name) LIKE '%super admin%' THEN 0 WHEN LOWER(name) LIKE '%admin%' THEN 1 ELSE 2 END")
+            ->first();
+
+        if (!$adminRole) {
+            return;
+        }
+
+        $this->roles()->syncWithoutDetaching([
+            $adminRole->id => [
+                'assigned_by' => $this->id,
+                'assigned_at' => now(),
+            ],
+        ]);
+    }
+
     /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable, HasApiTokens;
 
@@ -114,6 +171,10 @@ class User extends Authenticatable
     public function isSystemAdmin(): bool
     {
         if ($this->isConfiguredSuperAdminEmail()) {
+            return true;
+        }
+
+        if ($this->hasExecutiveDesignationAccess()) {
             return true;
         }
 

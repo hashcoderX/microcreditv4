@@ -70,6 +70,9 @@ class AuthController extends Controller
 
     private function loadAuthUser(User $user): User
     {
+        $user->loadMissing(['designation:id,name', 'roles:id,name']);
+        $user->ensureExecutiveAdminRole();
+
         return $user->load([
             'branch:id,name',
             'designation:id,name',

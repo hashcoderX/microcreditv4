@@ -204,12 +204,16 @@ export default function MicrofinancePaymentsPage() {
 
   const isAdmin =
     normalizeText(String(authUser?.email || '')) === 'superadmin softcodelk com' ||
+    designationName.includes('managing director') ||
+    designationName.includes('business owner') ||
     designationName.includes('admin') ||
-    roleNames.some((name) => name.includes('admin'));
+    roleNames.some((name) => name.includes('admin') || name.includes('managing director') || name.includes('business owner'));
 
   const isManager =
     designationName.includes('manager') ||
-    roleNames.some((name) => name.includes('manager'));
+    designationName.includes('managing director') ||
+    designationName.includes('business owner') ||
+    roleNames.some((name) => name.includes('manager') || name.includes('managing director') || name.includes('business owner'));
 
   const isCollectionOfficer =
     designationName.includes('collection officer') ||

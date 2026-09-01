@@ -1524,7 +1524,7 @@ class LoanRequestController extends Controller
             return true;
         }
 
-        $allowedKeywords = ['loan approver', 'finance manager', 'branch manager', 'admin'];
+        $allowedKeywords = ['loan approver', 'finance manager', 'branch manager', 'managing director', 'admin'];
 
         $designationName = strtolower((string) optional($user->designation)->name);
         foreach ($allowedKeywords as $keyword) {
@@ -1675,7 +1675,7 @@ class LoanRequestController extends Controller
             return true;
         }
 
-        $allowedKeywords = ['finance manager', 'branch manager', 'admin'];
+        $allowedKeywords = ['finance manager', 'branch manager', 'managing director', 'admin'];
 
         $designationName = strtolower((string) optional($user->designation)->name);
         foreach ($allowedKeywords as $keyword) {

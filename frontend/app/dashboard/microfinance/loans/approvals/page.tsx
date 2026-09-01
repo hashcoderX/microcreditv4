@@ -386,10 +386,10 @@ const buildDefaultLoanSchedule = (loan: LoanRequest): LoanSchedule => {
 
 const getResponsibleRoles = (loanAmount: number): string[] => {
   if (loanAmount < 10000) {
-    return ['Assistant Manager', 'Loan Approver', 'Finance Manager', 'Branch Manager', 'Admin'];
+    return ['Assistant Manager', 'Loan Approver', 'Finance Manager', 'Branch Manager', 'Managing Director', 'Admin'];
   }
 
-  return ['Loan Approver', 'Finance Manager', 'Branch Manager', 'Admin'];
+  return ['Loan Approver', 'Finance Manager', 'Branch Manager', 'Managing Director', 'Admin'];
 };
 
 const formatLoanType = (refundOption: LoanRequest['refund_option']) => {
@@ -2143,7 +2143,7 @@ export default function LoanApprovalsPage() {
         .replace(/\s+/g, ' ')
         .trim();
 
-    const allowedRoleKeywords = ['loan approver', 'finance manager', 'branch manager', 'admin'];
+    const allowedRoleKeywords = ['loan approver', 'finance manager', 'branch manager', 'managing director', 'business owner', 'admin'];
 
     const email = normalize(String(authUser?.email || ''));
     if (email === 'superadmin softcodelk com') {
@@ -2170,7 +2170,7 @@ export default function LoanApprovalsPage() {
         .replace(/\s+/g, ' ')
         .trim();
 
-    const allowedRoleKeywords = ['finance manager', 'branch manager', 'admin'];
+    const allowedRoleKeywords = ['finance manager', 'branch manager', 'managing director', 'business owner', 'admin'];
 
     const email = normalize(String(authUser?.email || ''));
     if (email === 'superadmin softcodelk com') {
@@ -2208,6 +2208,28 @@ export default function LoanApprovalsPage() {
       setAuthUser(null);
     }
   }, [router]);
+
+  useEffect(() => {
+    if (!token) return;
+
+    const syncAuthUser = async () => {
+      try {
+        const response = await axios.get(`${API_BASE}/user`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+        });
+
+        setAuthUser(response.data || null);
+        localStorage.setItem('auth_user', JSON.stringify(response.data || null));
+      } catch {
+        // Keep cached auth user when refresh fails.
+      }
+    };
+
+    void syncAuthUser();
+  }, [token]);
 
   const loadRequests = async (authHeaders: { Authorization: string; Accept: string }) => {
     const response = await axios.get(`${API_BASE}/microfinance/loan-requests`, {
@@ -2337,7 +2359,7 @@ export default function LoanApprovalsPage() {
   const handleAdvanceWorkflowStep = async (loan: LoanRequest): Promise<boolean> => {
     if (!token) return false;
     if (!canApproveOrReject) {
-      openModal('Only Loan Approver, Finance Manager, Branch Manager, and Admin can move workflow steps.', 'Access Denied');
+      openModal('Only Loan Approver, Finance Manager, Branch Manager, Managing Director, and Admin can move workflow steps.', 'Access Denied');
       return false;
     }
 
@@ -2389,7 +2411,7 @@ export default function LoanApprovalsPage() {
   const handleApprove = async (loan: LoanRequest) => {
     if (!token) return;
     if (!canApproveOrReject) {
-      openModal('Only Loan Approver, Finance Manager, Branch Manager, and Admin can accept loans.', 'Access Denied');
+      openModal('Only Loan Approver, Finance Manager, Branch Manager, Managing Director, and Admin can accept loans.', 'Access Denied');
       return;
     }
 
@@ -2427,7 +2449,7 @@ export default function LoanApprovalsPage() {
   const handleReject = async (loanId: number) => {
     if (!token) return;
     if (!canApproveOrReject) {
-      openModal('Only Loan Approver, Finance Manager, Branch Manager, and Admin can reject loans.', 'Access Denied');
+      openModal('Only Loan Approver, Finance Manager, Branch Manager, Managing Director, and Admin can reject loans.', 'Access Denied');
       return;
     }
 
@@ -2769,7 +2791,7 @@ export default function LoanApprovalsPage() {
                         type="button"
                         onClick={() => {
                           if (!canEditLoanDetails) {
-                            openModal('Only Finance Manager, Branch Manager, and Admin can edit loan details.', 'Permission');
+                            openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can edit loan details.', 'Permission');
                             return;
                           }
                           openEditLoanModal(loan);
@@ -2921,7 +2943,7 @@ export default function LoanApprovalsPage() {
                         e.preventDefault();
                         e.stopPropagation();
                         if (!canEditLoanDetails) {
-                          openModal('Only Finance Manager, Branch Manager, and Admin can edit loan details.', 'Permission');
+                          openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can edit loan details.', 'Permission');
                           return;
                         }
                         openEditLoanModal(loan);
@@ -4285,7 +4307,7 @@ export default function LoanApprovalsPage() {
                   type="button"
                   onClick={() => {
                     if (!canEditLoanDetails) {
-                      openModal('Only Finance Manager, Branch Manager, and Admin can edit loan details.', 'Permission');
+                      openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can edit loan details.', 'Permission');
                       return;
                     }
                     openEditLoanModal(detailsViewer.loan!);

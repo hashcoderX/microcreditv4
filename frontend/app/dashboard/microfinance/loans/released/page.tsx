@@ -552,7 +552,7 @@ export default function ReleasedLoansPage() {
 
   const openEditModal = (loan: LoanRequest) => {
     if (!canManageSensitiveLoanActions) {
-      openModal('Only Finance Manager, Branch Manager, and Admin can edit loans.', 'Access Denied');
+      openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can edit loans.', 'Access Denied');
       return;
     }
 
@@ -610,7 +610,7 @@ export default function ReleasedLoansPage() {
   const saveLoanEdit = async () => {
     if (!editModal.loanId) return;
     if (!canManageSensitiveLoanActions) {
-      openModal('Only Finance Manager, Branch Manager, and Admin can edit loans.', 'Access Denied');
+      openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can edit loans.', 'Access Denied');
       return;
     }
 
@@ -890,7 +890,7 @@ export default function ReleasedLoansPage() {
   const handleDownloadAgreement = async (loanId: number, customerNo: string) => {
     if (!token) return;
     if (!canManageSensitiveLoanActions) {
-      openModal('Only Finance Manager, Branch Manager, and Admin can download agreements.', 'Access Denied');
+      openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can download agreements.', 'Access Denied');
       return;
     }
 
@@ -947,7 +947,7 @@ export default function ReleasedLoansPage() {
   const handleDownloadReminderLetter = async (loanId: number, customerNo: string) => {
     if (!token) return;
     if (!canManageSensitiveLoanActions) {
-      openModal('Only Finance Manager, Branch Manager, and Admin can download reminder letters.', 'Access Denied');
+      openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can download reminder letters.', 'Access Denied');
       return;
     }
 
@@ -1004,7 +1004,7 @@ export default function ReleasedLoansPage() {
   const handleDownloadLegalLetter = async (loanId: number, customerNo: string) => {
     if (!token) return;
     if (!canManageSensitiveLoanActions) {
-      openModal('Only Finance Manager, Branch Manager, and Admin can download legal letters.', 'Access Denied');
+      openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can download legal letters.', 'Access Denied');
       return;
     }
 
@@ -1126,7 +1126,7 @@ export default function ReleasedLoansPage() {
       return true;
     }
 
-    const allowedRoleKeywords = ['finance manager', 'branch manager', 'admin'];
+    const allowedRoleKeywords = ['finance manager', 'branch manager', 'managing director', 'business owner', 'admin'];
     const roleNames = (authUser?.roles || []).map((role) => normalizeText(String(role?.name || '')));
     const designationName = normalizeText(String(authUser?.designation?.name || ''));
 
@@ -1189,6 +1189,28 @@ export default function ReleasedLoansPage() {
       setAuthUser(null);
     }
   }, [router]);
+
+  useEffect(() => {
+    if (!token) return;
+
+    const syncAuthUser = async () => {
+      try {
+        const response = await axios.get(`${getApiBaseUrl()}/user`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+        });
+
+        setAuthUser(response.data || null);
+        localStorage.setItem('auth_user', JSON.stringify(response.data || null));
+      } catch {
+        // Keep cached auth user when refresh fails.
+      }
+    };
+
+    void syncAuthUser();
+  }, [token]);
 
   useEffect(() => {
     if (!token) return;

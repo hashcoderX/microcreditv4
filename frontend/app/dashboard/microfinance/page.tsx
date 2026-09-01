@@ -157,16 +157,24 @@ export default function MicrofinanceDashboard() {
   const isCollectionOfficer = designationName.includes('collection officer') || roleNames.some((role) => role.includes('collection officer'));
   const isAdminUser =
     normalizeText(String(authUser?.email || '')) === 'superadmin softcodelk com' ||
+    designationName.includes('managing director') ||
+    designationName.includes('business owner') ||
     designationName.includes('admin') ||
-    roleNames.some((role) => role.includes('admin'));
+    roleNames.some((role) => role.includes('admin') || role.includes('managing director') || role.includes('business owner'));
 
   const hasFullDataAccess =
     normalizeText(String(authUser?.email || '')) === 'superadmin softcodelk com' ||
+    designationName.includes('managing director') ||
+    designationName.includes('business owner') ||
     designationName.includes('admin') ||
     designationName.includes('branch manager') ||
     designationName.includes('finance manager') ||
     roleNames.some((role) =>
-      role.includes('admin') || role.includes('branch manager') || role.includes('finance manager')
+      role.includes('admin') ||
+      role.includes('branch manager') ||
+      role.includes('finance manager') ||
+      role.includes('managing director') ||
+      role.includes('business owner')
     );
 
   const isScopedUser = !hasFullDataAccess;
