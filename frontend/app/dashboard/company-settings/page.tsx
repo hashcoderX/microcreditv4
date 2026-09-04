@@ -40,6 +40,369 @@ const inputClass =
 
 const labelClass = 'block text-xs font-bold text-slate-700 mb-1.5';
 
+const COUNTRY_OPTIONS = [
+  'Afghanistan',
+  'Albania',
+  'Algeria',
+  'Andorra',
+  'Angola',
+  'Antigua and Barbuda',
+  'Argentina',
+  'Armenia',
+  'Australia',
+  'Austria',
+  'Azerbaijan',
+  'Bahamas',
+  'Bahrain',
+  'Bangladesh',
+  'Barbados',
+  'Belarus',
+  'Belgium',
+  'Belize',
+  'Benin',
+  'Bhutan',
+  'Bolivia',
+  'Bosnia and Herzegovina',
+  'Botswana',
+  'Brazil',
+  'Brunei',
+  'Bulgaria',
+  'Burkina Faso',
+  'Burundi',
+  'Cabo Verde',
+  'Cambodia',
+  'Cameroon',
+  'Canada',
+  'Central African Republic',
+  'Chad',
+  'Chile',
+  'China',
+  'Colombia',
+  'Comoros',
+  'Congo',
+  'Costa Rica',
+  'Cote d\'Ivoire',
+  'Croatia',
+  'Cuba',
+  'Cyprus',
+  'Czech Republic',
+  'Democratic Republic of the Congo',
+  'Denmark',
+  'Djibouti',
+  'Dominica',
+  'Dominican Republic',
+  'Ecuador',
+  'Egypt',
+  'El Salvador',
+  'Equatorial Guinea',
+  'Eritrea',
+  'Estonia',
+  'Eswatini',
+  'Ethiopia',
+  'Fiji',
+  'Finland',
+  'France',
+  'Gabon',
+  'Gambia',
+  'Georgia',
+  'Germany',
+  'Ghana',
+  'Greece',
+  'Grenada',
+  'Guatemala',
+  'Guinea',
+  'Guinea-Bissau',
+  'Guyana',
+  'Haiti',
+  'Honduras',
+  'Hungary',
+  'Iceland',
+  'India',
+  'Indonesia',
+  'Iran',
+  'Iraq',
+  'Ireland',
+  'Israel',
+  'Italy',
+  'Jamaica',
+  'Japan',
+  'Jordan',
+  'Kazakhstan',
+  'Kenya',
+  'Kiribati',
+  'Kuwait',
+  'Kyrgyzstan',
+  'Laos',
+  'Latvia',
+  'Lebanon',
+  'Lesotho',
+  'Liberia',
+  'Libya',
+  'Liechtenstein',
+  'Lithuania',
+  'Luxembourg',
+  'Madagascar',
+  'Malawi',
+  'Malaysia',
+  'Maldives',
+  'Mali',
+  'Malta',
+  'Marshall Islands',
+  'Mauritania',
+  'Mauritius',
+  'Mexico',
+  'Micronesia',
+  'Moldova',
+  'Monaco',
+  'Mongolia',
+  'Montenegro',
+  'Morocco',
+  'Mozambique',
+  'Myanmar',
+  'Namibia',
+  'Nauru',
+  'Nepal',
+  'Netherlands',
+  'New Zealand',
+  'Nicaragua',
+  'Niger',
+  'Nigeria',
+  'North Korea',
+  'North Macedonia',
+  'Norway',
+  'Oman',
+  'Pakistan',
+  'Palau',
+  'Panama',
+  'Papua New Guinea',
+  'Paraguay',
+  'Peru',
+  'Philippines',
+  'Poland',
+  'Portugal',
+  'Qatar',
+  'Romania',
+  'Russia',
+  'Rwanda',
+  'Saint Kitts and Nevis',
+  'Saint Lucia',
+  'Saint Vincent and the Grenadines',
+  'Samoa',
+  'San Marino',
+  'Sao Tome and Principe',
+  'Saudi Arabia',
+  'Senegal',
+  'Serbia',
+  'Seychelles',
+  'Sierra Leone',
+  'Singapore',
+  'Slovakia',
+  'Slovenia',
+  'Solomon Islands',
+  'Somalia',
+  'South Africa',
+  'South Korea',
+  'South Sudan',
+  'Spain',
+  'Sri Lanka',
+  'Sudan',
+  'Suriname',
+  'Sweden',
+  'Switzerland',
+  'Syria',
+  'Taiwan',
+  'Tajikistan',
+  'Tanzania',
+  'Thailand',
+  'Timor-Leste',
+  'Togo',
+  'Tonga',
+  'Trinidad and Tobago',
+  'Tunisia',
+  'Turkey',
+  'Turkmenistan',
+  'Tuvalu',
+  'Uganda',
+  'Ukraine',
+  'United Arab Emirates',
+  'United Kingdom',
+  'United States',
+  'Uruguay',
+  'Uzbekistan',
+  'Vanuatu',
+  'Vatican City',
+  'Venezuela',
+  'Vietnam',
+  'Yemen',
+  'Zambia',
+  'Zimbabwe',
+].sort((a, b) => a.localeCompare(b));
+
+const CURRENCY_OPTIONS = [
+  { code: 'AED', name: 'UAE Dirham' },
+  { code: 'AFN', name: 'Afghan Afghani' },
+  { code: 'ALL', name: 'Albanian Lek' },
+  { code: 'AMD', name: 'Armenian Dram' },
+  { code: 'ANG', name: 'Netherlands Antillean Guilder' },
+  { code: 'AOA', name: 'Angolan Kwanza' },
+  { code: 'ARS', name: 'Argentine Peso' },
+  { code: 'AUD', name: 'Australian Dollar' },
+  { code: 'AWG', name: 'Aruban Florin' },
+  { code: 'AZN', name: 'Azerbaijani Manat' },
+  { code: 'BAM', name: 'Bosnia and Herzegovina Convertible Mark' },
+  { code: 'BBD', name: 'Barbadian Dollar' },
+  { code: 'BDT', name: 'Bangladeshi Taka' },
+  { code: 'BGN', name: 'Bulgarian Lev' },
+  { code: 'BHD', name: 'Bahraini Dinar' },
+  { code: 'BIF', name: 'Burundian Franc' },
+  { code: 'BMD', name: 'Bermudian Dollar' },
+  { code: 'BND', name: 'Brunei Dollar' },
+  { code: 'BOB', name: 'Bolivian Boliviano' },
+  { code: 'BRL', name: 'Brazilian Real' },
+  { code: 'BSD', name: 'Bahamian Dollar' },
+  { code: 'BTN', name: 'Bhutanese Ngultrum' },
+  { code: 'BWP', name: 'Botswana Pula' },
+  { code: 'BYN', name: 'Belarusian Ruble' },
+  { code: 'BZD', name: 'Belize Dollar' },
+  { code: 'CAD', name: 'Canadian Dollar' },
+  { code: 'CDF', name: 'Congolese Franc' },
+  { code: 'CHF', name: 'Swiss Franc' },
+  { code: 'CLP', name: 'Chilean Peso' },
+  { code: 'CNY', name: 'Chinese Yuan' },
+  { code: 'COP', name: 'Colombian Peso' },
+  { code: 'CRC', name: 'Costa Rican Colon' },
+  { code: 'CUP', name: 'Cuban Peso' },
+  { code: 'CVE', name: 'Cape Verdean Escudo' },
+  { code: 'CZK', name: 'Czech Koruna' },
+  { code: 'DJF', name: 'Djiboutian Franc' },
+  { code: 'DKK', name: 'Danish Krone' },
+  { code: 'DOP', name: 'Dominican Peso' },
+  { code: 'DZD', name: 'Algerian Dinar' },
+  { code: 'EGP', name: 'Egyptian Pound' },
+  { code: 'ERN', name: 'Eritrean Nakfa' },
+  { code: 'ETB', name: 'Ethiopian Birr' },
+  { code: 'EUR', name: 'Euro' },
+  { code: 'FJD', name: 'Fijian Dollar' },
+  { code: 'FKP', name: 'Falkland Islands Pound' },
+  { code: 'FOK', name: 'Faroese Krona' },
+  { code: 'GBP', name: 'Pound Sterling' },
+  { code: 'GEL', name: 'Georgian Lari' },
+  { code: 'GGP', name: 'Guernsey Pound' },
+  { code: 'GHS', name: 'Ghanaian Cedi' },
+  { code: 'GIP', name: 'Gibraltar Pound' },
+  { code: 'GMD', name: 'Gambian Dalasi' },
+  { code: 'GNF', name: 'Guinean Franc' },
+  { code: 'GTQ', name: 'Guatemalan Quetzal' },
+  { code: 'GYD', name: 'Guyanese Dollar' },
+  { code: 'HKD', name: 'Hong Kong Dollar' },
+  { code: 'HNL', name: 'Honduran Lempira' },
+  { code: 'HRK', name: 'Croatian Kuna' },
+  { code: 'HTG', name: 'Haitian Gourde' },
+  { code: 'HUF', name: 'Hungarian Forint' },
+  { code: 'IDR', name: 'Indonesian Rupiah' },
+  { code: 'ILS', name: 'Israeli New Shekel' },
+  { code: 'IMP', name: 'Isle of Man Pound' },
+  { code: 'INR', name: 'Indian Rupee' },
+  { code: 'IQD', name: 'Iraqi Dinar' },
+  { code: 'IRR', name: 'Iranian Rial' },
+  { code: 'ISK', name: 'Icelandic Krona' },
+  { code: 'JEP', name: 'Jersey Pound' },
+  { code: 'JMD', name: 'Jamaican Dollar' },
+  { code: 'JOD', name: 'Jordanian Dinar' },
+  { code: 'JPY', name: 'Japanese Yen' },
+  { code: 'KES', name: 'Kenyan Shilling' },
+  { code: 'KGS', name: 'Kyrgyzstani Som' },
+  { code: 'KHR', name: 'Cambodian Riel' },
+  { code: 'KID', name: 'Kiribati Dollar' },
+  { code: 'KMF', name: 'Comorian Franc' },
+  { code: 'KPW', name: 'North Korean Won' },
+  { code: 'KRW', name: 'South Korean Won' },
+  { code: 'KWD', name: 'Kuwaiti Dinar' },
+  { code: 'KYD', name: 'Cayman Islands Dollar' },
+  { code: 'KZT', name: 'Kazakhstani Tenge' },
+  { code: 'LAK', name: 'Lao Kip' },
+  { code: 'LBP', name: 'Lebanese Pound' },
+  { code: 'LKR', name: 'Sri Lankan Rupee' },
+  { code: 'LRD', name: 'Liberian Dollar' },
+  { code: 'LSL', name: 'Lesotho Loti' },
+  { code: 'LYD', name: 'Libyan Dinar' },
+  { code: 'MAD', name: 'Moroccan Dirham' },
+  { code: 'MDL', name: 'Moldovan Leu' },
+  { code: 'MGA', name: 'Malagasy Ariary' },
+  { code: 'MKD', name: 'Macedonian Denar' },
+  { code: 'MMK', name: 'Myanmar Kyat' },
+  { code: 'MNT', name: 'Mongolian Tugrik' },
+  { code: 'MOP', name: 'Macanese Pataca' },
+  { code: 'MRU', name: 'Mauritanian Ouguiya' },
+  { code: 'MUR', name: 'Mauritian Rupee' },
+  { code: 'MVR', name: 'Maldivian Rufiyaa' },
+  { code: 'MWK', name: 'Malawian Kwacha' },
+  { code: 'MXN', name: 'Mexican Peso' },
+  { code: 'MYR', name: 'Malaysian Ringgit' },
+  { code: 'MZN', name: 'Mozambican Metical' },
+  { code: 'NAD', name: 'Namibian Dollar' },
+  { code: 'NGN', name: 'Nigerian Naira' },
+  { code: 'NIO', name: 'Nicaraguan Cordoba' },
+  { code: 'NOK', name: 'Norwegian Krone' },
+  { code: 'NPR', name: 'Nepalese Rupee' },
+  { code: 'NZD', name: 'New Zealand Dollar' },
+  { code: 'OMR', name: 'Omani Rial' },
+  { code: 'PAB', name: 'Panamanian Balboa' },
+  { code: 'PEN', name: 'Peruvian Sol' },
+  { code: 'PGK', name: 'Papua New Guinean Kina' },
+  { code: 'PHP', name: 'Philippine Peso' },
+  { code: 'PKR', name: 'Pakistani Rupee' },
+  { code: 'PLN', name: 'Polish Zloty' },
+  { code: 'PYG', name: 'Paraguayan Guarani' },
+  { code: 'QAR', name: 'Qatari Riyal' },
+  { code: 'RON', name: 'Romanian Leu' },
+  { code: 'RSD', name: 'Serbian Dinar' },
+  { code: 'RUB', name: 'Russian Ruble' },
+  { code: 'RWF', name: 'Rwandan Franc' },
+  { code: 'SAR', name: 'Saudi Riyal' },
+  { code: 'SBD', name: 'Solomon Islands Dollar' },
+  { code: 'SCR', name: 'Seychellois Rupee' },
+  { code: 'SDG', name: 'Sudanese Pound' },
+  { code: 'SEK', name: 'Swedish Krona' },
+  { code: 'SGD', name: 'Singapore Dollar' },
+  { code: 'SHP', name: 'Saint Helena Pound' },
+  { code: 'SLE', name: 'Sierra Leonean Leone' },
+  { code: 'SLL', name: 'Sierra Leonean Leone (old)' },
+  { code: 'SOS', name: 'Somali Shilling' },
+  { code: 'SRD', name: 'Surinamese Dollar' },
+  { code: 'SSP', name: 'South Sudanese Pound' },
+  { code: 'STN', name: 'Sao Tome and Principe Dobra' },
+  { code: 'SYP', name: 'Syrian Pound' },
+  { code: 'SZL', name: 'Eswatini Lilangeni' },
+  { code: 'THB', name: 'Thai Baht' },
+  { code: 'TJS', name: 'Tajikistani Somoni' },
+  { code: 'TMT', name: 'Turkmenistani Manat' },
+  { code: 'TND', name: 'Tunisian Dinar' },
+  { code: 'TOP', name: 'Tongan Pa\'anga' },
+  { code: 'TRY', name: 'Turkish Lira' },
+  { code: 'TTD', name: 'Trinidad and Tobago Dollar' },
+  { code: 'TVD', name: 'Tuvaluan Dollar' },
+  { code: 'TWD', name: 'New Taiwan Dollar' },
+  { code: 'TZS', name: 'Tanzanian Shilling' },
+  { code: 'UAH', name: 'Ukrainian Hryvnia' },
+  { code: 'UGX', name: 'Ugandan Shilling' },
+  { code: 'USD', name: 'US Dollar' },
+  { code: 'UYU', name: 'Uruguayan Peso' },
+  { code: 'UZS', name: 'Uzbekistani Som' },
+  { code: 'VES', name: 'Venezuelan Bolivar' },
+  { code: 'VND', name: 'Vietnamese Dong' },
+  { code: 'VUV', name: 'Vanuatu Vatu' },
+  { code: 'WST', name: 'Samoan Tala' },
+  { code: 'XAF', name: 'Central African CFA Franc' },
+  { code: 'XCD', name: 'East Caribbean Dollar' },
+  { code: 'XOF', name: 'West African CFA Franc' },
+  { code: 'XPF', name: 'CFP Franc' },
+  { code: 'YER', name: 'Yemeni Rial' },
+  { code: 'ZAR', name: 'South African Rand' },
+  { code: 'ZMW', name: 'Zambian Kwacha' },
+  { code: 'ZWL', name: 'Zimbabwean Dollar' },
+].sort((a, b) => a.name.localeCompare(b.name));
+
 const SECTION_TABS: { key: SettingsSection; label: string; icon: typeof Building2 }[] = [
   { key: 'profile', label: 'Company profile', icon: Building2 },
   { key: 'accounting', label: 'Company accounting', icon: Wallet },
@@ -100,6 +463,7 @@ export default function CompanySettingsPage() {
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [superAdminPassword, setSuperAdminPassword] = useState('');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
   const [secondaryPhone, setSecondaryPhone] = useState('');
@@ -164,10 +528,14 @@ export default function CompanySettingsPage() {
   const [whatsappTestPhone, setWhatsappTestPhone] = useState('');
   const [whatsappTestMessage, setWhatsappTestMessage] = useState('');
   const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
+  const [showFullResetConfirmModal, setShowFullResetConfirmModal] = useState(false);
   const [showResetCredentialsModal, setShowResetCredentialsModal] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState('');
+  const [fullResetConfirmText, setFullResetConfirmText] = useState('');
   const [resetPassword, setResetPassword] = useState('');
+  const [fullResetPassword, setFullResetPassword] = useState('');
   const [resettingSystem, setResettingSystem] = useState(false);
+  const [fullResettingSystem, setFullResettingSystem] = useState(false);
   const [resetCredentials, setResetCredentials] = useState<{ email: string; password: string } | null>(null);
   const [deleteTemplateModal, setDeleteTemplateModal] = useState<{ open: boolean; id: number | null; name: string }>({
     open: false,
@@ -202,6 +570,24 @@ export default function CompanySettingsPage() {
     [holidays]
   );
 
+  const countrySelectOptions = useMemo(() => {
+    const trimmed = country.trim();
+    if (!trimmed || COUNTRY_OPTIONS.includes(trimmed)) {
+      return COUNTRY_OPTIONS;
+    }
+    return [...COUNTRY_OPTIONS, trimmed].sort((a, b) => a.localeCompare(b));
+  }, [country]);
+
+  const currencySelectOptions = useMemo(() => {
+    const trimmed = currency.trim();
+    if (!trimmed || CURRENCY_OPTIONS.some((item) => item.code === trimmed)) {
+      return CURRENCY_OPTIONS;
+    }
+    return [...CURRENCY_OPTIONS, { code: trimmed, name: `${trimmed} (Current value)` }].sort((a, b) =>
+      a.name.localeCompare(b.name)
+    );
+  }, [currency]);
+
   const resolveCompanyLogoUrl = (company: Company | null): string => {
     const direct = String(company?.logo_url || '').trim();
     if (direct) {
@@ -218,6 +604,7 @@ export default function CompanySettingsPage() {
   const loadFormFromCompany = (company: Company | null) => {
     setName(company?.name || '');
     setEmail(company?.email || '');
+    setSuperAdminPassword('');
     setAddress(company?.address || '');
     setPhone(company?.phone || '');
     setSecondaryPhone(company?.secondary_phone || '');
@@ -843,6 +1230,56 @@ export default function CompanySettingsPage() {
     }
   };
 
+  const handleFullResetSystem = async () => {
+    if (!token) {
+      setNotice({ type: 'error', text: 'Session is missing. Please login again.' });
+      return;
+    }
+
+    setFullResettingSystem(true);
+    setNotice(null);
+
+    try {
+      const response = await axios.post(
+        `/api/system/reset-full`,
+        { password: fullResetPassword },
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      const superAdmin = response.data?.super_admin || {};
+      const emailValue = String(superAdmin?.email || 'superadmin@softcodelk.com');
+      const passwordValue = String(superAdmin?.password || '');
+
+      setResetCredentials({ email: emailValue, password: passwordValue });
+      setShowFullResetConfirmModal(false);
+      setFullResetConfirmText('');
+      setFullResetPassword('');
+      setShowResetCredentialsModal(true);
+      setNotice({ type: 'success', text: 'Full reset completed. Only Super Admin has been recreated.' });
+    } catch (error: any) {
+      let message = 'Failed to run full reset.';
+      const responseData = error?.response?.data;
+
+      if (responseData instanceof Blob) {
+        try {
+          const text = await responseData.text();
+          const parsed = JSON.parse(text);
+          message = parsed?.message || message;
+        } catch {
+          // Keep default error
+        }
+      } else if (responseData?.message) {
+        message = responseData.message;
+      }
+
+      setNotice({ type: 'error', text: message });
+    } finally {
+      setFullResettingSystem(false);
+    }
+  };
+
   const copyResetCredential = async (value: string, label: string) => {
     try {
       await navigator.clipboard.writeText(value);
@@ -920,6 +1357,11 @@ export default function CompanySettingsPage() {
     e.preventDefault();
     if (!token) return;
 
+    if (!selectedCompany && superAdminPassword.trim().length < 8) {
+      setNotice({ type: 'error', text: 'Super Admin password must be at least 8 characters.' });
+      return;
+    }
+
     setSaving(true);
     setNotice(null);
 
@@ -948,7 +1390,10 @@ export default function CompanySettingsPage() {
         loadFormFromCompany(refreshed);
         setNotice({ type: 'success', text: 'Company details updated successfully.' });
       } else {
-        const response = await axios.post(`/api/companies`, payload, {
+        const response = await axios.post(`/api/companies`, {
+          ...payload,
+          super_admin_password: superAdminPassword,
+        }, {
           headers: { Authorization: `Bearer ${token}` },
         });
 
@@ -957,7 +1402,7 @@ export default function CompanySettingsPage() {
         setCompanies(nextCompanies);
         setSelectedCompanyId(created.id);
         loadFormFromCompany(created);
-        setNotice({ type: 'success', text: 'Company created successfully.' });
+        setNotice({ type: 'success', text: 'Company created successfully with Super Admin account.' });
       }
     } catch (error: any) {
       const validationErrors = error?.response?.data?.errors;
@@ -1235,6 +1680,20 @@ export default function CompanySettingsPage() {
                       </div>
 
                       <div>
+                        <label className={labelClass}>Super Admin password {!selectedCompany ? '*' : ''}</label>
+                        <input
+                          type="password"
+                          value={superAdminPassword}
+                          onChange={(e) => setSuperAdminPassword(e.target.value)}
+                          className={inputClass}
+                          placeholder={selectedCompany ? 'Set only when creating a new company' : 'Minimum 8 characters'}
+                          minLength={8}
+                          required={!selectedCompany}
+                          disabled={Boolean(selectedCompany)}
+                        />
+                      </div>
+
+                      <div>
                         <label className={labelClass}>Phone</label>
                         <div className="relative">
                           <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -1268,12 +1727,26 @@ export default function CompanySettingsPage() {
 
                       <div>
                         <label className={labelClass}>Country</label>
-                        <input value={country} onChange={(e) => setCountry(e.target.value)} className={inputClass} />
+                        <select value={country} onChange={(e) => setCountry(e.target.value)} className={inputClass}>
+                          <option value="">Select country</option>
+                          {countrySelectOptions.map((item) => (
+                            <option key={item} value={item}>
+                              {item}
+                            </option>
+                          ))}
+                        </select>
                       </div>
 
                       <div>
                         <label className={labelClass}>Currency</label>
-                        <input value={currency} onChange={(e) => setCurrency(e.target.value)} className={inputClass} placeholder="LKR" />
+                        <select value={currency} onChange={(e) => setCurrency(e.target.value)} className={inputClass}>
+                          <option value="">Select currency</option>
+                          {currencySelectOptions.map((item) => (
+                            <option key={item.code} value={item.code}>
+                              {item.name} ({item.code})
+                            </option>
+                          ))}
+                        </select>
                       </div>
 
                       <div className="md:col-span-2">
@@ -1647,6 +2120,28 @@ export default function CompanySettingsPage() {
                           >
                             <Trash2 className="h-4 w-4" />
                             {resettingSystem ? 'Resetting…' : 'Reset system'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-red-300 bg-gradient-to-br from-red-100 via-rose-100 to-red-50 p-5">
+                      <div className="flex items-start gap-3">
+                        <AlertTriangle className="h-5 w-5 text-red-800 shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                          <h3 className="font-bold text-red-950">Full reset option — wipe all tables</h3>
+                          <p className="text-sm text-red-900 mt-1">
+                            Deletes all table data and storage files, rebuilds the schema, then recreates only the Super Admin account.
+                            Departments, designations, and every other business record will be removed.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setShowFullResetConfirmModal(true)}
+                            disabled={fullResettingSystem}
+                            className="mt-4 inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-red-700 to-rose-800 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            {fullResettingSystem ? 'Running full reset…' : 'Full reset now'}
                           </button>
                         </div>
                       </div>
@@ -2145,6 +2640,85 @@ export default function CompanySettingsPage() {
                 >
                   <Trash2 className="h-4 w-4" />
                   {resettingSystem ? 'Resetting…' : 'Confirm reset'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showFullResetConfirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-4">
+          <div className="w-full max-w-xl rounded-3xl border border-red-300 bg-white shadow-2xl overflow-hidden">
+            <div className="bg-gradient-to-r from-red-700 to-rose-800 px-6 py-4 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="h-6 w-6 text-white shrink-0 mt-0.5" />
+                <div>
+                  <h3 className="text-xl font-extrabold text-white">Full reset option</h3>
+                  <p className="text-sm text-rose-100 mt-1">Maximum destructive action. This cannot be undone.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (fullResettingSystem) return;
+                  setShowFullResetConfirmModal(false);
+                  setFullResetConfirmText('');
+                  setFullResetPassword('');
+                }}
+                className="rounded-lg border border-white/30 bg-white/10 p-2 text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-sm text-slate-700">
+                This action will wipe all table data and storage files, and then run a clean schema rebuild.
+                Only the Super Admin account will be recreated after completion.
+              </p>
+              <p className="mt-3 text-sm font-semibold text-red-700">Type FULL RESET to continue.</p>
+
+              <input
+                value={fullResetConfirmText}
+                onChange={(e) => setFullResetConfirmText(e.target.value)}
+                className={`${inputClass} mt-3 border-red-200 bg-red-50/60`}
+                placeholder="Type FULL RESET"
+              />
+
+              <label className={`${labelClass} mt-4`}>Enter your password</label>
+              <input
+                type="password"
+                value={fullResetPassword}
+                onChange={(e) => setFullResetPassword(e.target.value)}
+                className={`${inputClass} border-red-200 bg-red-50/60`}
+                placeholder="Current password"
+              />
+
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (fullResettingSystem) return;
+                    setShowFullResetConfirmModal(false);
+                    setFullResetConfirmText('');
+                    setFullResetPassword('');
+                  }}
+                  className="px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 text-sm font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleFullResetSystem}
+                  disabled={
+                    fullResettingSystem ||
+                    fullResetConfirmText.trim().toUpperCase() !== 'FULL RESET' ||
+                    fullResetPassword.trim() === ''
+                  }
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-red-700 to-rose-800 text-white text-sm font-bold disabled:opacity-60"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {fullResettingSystem ? 'Running full reset…' : 'Confirm full reset'}
                 </button>
               </div>
             </div>

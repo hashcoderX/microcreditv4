@@ -12,6 +12,7 @@ use App\Models\DraftLoan;
 use App\Models\Finance;
 use App\Models\FinanceCollection;
 use App\Models\FinanceDocument;
+use App\Models\FinanceWorkflowEvent;
 use App\Models\UserNotification;
 use App\Models\LoanRequest;
 use App\Models\LoanRequestCollection;
@@ -35,6 +36,23 @@ use Illuminate\Support\Facades\DB;
 
 class FinanceController extends Controller
 {
+    private const FINANCE_APPROVAL_WORKFLOW_STEPS = [
+        1 => 'CRO Check Pending',
+        2 => 'Pending Call Confirmation',
+        3 => 'BM Approval',
+        4 => 'Head Office Approval',
+        5 => 'Cash Allocation',
+        6 => 'Cash Request',
+        7 => 'Cash Withdrawal',
+        8 => 'Second Call Confirmation',
+        9 => 'Loan Signature Check',
+        10 => 'Document Filing',
+        11 => 'Insurance Request',
+        12 => 'Branch Insurance Request',
+        13 => 'Head Office Insurance Request',
+        14 => 'Grant',
+    ];
+
     public function __construct(private readonly SpeedDraftCalculator $speedDraftCalculator)
     {
     }
@@ -66,6 +84,104 @@ class FinanceController extends Controller
         }
 
         return false;
+    }
+
+    private function normalizeAccessKeyword(?string $value): string
+    {
+        return strtolower(trim((string) $value));
+    }
+
+    private function userMatchesRoleKeyword(?User $user, string $keyword): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $needle = $this->normalizeAccessKeyword($keyword);
+        if ($needle === '') {
+            return false;
+        }
+
+        $designationName = $this->normalizeAccessKeyword((string) optional($user->designation)->name);
+        if ($designationName !== '' && str_contains($designationName, $needle)) {
+            return true;
+        }
+
+        $employeeDesignationName = $this->normalizeAccessKeyword((string) optional(optional($user->employee)->designation)->name);
+        if ($employeeDesignationName !== '' && str_contains($employeeDesignationName, $needle)) {
+            return true;
+        }
+
+        foreach ($user->roles()->pluck('name') as $roleName) {
+            $normalized = $this->normalizeAccessKeyword((string) $roleName);
+            if ($normalized !== '' && str_contains($normalized, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function hasPrivilegedFinanceApprovalAccess(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if ($user->isSystemAdmin() || $this->isAdminUser($user)) {
+            return true;
+        }
+
+        return $this->userMatchesRoleKeyword($user, 'managing director')
+            || $this->userMatchesRoleKeyword($user, 'business owner')
+            || $this->userMatchesRoleKeyword($user, 'admin')
+            || $this->userMatchesRoleKeyword($user, 'super admin')
+            || $this->userMatchesRoleKeyword($user, 'md');
+    }
+
+    private function canRemoveFinanceLoan(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if (method_exists($user, 'isSystemAdmin') && $user->isSystemAdmin()) {
+            return true;
+        }
+
+        return $this->userMatchesRoleKeyword($user, 'super admin');
+    }
+
+    private function canUserHandleFinanceStep(?User $user, int $step, string $action): bool
+    {
+        if ($this->hasPrivilegedFinanceApprovalAccess($user)) {
+            return true;
+        }
+
+        if ($action === 'approve' || $action === 'activate') {
+            return false;
+        }
+
+        return match ($step) {
+            1 => $this->userMatchesRoleKeyword($user, 'cro')
+                || $this->userMatchesRoleKeyword($user, 'loan approver')
+                || $this->userMatchesRoleKeyword($user, 'finance manager'),
+            2 => $this->userMatchesRoleKeyword($user, 'cro')
+                || $this->userMatchesRoleKeyword($user, 'loan approver')
+                || $this->userMatchesRoleKeyword($user, 'finance manager'),
+            3 => $this->userMatchesRoleKeyword($user, 'branch manager'),
+            4 => $this->userMatchesRoleKeyword($user, 'head office')
+                || $this->userMatchesRoleKeyword($user, 'finance manager'),
+            5, 6, 7 => $this->userMatchesRoleKeyword($user, 'cash')
+                || $this->userMatchesRoleKeyword($user, 'finance manager')
+                || $this->userMatchesRoleKeyword($user, 'accountant'),
+            8, 9, 10 => $this->userMatchesRoleKeyword($user, 'loan approver')
+                || $this->userMatchesRoleKeyword($user, 'finance manager')
+                || $this->userMatchesRoleKeyword($user, 'document'),
+            11, 12, 13 => $this->userMatchesRoleKeyword($user, 'insurance')
+                || $this->userMatchesRoleKeyword($user, 'finance manager'),
+            default => false,
+        };
     }
 
     private function scopedBranchId(Request $request): ?int
@@ -341,7 +457,9 @@ class FinanceController extends Controller
 
     public function show(Request $request, int $id): JsonResponse
     {
-        $finance = $this->resolveFinanceOrFail($request, $id, ['customer', 'documents', 'collections' => function ($query) {
+        $finance = $this->resolveFinanceOrFail($request, $id, ['customer', 'documents', 'workflowEvents' => function ($query) {
+            $query->orderByDesc('id');
+        }, 'collections' => function ($query) {
             $query->orderByDesc('payment_date')->orderByDesc('id');
         }]);
 
@@ -350,6 +468,34 @@ class FinanceController extends Controller
         }
 
         return response()->json($finance);
+    }
+
+    public function destroy(Request $request, int $id): JsonResponse
+    {
+        if (!$this->canRemoveFinanceLoan($request->user())) {
+            return response()->json([
+                'message' => 'Only Super Admin can remove loans.',
+            ], 403);
+        }
+
+        $finance = Finance::query()->find($id);
+        if (!$finance) {
+            return response()->json([
+                'message' => 'Finance record not found.',
+            ], 404);
+        }
+
+        DB::transaction(function () use ($finance) {
+            FinanceCollection::query()->where('finance_id', $finance->id)->delete();
+            FinanceDocument::query()->where('finance_id', $finance->id)->delete();
+            FinanceWorkflowEvent::query()->where('finance_id', $finance->id)->delete();
+            DraftLoan::query()->where('finance_id', $finance->id)->delete();
+            $finance->delete();
+        });
+
+        return response()->json([
+            'message' => 'Loan removed successfully.',
+        ]);
     }
 
     public function incomeExpenseReport(Request $request): JsonResponse
@@ -1538,7 +1684,7 @@ class FinanceController extends Controller
         $tenureMonths = (int) $validated['tenure_months'];
         $frequency = (string) ($validated['installment_frequency'] ?? 'monthly');
         $interestType = (string) ($validated['interest_type'] ?? 'fixed');
-        $repaymentPlan = is_array($validated['repayment_plan'] ?? null) ? $validated['repayment_plan'] : null;
+        $repaymentPlan = is_array($validated['repayment_plan'] ?? null) ? $validated['repayment_plan'] : [];
 
         $installmentsPerYear = match (strtolower($frequency)) {
             'daily' => 365,
@@ -1585,6 +1731,8 @@ class FinanceController extends Controller
             ];
         }
 
+        $repaymentPlan['approval_workflow'] = $this->normalizeFinanceApprovalWorkflowState($repaymentPlan['approval_workflow'] ?? null);
+
         $isDraftLoan = self::isDraftLoanProductType((string) ($validated['product_type'] ?? ''));
         if ($isDraftLoan) {
             // Speed Draft uses monthly interest based on draft/financed amount.
@@ -1610,7 +1758,7 @@ class FinanceController extends Controller
                 'family_financial_details' => $validated['family_financial_details'] ?? null,
                 'evaluation_payload' => $validated['evaluation_payload'] ?? null,
                 'evaluation_payload_version' => $validated['evaluation_payload_version'] ?? null,
-                'repayment_plan' => $repaymentPlan,
+                'repayment_plan' => !empty($repaymentPlan) ? $repaymentPlan : null,
                 'amount' => $validated['amount'],
                 'down_payment' => $validated['down_payment'] ?? 0,
                 'financed_amount' => $financedAmount,
@@ -1662,6 +1810,20 @@ class FinanceController extends Controller
 
                 $draftLoanId = $draftLoan->id;
             }
+
+            $workflow = $this->normalizeFinanceApprovalWorkflowState($repaymentPlan['approval_workflow'] ?? null);
+            $this->logFinanceWorkflowEvent(
+                $finance,
+                'workflow_started',
+                null,
+                (int) ($workflow['current_step'] ?? 1),
+                $user instanceof User ? $user : null,
+                null,
+                [
+                    'source' => 'finance_store',
+                ],
+                $workflow
+            );
 
             return [
                 'finance' => $finance,
@@ -1736,7 +1898,7 @@ class FinanceController extends Controller
                     'type' => 'finance',
                     'is_read' => false,
                     'is_important' => true,
-                    'action_url' => '/dashboard/action-center',
+                    'action_url' => '/dashboard/finance/approvals',
                     'meta' => [
                         'finance_id' => (int) $finance->id,
                         'finance_ref' => $financeRef,
@@ -1752,7 +1914,7 @@ class FinanceController extends Controller
                     'type' => 'step_1',
                     'is_read' => false,
                     'is_important' => true,
-                    'action_url' => '/dashboard/action-center',
+                    'action_url' => '/dashboard/finance/approvals',
                     'meta' => [
                         'finance_id' => (int) $finance->id,
                         'finance_ref' => $financeRef,
@@ -1776,11 +1938,122 @@ class FinanceController extends Controller
         return str_contains($normalized, 'draft');
     }
 
+    private function appendFinanceReviewLog(
+        array &$repaymentPlan,
+        string $action,
+        int $fromStep,
+        int $toStep,
+        ?User $actor = null,
+        ?string $note = null,
+        array $payload = []
+    ): void {
+        $reviewData = is_array($repaymentPlan['review_data'] ?? null)
+            ? $repaymentPlan['review_data']
+            : [];
+
+        $reviewData[] = [
+            'action' => trim($action) !== '' ? trim($action) : 'review',
+            'from_step' => $fromStep,
+            'to_step' => $toStep,
+            'from_step_title' => $this->financeApprovalWorkflowStepTitle($fromStep),
+            'to_step_title' => $this->financeApprovalWorkflowStepTitle($toStep),
+            'review_note' => trim((string) ($note ?? '')),
+            'review_payload' => !empty($payload) ? $payload : null,
+            'reviewed_at' => now()->toDateTimeString(),
+            'reviewed_by' => (int) ($actor?->id ?? 0),
+        ];
+
+        if (count($reviewData) > 300) {
+            $reviewData = array_slice($reviewData, -300);
+        }
+
+        $repaymentPlan['review_data'] = $reviewData;
+    }
+
     public function updateStatus(Request $request, int $id): JsonResponse
     {
         $validated = $request->validate([
-            'action' => ['required', 'in:approve,reject,activate'],
+            'action' => ['required', 'in:approve,reject,activate,advance,send_back'],
             'note' => ['nullable', 'string'],
+            'target_step' => ['nullable', 'integer', 'min:1'],
+            'call_confirmation_payload' => ['nullable', 'array'],
+            'call_confirmation_payload.no_of_times_called' => ['nullable', 'integer', 'min:1'],
+            'call_confirmation_payload.called_date' => ['nullable', 'date'],
+            'call_confirmation_payload.answered_by_customer' => ['nullable', 'boolean'],
+            'call_confirmation_payload.answered_by_spouse' => ['nullable', 'boolean'],
+            'call_confirmation_payload.customer_contact_no' => ['nullable', 'string', 'max:50'],
+            'call_confirmation_payload.spouse_contact_no' => ['nullable', 'string', 'max:50'],
+            'call_confirmation_payload.customer_full_name' => ['nullable', 'string', 'max:255'],
+            'call_confirmation_payload.nic_or_dob' => ['nullable', 'string', 'max:100'],
+            'call_confirmation_payload.loan_amount' => ['nullable', 'numeric', 'min:0'],
+            'call_confirmation_payload.given_date' => ['nullable', 'date'],
+            'call_confirmation_payload.business_type' => ['nullable', 'string', 'max:255'],
+            'call_confirmation_payload.repayment_card_given' => ['nullable', 'in:yes,no'],
+            'call_confirmation_payload.business_details' => ['nullable', 'string'],
+            'call_confirmation_payload.special_notes' => ['nullable', 'string'],
+            'call_confirmation_payload.disbursement_otp' => ['nullable', 'string', 'max:120'],
+            'bm_approval_payload' => ['nullable', 'array'],
+            'bm_approval_payload.bm_comments' => ['nullable', 'string', 'max:5000'],
+            'bm_approval_payload.bm_additional_notes' => ['nullable', 'string', 'max:5000'],
+            'ho_approval_payload' => ['nullable', 'array'],
+            'ho_approval_payload.confirm_customer_photo' => ['nullable', 'boolean'],
+            'ho_approval_payload.confirm_customer_signature' => ['nullable', 'boolean'],
+            'ho_approval_payload.ho_additional_notes' => ['nullable', 'string', 'max:5000'],
+            'cash_allocation_payload' => ['nullable', 'array'],
+            'cash_allocation_payload.branch_id' => ['nullable', 'integer', 'exists:companies,id'],
+            'cash_allocation_payload.branch_name' => ['nullable', 'string', 'max:255'],
+            'cash_allocation_payload.today_cash_requirement' => ['nullable', 'numeric', 'min:0'],
+            'cash_allocation_payload.tomorrow_cash_requirement' => ['nullable', 'numeric', 'min:0'],
+            'cash_allocation_payload.today_allocation_amount' => ['nullable', 'numeric', 'min:0'],
+            'cash_allocation_payload.tomorrow_allocation_amount' => ['nullable', 'numeric', 'min:0'],
+            'cash_request_payload' => ['nullable', 'array'],
+            'cash_request_payload.customer_name' => ['nullable', 'string', 'max:255'],
+            'cash_request_payload.customer_number' => ['nullable', 'string', 'max:120'],
+            'cash_request_payload.loan_amount' => ['nullable', 'numeric', 'min:0.01'],
+            'cash_withdrawal_payload' => ['nullable', 'array'],
+            'cash_withdrawal_payload.customer_name' => ['nullable', 'string', 'max:255'],
+            'cash_withdrawal_payload.customer_number' => ['nullable', 'string', 'max:120'],
+            'cash_withdrawal_payload.loan_amount' => ['nullable', 'numeric', 'min:0.01'],
+            'second_call_confirmation_payload' => ['nullable', 'array'],
+            'second_call_confirmation_payload.customer_full_name' => ['nullable', 'string', 'max:255'],
+            'second_call_confirmation_payload.nic_number' => ['nullable', 'string', 'max:120'],
+            'second_call_confirmation_payload.registered_mobile_number' => ['nullable', 'string', 'max:120'],
+            'second_call_confirmation_payload.date_of_birth' => ['nullable', 'string', 'max:120'],
+            'second_call_confirmation_payload.address' => ['nullable', 'string', 'max:1000'],
+            'second_call_confirmation_payload.loan_amount' => ['nullable', 'string', 'max:120'],
+            'second_call_confirmation_payload.loan_purpose' => ['nullable', 'string', 'max:255'],
+            'second_call_confirmation_payload.loan_term' => ['nullable', 'string', 'max:120'],
+            'second_call_confirmation_payload.installment' => ['nullable', 'string', 'max:120'],
+            'second_call_confirmation_payload.payment_frequency' => ['nullable', 'string', 'max:120'],
+            'second_call_confirmation_payload.interest_rate' => ['nullable', 'string', 'max:120'],
+            'second_call_confirmation_payload.first_payment_date' => ['nullable', 'string', 'max:120'],
+            'second_call_confirmation_payload.number_of_installments' => ['nullable', 'string', 'max:120'],
+            'second_call_confirmation_payload.confirm_customer_full_name' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_nic_number' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_registered_mobile_number' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_date_of_birth' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_address' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_loan_amount' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_loan_purpose' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_loan_term' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_installment' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_payment_frequency' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_interest_rate' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_first_payment_date' => ['nullable', 'boolean'],
+            'second_call_confirmation_payload.confirm_number_of_installments' => ['nullable', 'boolean'],
+            'loan_signature_check_payload' => ['nullable', 'array'],
+            'loan_signature_check_payload.confirm_customer_photo' => ['nullable', 'boolean'],
+            'loan_signature_check_payload.confirm_customer_signature' => ['nullable', 'boolean'],
+            'loan_signature_check_payload.customer_photo_url' => ['nullable', 'string', 'max:2000'],
+            'loan_signature_check_payload.customer_signature_url' => ['nullable', 'string', 'max:2000'],
+            'document_filing_payload' => ['nullable', 'array'],
+            'document_filing_payload.documents' => ['nullable', 'array'],
+            'document_filing_payload.documents.*.key' => ['nullable', 'string', 'max:80'],
+            'document_filing_payload.documents.*.label' => ['nullable', 'string', 'max:120'],
+            'document_filing_payload.documents.*.document_url' => ['nullable', 'string', 'max:2000'],
+            'document_filing_payload.documents.*.document_available' => ['nullable', 'boolean'],
+            'document_filing_payload.documents.*.verify' => ['nullable', 'boolean'],
+            'document_filing_payload.documents.*.not_required' => ['nullable', 'boolean'],
             'deduction_order' => ['nullable', 'array'],
             'deduction_order.mode' => ['required_with:deduction_order', 'in:flat,front_loaded,installment_wise'],
             'deduction_order.profit_percentage' => ['required_with:deduction_order', 'numeric', 'min:0', 'max:100'],
@@ -1797,9 +2070,593 @@ class FinanceController extends Controller
         $finance = $this->resolveFinanceOrFail($request, $id);
         $action = (string) $validated['action'];
         $wasActive = $finance->status === 'active';
+        $actor = $request->user();
+        $actorUser = $actor instanceof User ? $actor : null;
+        $repaymentPlan = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
+        $workflow = $this->normalizeFinanceApprovalWorkflowState($repaymentPlan['approval_workflow'] ?? null);
+        $maxWorkflowSteps = count(self::FINANCE_APPROVAL_WORKFLOW_STEPS);
+        $currentWorkflowStep = (int) ($workflow['current_step'] ?? 1);
+
+        if (!$this->canUserHandleFinanceStep($actorUser, $currentWorkflowStep, $action)) {
+            return response()->json([
+                'message' => 'You do not have permission to complete this step. This approval action is restricted to related role users or Admin/Managing Director.',
+                'workflow' => $workflow,
+            ], 403);
+        }
+
+        if (
+            $currentWorkflowStep === 3
+            && $action === 'advance'
+            && !$this->hasPrivilegedFinanceApprovalAccess($actorUser)
+            && is_array($repaymentPlan['bm_approval_payload'] ?? null)
+            && !empty(trim((string) (($repaymentPlan['bm_approval_payload']['bm_comments'] ?? ''))))
+        ) {
+            return response()->json([
+                'message' => 'BM approval is already submitted. Branch Manager cannot edit or modify it again.',
+                'workflow' => $workflow,
+            ], 422);
+        }
+
+        if ($action === 'advance') {
+            $currentStep = (int) ($workflow['current_step'] ?? 1);
+            $nextStep = min($maxWorkflowSteps, $currentStep + 1);
+            $eventPayload = [];
+
+            if ($currentStep === 2) {
+                $callPayload = is_array($validated['call_confirmation_payload'] ?? null)
+                    ? $validated['call_confirmation_payload']
+                    : null;
+
+                if (!$callPayload) {
+                    return response()->json([
+                        'message' => 'Call confirmation details are required at Step 2 before moving to next step.',
+                    ], 422);
+                }
+
+                $requiredKeys = ['no_of_times_called', 'called_date', 'customer_full_name', 'nic_or_dob', 'loan_amount', 'given_date', 'repayment_card_given'];
+                foreach ($requiredKeys as $key) {
+                    $value = $callPayload[$key] ?? null;
+                    $isMissing = $value === null || (is_string($value) && trim($value) === '');
+                    if ($isMissing) {
+                        return response()->json([
+                            'message' => 'Call confirmation details are incomplete. Please fill all required fields.',
+                        ], 422);
+                    }
+                }
+
+                $answeredByCustomer = (bool) ($callPayload['answered_by_customer'] ?? false);
+                $answeredBySpouse = (bool) ($callPayload['answered_by_spouse'] ?? false);
+                if (!$answeredByCustomer && !$answeredBySpouse) {
+                    return response()->json([
+                        'message' => 'Select at least one answer source: customer or spouse.',
+                    ], 422);
+                }
+
+                $normalizedCallPayload = [
+                    'no_of_times_called' => (int) ($callPayload['no_of_times_called'] ?? 1),
+                    'called_date' => (string) ($callPayload['called_date'] ?? ''),
+                    'answered_by_customer' => $answeredByCustomer,
+                    'answered_by_spouse' => $answeredBySpouse,
+                    'customer_contact_no' => (string) ($callPayload['customer_contact_no'] ?? ''),
+                    'spouse_contact_no' => (string) ($callPayload['spouse_contact_no'] ?? ''),
+                    'customer_full_name' => trim((string) ($callPayload['customer_full_name'] ?? '')),
+                    'nic_or_dob' => trim((string) ($callPayload['nic_or_dob'] ?? '')),
+                    'loan_amount' => round((float) ($callPayload['loan_amount'] ?? 0), 2),
+                    'given_date' => (string) ($callPayload['given_date'] ?? ''),
+                    'business_type' => trim((string) ($callPayload['business_type'] ?? '')),
+                    'repayment_card_given' => (string) ($callPayload['repayment_card_given'] ?? 'no'),
+                    'business_details' => trim((string) ($callPayload['business_details'] ?? '')),
+                    'special_notes' => trim((string) ($callPayload['special_notes'] ?? '')),
+                    'disbursement_otp' => trim((string) ($callPayload['disbursement_otp'] ?? '')),
+                ];
+
+                $repaymentPlan['call_confirmation_payload'] = $normalizedCallPayload;
+                $eventPayload['call_confirmation_payload'] = $normalizedCallPayload;
+            }
+
+            if ($currentStep === 3) {
+                $bmPayload = is_array($validated['bm_approval_payload'] ?? null)
+                    ? $validated['bm_approval_payload']
+                    : null;
+
+                $bmComments = trim((string) ($bmPayload['bm_comments'] ?? ''));
+                if ($bmComments === '') {
+                    return response()->json([
+                        'message' => 'Please add BM comments before approval.',
+                    ], 422);
+                }
+
+                $normalizedBmPayload = [
+                    'bm_comments' => $bmComments,
+                    'bm_additional_notes' => trim((string) ($bmPayload['bm_additional_notes'] ?? '')),
+                    'reviewed_at' => now()->toDateTimeString(),
+                    'reviewed_by' => (int) ($request->user()?->id ?? 0),
+                ];
+
+                $repaymentPlan['bm_approval_payload'] = $normalizedBmPayload;
+                $eventPayload['bm_approval_payload'] = $normalizedBmPayload;
+            }
+
+            if ($currentStep === 4) {
+                $hoPayload = is_array($validated['ho_approval_payload'] ?? null)
+                    ? $validated['ho_approval_payload']
+                    : null;
+
+                $photoChecked = (bool) ($hoPayload['confirm_customer_photo'] ?? false);
+                $signatureChecked = (bool) ($hoPayload['confirm_customer_signature'] ?? false);
+
+                if (!$photoChecked || !$signatureChecked) {
+                    return response()->json([
+                        'message' => 'Please confirm both customer photo and customer signature before moving to Cash Allocation.',
+                    ], 422);
+                }
+
+                $normalizedHoPayload = [
+                    'confirm_customer_photo' => $photoChecked,
+                    'confirm_customer_signature' => $signatureChecked,
+                    'ho_additional_notes' => trim((string) ($hoPayload['ho_additional_notes'] ?? '')),
+                    'reviewed_at' => now()->toDateTimeString(),
+                    'reviewed_by' => (int) ($request->user()?->id ?? 0),
+                ];
+
+                $repaymentPlan['ho_approval_payload'] = $normalizedHoPayload;
+                $eventPayload['ho_approval_payload'] = $normalizedHoPayload;
+            }
+
+            if ($currentStep === 5) {
+                $cashAllocationPayload = is_array($validated['cash_allocation_payload'] ?? null)
+                    ? $validated['cash_allocation_payload']
+                    : null;
+
+                $branchId = (int) ($cashAllocationPayload['branch_id'] ?? 0);
+                $branchName = trim((string) ($cashAllocationPayload['branch_name'] ?? ''));
+                if ($branchName === '' && $branchId > 0) {
+                    $branchName = trim((string) (Company::query()->whereKey($branchId)->value('name') ?? ''));
+                }
+                $todayRequirement = isset($cashAllocationPayload['today_cash_requirement'])
+                    ? (float) $cashAllocationPayload['today_cash_requirement']
+                    : null;
+                $tomorrowRequirement = isset($cashAllocationPayload['tomorrow_cash_requirement'])
+                    ? (float) $cashAllocationPayload['tomorrow_cash_requirement']
+                    : 0.0;
+                $todayAllocation = isset($cashAllocationPayload['today_allocation_amount'])
+                    ? (float) $cashAllocationPayload['today_allocation_amount']
+                    : null;
+                $tomorrowAllocation = isset($cashAllocationPayload['tomorrow_allocation_amount'])
+                    ? (float) $cashAllocationPayload['tomorrow_allocation_amount']
+                    : null;
+
+                if (
+                    $branchId <= 0
+                    ||
+                    $branchName === ''
+                    || $todayRequirement === null
+                    || $todayAllocation === null
+                    || $tomorrowAllocation === null
+                ) {
+                    return response()->json([
+                        'message' => 'Cash allocation details are required at Step 5 before moving to Cash Request.',
+                    ], 422);
+                }
+
+                $normalizedCashAllocationPayload = [
+                    'branch_id' => $branchId,
+                    'branch_name' => $branchName,
+                    'today_cash_requirement' => round($todayRequirement, 2),
+                    'tomorrow_cash_requirement' => round($tomorrowRequirement, 2),
+                    'today_allocation_amount' => round($todayAllocation, 2),
+                    'tomorrow_allocation_amount' => round($tomorrowAllocation, 2),
+                    'reviewed_at' => now()->toDateTimeString(),
+                    'reviewed_by' => (int) ($request->user()?->id ?? 0),
+                ];
+
+                $repaymentPlan['cash_allocation_payload'] = $normalizedCashAllocationPayload;
+                $eventPayload['cash_allocation_payload'] = $normalizedCashAllocationPayload;
+            }
+
+            if ($currentStep === 6) {
+                $cashRequestPayload = is_array($validated['cash_request_payload'] ?? null)
+                    ? $validated['cash_request_payload']
+                    : null;
+
+                $customerName = trim((string) ($cashRequestPayload['customer_name'] ?? ''));
+                $customerNumber = trim((string) ($cashRequestPayload['customer_number'] ?? ''));
+                $loanAmount = isset($cashRequestPayload['loan_amount'])
+                    ? (float) $cashRequestPayload['loan_amount']
+                    : null;
+
+                if (
+                    $customerName === ''
+                    || $customerNumber === ''
+                    || $loanAmount === null
+                    || $loanAmount <= 0
+                ) {
+                    return response()->json([
+                        'message' => 'Cash request details are required at Step 6 before moving to Cash Withdrawal.',
+                    ], 422);
+                }
+
+                $normalizedCashRequestPayload = [
+                    'customer_name' => $customerName,
+                    'customer_number' => $customerNumber,
+                    'loan_amount' => round($loanAmount, 2),
+                    'requested_at' => now()->toDateTimeString(),
+                    'requested_by' => (int) ($request->user()?->id ?? 0),
+                ];
+
+                $repaymentPlan['cash_request_payload'] = $normalizedCashRequestPayload;
+                $eventPayload['cash_request_payload'] = $normalizedCashRequestPayload;
+            }
+
+            if ($currentStep === 7) {
+                $cashWithdrawalPayload = is_array($validated['cash_withdrawal_payload'] ?? null)
+                    ? $validated['cash_withdrawal_payload']
+                    : null;
+
+                $customerName = trim((string) ($cashWithdrawalPayload['customer_name'] ?? ''));
+                $customerNumber = trim((string) ($cashWithdrawalPayload['customer_number'] ?? ''));
+                $loanAmount = isset($cashWithdrawalPayload['loan_amount'])
+                    ? (float) $cashWithdrawalPayload['loan_amount']
+                    : null;
+
+                if (
+                    $customerName === ''
+                    || $customerNumber === ''
+                    || $loanAmount === null
+                    || $loanAmount <= 0
+                ) {
+                    return response()->json([
+                        'message' => 'Cash withdrawal details are required at Step 7 before moving to Second Call.',
+                    ], 422);
+                }
+
+                $normalizedCashWithdrawalPayload = [
+                    'customer_name' => $customerName,
+                    'customer_number' => $customerNumber,
+                    'loan_amount' => round($loanAmount, 2),
+                    'withdrawn_at' => now()->toDateTimeString(),
+                    'withdrawn_by' => (int) ($request->user()?->id ?? 0),
+                ];
+
+                $repaymentPlan['cash_withdrawal_payload'] = $normalizedCashWithdrawalPayload;
+                $eventPayload['cash_withdrawal_payload'] = $normalizedCashWithdrawalPayload;
+            }
+
+            if ($currentStep === 8) {
+                $secondCallPayload = is_array($validated['second_call_confirmation_payload'] ?? null)
+                    ? $validated['second_call_confirmation_payload']
+                    : null;
+
+                if (!$secondCallPayload) {
+                    return response()->json([
+                        'message' => 'Second call confirmation details are required at Step 8 before moving to Signature Check.',
+                    ], 422);
+                }
+
+                $requiredChecks = [
+                    'confirm_customer_full_name',
+                    'confirm_nic_number',
+                    'confirm_registered_mobile_number',
+                    'confirm_date_of_birth',
+                    'confirm_address',
+                    'confirm_loan_amount',
+                    'confirm_loan_purpose',
+                    'confirm_loan_term',
+                    'confirm_installment',
+                    'confirm_payment_frequency',
+                    'confirm_interest_rate',
+                    'confirm_first_payment_date',
+                    'confirm_number_of_installments',
+                ];
+
+                foreach ($requiredChecks as $checkKey) {
+                    if (!(bool) ($secondCallPayload[$checkKey] ?? false)) {
+                        return response()->json([
+                            'message' => 'Please confirm all second call details before moving to Signature Check.',
+                        ], 422);
+                    }
+                }
+
+                $normalizedSecondCallPayload = [
+                    'customer_full_name' => trim((string) ($secondCallPayload['customer_full_name'] ?? '')),
+                    'nic_number' => trim((string) ($secondCallPayload['nic_number'] ?? '')),
+                    'registered_mobile_number' => trim((string) ($secondCallPayload['registered_mobile_number'] ?? '')),
+                    'date_of_birth' => trim((string) ($secondCallPayload['date_of_birth'] ?? '')),
+                    'address' => trim((string) ($secondCallPayload['address'] ?? '')),
+                    'loan_amount' => trim((string) ($secondCallPayload['loan_amount'] ?? '')),
+                    'loan_purpose' => trim((string) ($secondCallPayload['loan_purpose'] ?? '')),
+                    'loan_term' => trim((string) ($secondCallPayload['loan_term'] ?? '')),
+                    'installment' => trim((string) ($secondCallPayload['installment'] ?? '')),
+                    'payment_frequency' => trim((string) ($secondCallPayload['payment_frequency'] ?? '')),
+                    'interest_rate' => trim((string) ($secondCallPayload['interest_rate'] ?? '')),
+                    'first_payment_date' => trim((string) ($secondCallPayload['first_payment_date'] ?? '')),
+                    'number_of_installments' => trim((string) ($secondCallPayload['number_of_installments'] ?? '')),
+                    'confirm_customer_full_name' => true,
+                    'confirm_nic_number' => true,
+                    'confirm_registered_mobile_number' => true,
+                    'confirm_date_of_birth' => true,
+                    'confirm_address' => true,
+                    'confirm_loan_amount' => true,
+                    'confirm_loan_purpose' => true,
+                    'confirm_loan_term' => true,
+                    'confirm_installment' => true,
+                    'confirm_payment_frequency' => true,
+                    'confirm_interest_rate' => true,
+                    'confirm_first_payment_date' => true,
+                    'confirm_number_of_installments' => true,
+                    'confirmed_at' => now()->toDateTimeString(),
+                    'confirmed_by' => (int) ($request->user()?->id ?? 0),
+                ];
+
+                $repaymentPlan['second_call_confirmation_payload'] = $normalizedSecondCallPayload;
+                $eventPayload['second_call_confirmation_payload'] = $normalizedSecondCallPayload;
+            }
+
+            if ($currentStep === 9) {
+                $signaturePayload = is_array($validated['loan_signature_check_payload'] ?? null)
+                    ? $validated['loan_signature_check_payload']
+                    : null;
+
+                $photoConfirmed = (bool) ($signaturePayload['confirm_customer_photo'] ?? false);
+                $signatureConfirmed = (bool) ($signaturePayload['confirm_customer_signature'] ?? false);
+
+                if (!$photoConfirmed || !$signatureConfirmed) {
+                    return response()->json([
+                        'message' => 'Please confirm both customer photo and customer signature before moving to Document Filing.',
+                    ], 422);
+                }
+
+                $normalizedSignaturePayload = [
+                    'confirm_customer_photo' => true,
+                    'confirm_customer_signature' => true,
+                    'customer_photo_url' => trim((string) ($signaturePayload['customer_photo_url'] ?? '')),
+                    'customer_signature_url' => trim((string) ($signaturePayload['customer_signature_url'] ?? '')),
+                    'checked_at' => now()->toDateTimeString(),
+                    'checked_by' => (int) ($request->user()?->id ?? 0),
+                ];
+
+                $repaymentPlan['loan_signature_check_payload'] = $normalizedSignaturePayload;
+                $eventPayload['loan_signature_check_payload'] = $normalizedSignaturePayload;
+            }
+
+            if ($currentStep === 10) {
+                $documentPayload = is_array($validated['document_filing_payload'] ?? null)
+                    ? $validated['document_filing_payload']
+                    : null;
+
+                $documentRows = is_array($documentPayload['documents'] ?? null)
+                    ? $documentPayload['documents']
+                    : [];
+
+                if ($documentRows === []) {
+                    return response()->json([
+                        'message' => 'Document verification details are required at Step 10 before moving to Insurance Request.',
+                    ], 422);
+                }
+
+                $rowsByKey = [];
+                foreach ($documentRows as $row) {
+                    if (!is_array($row)) {
+                        continue;
+                    }
+
+                    $key = trim((string) ($row['key'] ?? ''));
+                    if ($key === '') {
+                        continue;
+                    }
+
+                    $rowsByKey[$key] = $row;
+                }
+
+                $requiredDocuments = [
+                    ['key' => 'customer_national_id', 'label' => 'Customer National ID'],
+                    ['key' => 'passport', 'label' => 'Passport'],
+                    ['key' => 'driving_license', 'label' => 'Driving License'],
+                    ['key' => 'bank_statements', 'label' => 'Bank Statements'],
+                    ['key' => 'epf_reports', 'label' => 'EPF Reports'],
+                    ['key' => 'tax_returns', 'label' => 'Tax Returns'],
+                    ['key' => 'paysheets', 'label' => 'Paysheets'],
+                    ['key' => 'business_documents', 'label' => 'Business Documents'],
+                    ['key' => 'guarantor_image', 'label' => 'Guarantor Image'],
+                    ['key' => 'guarantor_signature', 'label' => 'Guarantor Signature'],
+                ];
+
+                $normalizedDocumentRows = [];
+                foreach ($requiredDocuments as $documentMeta) {
+                    $row = $rowsByKey[$documentMeta['key']] ?? null;
+                    if (!is_array($row)) {
+                        return response()->json([
+                            'message' => 'Please complete verification for all required documents before moving to Insurance Request.',
+                        ], 422);
+                    }
+
+                    $verified = (bool) ($row['verify'] ?? false);
+                    $notRequired = (bool) ($row['not_required'] ?? false);
+
+                    if ($verified === $notRequired) {
+                        return response()->json([
+                            'message' => 'Each document must be marked either Verify or Not Required before moving to Insurance Request.',
+                        ], 422);
+                    }
+
+                    $normalizedDocumentRows[] = [
+                        'key' => $documentMeta['key'],
+                        'label' => $documentMeta['label'],
+                        'document_url' => trim((string) ($row['document_url'] ?? '')),
+                        'document_available' => (bool) ($row['document_available'] ?? false),
+                        'verify' => $verified,
+                        'not_required' => $notRequired,
+                    ];
+                }
+
+                $normalizedDocumentPayload = [
+                    'documents' => $normalizedDocumentRows,
+                    'checked_at' => now()->toDateTimeString(),
+                    'checked_by' => (int) ($request->user()?->id ?? 0),
+                ];
+
+                $repaymentPlan['document_filing_payload'] = $normalizedDocumentPayload;
+                $eventPayload['document_filing_payload'] = $normalizedDocumentPayload;
+            }
+
+            $history = is_array($workflow['history'] ?? null) ? $workflow['history'] : [];
+            $history[] = [
+                'from_step' => $currentStep,
+                'to_step' => $nextStep,
+                'from_title' => $this->financeApprovalWorkflowStepTitle($currentStep),
+                'to_title' => $this->financeApprovalWorkflowStepTitle($nextStep),
+                'changed_at' => now()->toDateTimeString(),
+                'changed_by' => (int) ($request->user()?->id ?? 0),
+                'note' => trim((string) ($validated['note'] ?? '')),
+            ];
+
+            $repaymentPlan['approval_workflow'] = [
+                'current_step' => $nextStep,
+                'max_steps' => $maxWorkflowSteps,
+                'step_title' => $this->financeApprovalWorkflowStepTitle($nextStep),
+                'updated_at' => now()->toDateTimeString(),
+                'history' => $history,
+            ];
+
+            $this->appendFinanceReviewLog(
+                $repaymentPlan,
+                'advance',
+                $currentStep,
+                $nextStep,
+                $actor instanceof User ? $actor : null,
+                (string) ($validated['note'] ?? ''),
+                $eventPayload
+            );
+
+            if ((string) $finance->status !== 'active' && (string) $finance->status !== 'rejected') {
+                $finance->status = 'pending_approval';
+            }
+
+            $finance->repayment_plan = $repaymentPlan;
+            $finance->save();
+
+            $this->notifyFinanceWorkflowStepTransition(
+                $finance,
+                $currentStep,
+                $nextStep,
+                $actor instanceof User ? $actor : null
+            );
+
+            $this->logFinanceWorkflowEvent(
+                $finance,
+                'advance',
+                $currentStep,
+                $nextStep,
+                $actor instanceof User ? $actor : null,
+                (string) ($validated['note'] ?? ''),
+                $eventPayload,
+                $repaymentPlan['approval_workflow']
+            );
+
+            return response()->json([
+                'id' => $finance->id,
+                'status' => $finance->status,
+                'workflow' => $repaymentPlan['approval_workflow'],
+                'message' => $nextStep >= $maxWorkflowSteps
+                    ? 'Finance record reached final workflow step (Grant). You can approve now.'
+                    : 'Finance workflow moved to the next step.',
+            ]);
+        }
+
+        if ($action === 'send_back') {
+            $currentStep = (int) ($workflow['current_step'] ?? 1);
+            if ($currentStep <= 1) {
+                return response()->json([
+                    'message' => 'Step 1 records cannot be sent back further.',
+                    'workflow' => $workflow,
+                ], 422);
+            }
+
+            $rawTargetStep = isset($validated['target_step']) ? (int) $validated['target_step'] : ($currentStep - 1);
+            $targetStep = max(1, min($maxWorkflowSteps, $rawTargetStep));
+            if ($targetStep >= $currentStep) {
+                $targetStep = $currentStep - 1;
+            }
+
+            $history = is_array($workflow['history'] ?? null) ? $workflow['history'] : [];
+            $history[] = [
+                'from_step' => $currentStep,
+                'to_step' => $targetStep,
+                'from_title' => $this->financeApprovalWorkflowStepTitle($currentStep),
+                'to_title' => $this->financeApprovalWorkflowStepTitle($targetStep),
+                'changed_at' => now()->toDateTimeString(),
+                'changed_by' => (int) ($request->user()?->id ?? 0),
+                'note' => trim((string) ($validated['note'] ?? '')),
+                'direction' => 'backward',
+            ];
+
+            $repaymentPlan['approval_workflow'] = [
+                'current_step' => $targetStep,
+                'max_steps' => $maxWorkflowSteps,
+                'step_title' => $this->financeApprovalWorkflowStepTitle($targetStep),
+                'updated_at' => now()->toDateTimeString(),
+                'history' => $history,
+            ];
+
+            if ((string) $finance->status !== 'active' && (string) $finance->status !== 'rejected') {
+                $finance->status = 'pending_approval';
+            }
+
+            $this->appendFinanceReviewLog(
+                $repaymentPlan,
+                'send_back',
+                $currentStep,
+                $targetStep,
+                $actor instanceof User ? $actor : null,
+                (string) ($validated['note'] ?? ''),
+                [
+                    'target_step' => $targetStep,
+                    'direction' => 'backward',
+                ]
+            );
+
+            $finance->repayment_plan = $repaymentPlan;
+            $finance->save();
+
+            $this->notifyFinanceWorkflowStepTransition(
+                $finance,
+                $currentStep,
+                $targetStep,
+                $actor instanceof User ? $actor : null
+            );
+
+            $this->logFinanceWorkflowEvent(
+                $finance,
+                'send_back',
+                $currentStep,
+                $targetStep,
+                $actor instanceof User ? $actor : null,
+                (string) ($validated['note'] ?? ''),
+                [
+                    'target_step' => $targetStep,
+                    'direction' => 'backward',
+                ],
+                $repaymentPlan['approval_workflow']
+            );
+
+            return response()->json([
+                'id' => $finance->id,
+                'status' => $finance->status,
+                'workflow' => $repaymentPlan['approval_workflow'],
+                'message' => sprintf('Finance workflow sent back to Step %d.', $targetStep),
+            ]);
+        }
+
+        if (($action === 'approve' || $action === 'activate') && (int) ($workflow['current_step'] ?? 1) < $maxWorkflowSteps) {
+            return response()->json([
+                'message' => 'Complete all workflow steps before final approval.',
+                'workflow' => $workflow,
+            ], 422);
+        }
 
         if ($action === 'approve' || $action === 'activate') {
             $finance->status = 'active';
+            $normalizedDeductionOrderForLog = null;
 
             if (!empty($validated['deduction_order']) && is_array($validated['deduction_order'])) {
                 $deductionOrder = $validated['deduction_order'];
@@ -1860,24 +2717,231 @@ class FinanceController extends Controller
                     $normalizedDeductionOrder['installment_rules'] = $normalizedRules;
                 }
 
-                $repaymentPlan = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
                 $repaymentPlan['deduction_order'] = $normalizedDeductionOrder;
+                $normalizedDeductionOrderForLog = $normalizedDeductionOrder;
                 $finance->repayment_plan = $repaymentPlan;
             }
+
+            $currentStepForFinalAction = (int) ($workflow['current_step'] ?? 1);
+            $this->appendFinanceReviewLog(
+                $repaymentPlan,
+                $action,
+                $currentStepForFinalAction,
+                $currentStepForFinalAction,
+                $actor instanceof User ? $actor : null,
+                (string) ($validated['note'] ?? ''),
+                [
+                    'deduction_order' => $normalizedDeductionOrderForLog,
+                ]
+            );
+            $finance->repayment_plan = $repaymentPlan;
 
             if (!$wasActive) {
                 $this->initializeApprovalTrackingFields($finance);
             }
         } elseif ($action === 'reject') {
             $finance->status = 'rejected';
+
+            $currentStepForReject = (int) ($workflow['current_step'] ?? 1);
+            $this->appendFinanceReviewLog(
+                $repaymentPlan,
+                'reject',
+                $currentStepForReject,
+                $currentStepForReject,
+                $actor instanceof User ? $actor : null,
+                (string) ($validated['note'] ?? ''),
+                []
+            );
+            $finance->repayment_plan = $repaymentPlan;
         }
 
         $finance->save();
+
+        if ($action === 'approve' || $action === 'activate') {
+            $this->logFinanceWorkflowEvent(
+                $finance,
+                $action,
+                (int) ($workflow['current_step'] ?? 1),
+                (int) ($workflow['current_step'] ?? 1),
+                $actor instanceof User ? $actor : null,
+                (string) ($validated['note'] ?? ''),
+                [
+                    'deduction_order' => $validated['deduction_order'] ?? null,
+                ],
+                $workflow
+            );
+        }
+
+        if ($action === 'reject') {
+            $this->logFinanceWorkflowEvent(
+                $finance,
+                'reject',
+                (int) ($workflow['current_step'] ?? 1),
+                (int) ($workflow['current_step'] ?? 1),
+                $actor instanceof User ? $actor : null,
+                (string) ($validated['note'] ?? ''),
+                [],
+                $workflow
+            );
+        }
 
         return response()->json([
             'id' => $finance->id,
             'status' => $finance->status,
         ]);
+    }
+
+    private function normalizeFinanceApprovalWorkflowState(mixed $value): array
+    {
+        $maxSteps = count(self::FINANCE_APPROVAL_WORKFLOW_STEPS);
+
+        if (!is_array($value)) {
+            return [
+                'current_step' => 1,
+                'max_steps' => $maxSteps,
+                'step_title' => $this->financeApprovalWorkflowStepTitle(1),
+                'updated_at' => null,
+                'history' => [],
+            ];
+        }
+
+        $currentStepRaw = (int) ($value['current_step'] ?? 1);
+        $currentStep = max(1, min($maxSteps, $currentStepRaw));
+
+        return [
+            'current_step' => $currentStep,
+            'max_steps' => $maxSteps,
+            'step_title' => $this->financeApprovalWorkflowStepTitle($currentStep),
+            'updated_at' => $value['updated_at'] ?? null,
+            'history' => is_array($value['history'] ?? null) ? $value['history'] : [],
+        ];
+    }
+
+    private function financeApprovalWorkflowStepTitle(int $step): string
+    {
+        $safeStep = max(1, min(count(self::FINANCE_APPROVAL_WORKFLOW_STEPS), $step));
+        return self::FINANCE_APPROVAL_WORKFLOW_STEPS[$safeStep] ?? 'Workflow Step';
+    }
+
+    private function financeWorkflowNotificationRecipientIds(Finance $finance, int $actorUserId = 0): array
+    {
+        $recipientIds = [];
+
+        $branchManagerUserId = (int) ($finance->branch_manager_user_id ?? 0);
+        if ($branchManagerUserId > 0) {
+            $recipientIds[] = $branchManagerUserId;
+        }
+
+        $officerEmployeeId = (int) ($finance->responsible_officer_employee_id ?? 0);
+        if ($officerEmployeeId > 0) {
+            $officerUserId = (int) User::query()
+                ->where('employee_id', $officerEmployeeId)
+                ->value('id');
+            if ($officerUserId > 0) {
+                $recipientIds[] = $officerUserId;
+            }
+        }
+
+        $createdByUserId = (int) ($finance->created_by ?? 0);
+        if ($createdByUserId > 0) {
+            $recipientIds[] = $createdByUserId;
+        }
+
+        if ($actorUserId > 0) {
+            $recipientIds[] = $actorUserId;
+        }
+
+        return array_values(array_unique(array_filter($recipientIds, static fn ($id) => (int) $id > 0)));
+    }
+
+    private function notifyFinanceWorkflowStepTransition(
+        Finance $finance,
+        int $fromStep,
+        int $toStep,
+        ?User $actor = null
+    ): void {
+        try {
+            $actorUserId = (int) ($actor?->id ?? 0);
+            $recipientIds = $this->financeWorkflowNotificationRecipientIds($finance, $actorUserId);
+            if (empty($recipientIds)) {
+                return;
+            }
+
+            $maxSteps = count(self::FINANCE_APPROVAL_WORKFLOW_STEPS);
+            $fromStep = max(1, min($maxSteps, $fromStep));
+            $toStep = max(1, min($maxSteps, $toStep));
+            $fromType = 'step_' . $fromStep;
+            $toType = 'step_' . $toStep;
+            $toTitle = $this->financeApprovalWorkflowStepTitle($toStep);
+
+            $financeRef = 'FIN-' . str_pad((string) $finance->id, 6, '0', STR_PAD_LEFT);
+            $actorName = trim((string) ($actor?->name ?? 'Workflow reviewer'));
+
+            UserNotification::query()
+                ->whereIn('user_id', $recipientIds)
+                ->where('is_read', false)
+                ->where('type', $fromType)
+                ->where('meta->finance_id', (int) $finance->id)
+                ->update([
+                    'is_read' => true,
+                    'read_at' => now(),
+                ]);
+
+            foreach ($recipientIds as $recipientId) {
+                UserNotification::query()->create([
+                    'user_id' => $recipientId,
+                    'title' => 'Finance Workflow Updated',
+                    'message' => sprintf('%s moved %s to Step %d: %s.', $actorName, $financeRef, $toStep, $toTitle),
+                    'type' => $toType,
+                    'is_read' => false,
+                    'is_important' => true,
+                    'action_url' => '/dashboard/finance/approvals',
+                    'meta' => [
+                        'finance_id' => (int) $finance->id,
+                        'finance_ref' => $financeRef,
+                        'from_step' => $fromStep,
+                        'to_step' => $toStep,
+                        'workflow_step' => $toStep,
+                        'workflow_step_title' => $toTitle,
+                        'status' => (string) ($finance->status ?? 'pending_approval'),
+                    ],
+                ]);
+            }
+        } catch (\Throwable) {
+            // Do not fail workflow update when notifications fail.
+        }
+    }
+
+    private function logFinanceWorkflowEvent(
+        Finance $finance,
+        string $eventType,
+        ?int $fromStep,
+        ?int $toStep,
+        ?User $actor = null,
+        ?string $note = null,
+        array $eventPayload = [],
+        ?array $workflowSnapshot = null
+    ): void {
+        try {
+            $safeToStep = $toStep !== null
+                ? max(1, min(count(self::FINANCE_APPROVAL_WORKFLOW_STEPS), (int) $toStep))
+                : null;
+
+            FinanceWorkflowEvent::query()->create([
+                'finance_id' => (int) $finance->id,
+                'event_type' => trim($eventType) !== '' ? $eventType : 'update',
+                'from_step' => $fromStep,
+                'to_step' => $safeToStep,
+                'step_title' => $safeToStep !== null ? $this->financeApprovalWorkflowStepTitle($safeToStep) : null,
+                'actor_user_id' => (int) ($actor?->id ?? 0) > 0 ? (int) $actor?->id : null,
+                'status' => (string) ($finance->status ?? ''),
+                'note' => trim((string) ($note ?? '')) !== '' ? trim((string) $note) : null,
+                'event_payload' => !empty($eventPayload) ? $eventPayload : null,
+                'workflow_snapshot' => $workflowSnapshot,
+            ]);
+        } catch (\Throwable) {
+            // Do not fail main finance flow if audit logging fails.
+        }
     }
 
     private function initializeApprovalTrackingFields(Finance $finance): void

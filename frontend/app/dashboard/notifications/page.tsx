@@ -40,6 +40,17 @@ type NotificationItem = {
   read: boolean;
   important: boolean;
   actionUrl?: string;
+  meta?: NotificationMeta;
+};
+
+type NotificationMeta = {
+  finance_id?: number;
+  finance_ref?: string;
+  customer_no?: string;
+  status?: string;
+  workflow_step?: number;
+  workflow_step_title?: string;
+  [key: string]: unknown;
 };
 
 type ApiNotificationRow = {
@@ -51,6 +62,7 @@ type ApiNotificationRow = {
   is_read?: boolean;
   is_important?: boolean;
   action_url?: string | null;
+  meta?: Record<string, unknown> | null;
 };
 
 const typeStyles: Record<NotificationType, string> = {
@@ -85,6 +97,44 @@ const resolveNotificationType = (value: string): NotificationType => {
   }
 
   return 'system';
+};
+
+const isStepType = (type: NotificationType): boolean => /^step_\d+$/.test(type);
+
+const toMetaObject = (value: unknown): NotificationMeta | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  return value as NotificationMeta;
+};
+
+const isFinanceWorkflowNotification = (row: NotificationItem): boolean => {
+  if (row.type === 'finance') return true;
+  if (!isStepType(row.type)) return false;
+
+  const financeId = Number(row.meta?.finance_id || 0);
+  const financeRef = String(row.meta?.finance_ref || '').trim();
+  return financeId > 0 || financeRef !== '';
+};
+
+const resolveActionUrl = (row: NotificationItem): string | undefined => {
+  const rawActionUrl = String(row.actionUrl || '').trim();
+
+  if (isFinanceWorkflowNotification(row)) {
+    return '/dashboard/finance/approvals';
+  }
+
+  if (rawActionUrl) {
+    return rawActionUrl;
+  }
+
+  if (
+    row.type === 'microfinance_loan_request' ||
+    row.type === 'microfinance_approval_request' ||
+    row.type === 'microfinance_send_back'
+  ) {
+    return '/dashboard/microfinance/loans/approvals';
+  }
+
+  return undefined;
 };
 
 export default function NotificationsPage() {
@@ -139,6 +189,7 @@ export default function NotificationsPage() {
           read: Boolean(row.is_read),
           important: Boolean(row.is_important),
           actionUrl: typeof row.action_url === 'string' ? row.action_url : undefined,
+          meta: toMetaObject(row.meta),
         }))
       );
       setSummary({
@@ -470,9 +521,9 @@ export default function NotificationsPage() {
                   </div>
 
                   <div className="flex gap-2">
-                    {row.actionUrl && (
+                    {resolveActionUrl(row) && (
                       <button
-                        onClick={() => router.push(row.actionUrl as string)}
+                        onClick={() => router.push(resolveActionUrl(row) as string)}
                         className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
                       >
                         Open

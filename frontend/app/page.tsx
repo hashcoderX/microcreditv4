@@ -15,6 +15,7 @@ export default function Home() {
   const [forgotLoading, setForgotLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [modalMessage, setModalMessage] = useState('');
+  const [modalType, setModalType] = useState<'success' | 'error'>('error');
   const [showModal, setShowModal] = useState(false);
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [businessName, setBusinessName] = useState('');
@@ -89,6 +90,7 @@ export default function Home() {
           firstValidationError ||
           'Login failed. Please check your credentials.'
       );
+      setModalType('error');
       setModalMessage(String(message));
       setShowModal(true);
     } finally {
@@ -100,6 +102,7 @@ export default function Home() {
     e.preventDefault();
 
     if (forgotPassword !== forgotPasswordConfirm) {
+      setModalType('error');
       setModalMessage('New password and confirm password do not match.');
       setShowModal(true);
       return;
@@ -117,6 +120,7 @@ export default function Home() {
       setForgotEmail('');
       setForgotPassword('');
       setForgotPasswordConfirm('');
+      setModalType('success');
       setModalMessage(String(response?.data?.message || 'Password reset successful.'));
       setShowModal(true);
     } catch (error: unknown) {
@@ -130,6 +134,7 @@ export default function Home() {
             (responseData as { errors?: { email?: string[]; password?: string[] } }).errors?.password?.[0]
           : null) ||
         'Failed to reset password.';
+      setModalType('error');
       setModalMessage(String(message));
       setShowModal(true);
     } finally {
@@ -257,14 +262,30 @@ export default function Home() {
 
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-rose-200 bg-white p-6 shadow-[0_28px_70px_-30px_rgba(190,24,93,0.55)]">
-            <h3 className="text-xl font-extrabold text-rose-700">Login Error</h3>
+          <div
+            className={`w-full max-w-md rounded-2xl bg-white p-6 ${
+              modalType === 'success'
+                ? 'border border-emerald-200 shadow-[0_28px_70px_-30px_rgba(5,150,105,0.45)]'
+                : 'border border-rose-200 shadow-[0_28px_70px_-30px_rgba(190,24,93,0.55)]'
+            }`}
+          >
+            <h3
+              className={`text-xl font-extrabold ${
+                modalType === 'success' ? 'text-emerald-700' : 'text-rose-700'
+              }`}
+            >
+              {modalType === 'success' ? 'Success' : 'Login Error'}
+            </h3>
             <p className="mt-3 text-sm text-slate-700">{modalMessage}</p>
             <div className="mt-5 flex justify-end">
               <button
                 type="button"
                 onClick={() => setShowModal(false)}
-                className="px-4 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-red-700 text-white text-sm font-semibold"
+                className={`px-4 py-2 rounded-xl text-white text-sm font-semibold ${
+                  modalType === 'success'
+                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600'
+                    : 'bg-gradient-to-r from-rose-600 to-red-700'
+                }`}
               >
                 Close
               </button>

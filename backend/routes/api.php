@@ -161,6 +161,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::post('system/whatsapp-gateway', [CompanyController::class, 'updateWhatsappGatewayConfig']);
     Route::post('system/whatsapp-gateway/test', [CompanyController::class, 'testWhatsappGateway']);
     Route::post('system/reset', [CompanyController::class, 'resetSystem']);
+    Route::post('system/reset-full', [CompanyController::class, 'resetSystemFull']);
     Route::get('manager-candidates', [CompanyController::class, 'managerCandidates']);
     Route::apiResource('companies', CompanyController::class);
     Route::post('companies/{company}/logo', [CompanyController::class, 'uploadLogo']);
@@ -329,6 +330,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('finances/reports/loan-disbursement', [AccountingReportsController::class, 'loanDisbursementReport']);
     Route::get('finances/assignment-options', [FinanceController::class, 'assignmentOptions']);
     Route::apiResource('finances', FinanceController::class)->only(['index', 'store', 'show']);
+    Route::delete('finances/{finance}', [FinanceController::class, 'destroy']);
     Route::post('finances/{finance}/status', [FinanceController::class, 'updateStatus']);
     Route::get('finances/{finance}/collections', [FinanceController::class, 'collections']);
     Route::post('finances/{finance}/collections', [FinanceController::class, 'storeCollection']);

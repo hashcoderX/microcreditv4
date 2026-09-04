@@ -93,6 +93,11 @@ class Finance extends Model
         return $this->hasMany(FinanceCollection::class);
     }
 
+    public function workflowEvents()
+    {
+        return $this->hasMany(FinanceWorkflowEvent::class);
+    }
+
     public function draftLoan()
     {
         return $this->hasOne(DraftLoan::class);

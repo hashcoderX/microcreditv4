@@ -381,6 +381,7 @@ class CompanyController extends Controller
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:companies',
+            'super_admin_password' => 'required|string|min:8',
             'address' => 'nullable|string',
             'phone' => 'nullable|string|max:20',
             'secondary_phone' => 'nullable|string|max:30',
@@ -409,6 +410,15 @@ class CompanyController extends Controller
             'bank_accounts.*.account_name' => 'nullable|string|max:190',
             'bank_accounts.*.opening_balance' => 'nullable|numeric|min:0',
         ]);
+
+        if (User::query()->whereRaw('LOWER(email) = ?', [strtolower(trim((string) $validated['email']))])->exists()) {
+            return response()->json([
+                'errors' => [
+                    'email' => ['This email is already used by an existing user account.'],
+                ],
+                'message' => 'Validation failed.',
+            ], 422);
+        }
 
         $companyPayload = collect($validated)->only([
             'name',
@@ -446,6 +456,27 @@ class CompanyController extends Controller
 
         $company = DB::transaction(function () use ($companyPayload, $validated, $request, $leadershipAssignments) {
             $company = Company::create($companyPayload);
+
+            $superAdminUser = User::query()->create([
+                'name' => trim((string) $company->name) . ' Super Admin',
+                'email' => (string) $company->email,
+                'password' => Hash::make((string) $validated['super_admin_password']),
+                'employee_id' => null,
+                'branch_id' => (int) $company->id,
+                'designation_id' => null,
+            ]);
+
+            $superAdminRole = Role::firstOrCreate(
+                ['name' => 'Super Admin'],
+                ['description' => 'Full system access with all permissions']
+            );
+
+            $superAdminUser->roles()->syncWithoutDetaching([
+                $superAdminRole->id => [
+                    'assigned_at' => now(),
+                    'assigned_by' => $request->user()?->id ?? $superAdminUser->id,
+                ],
+            ]);
 
             CompanyAccount::provisionForCompany($company, [
                 'opening_asset' => $validated['opening_asset'] ?? 0,
@@ -1054,6 +1085,106 @@ class CompanyController extends Controller
 
             return response()->json([
                 'message' => 'System reset failed. ' . $exception->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function resetSystemFull(Request $request)
+    {
+        $validated = $request->validate([
+            'password' => ['required', 'string', 'min:1'],
+        ]);
+
+        $requestUser = $request->user();
+        if (!$requestUser || $requestUser->email !== self::DEFAULT_SUPER_ADMIN_EMAIL) {
+            return response()->json([
+                'message' => 'Only the Super Admin can run full reset.'
+            ], 403);
+        }
+
+        if (!Hash::check((string) $validated['password'], (string) $requestUser->password)) {
+            return response()->json([
+                'message' => 'Invalid password. Full reset cancelled.'
+            ], 422);
+        }
+
+        $superAdminEmail = trim((string) env('SYSTEM_SUPER_ADMIN_EMAIL', self::DEFAULT_SUPER_ADMIN_EMAIL));
+        if ($superAdminEmail === '') {
+            $superAdminEmail = self::DEFAULT_SUPER_ADMIN_EMAIL;
+        }
+
+        $generatedPassword = Str::password(14);
+
+        try {
+            @set_time_limit(0);
+
+            $preservedSuperAdmin = User::query()
+                ->where('email', $superAdminEmail)
+                ->first();
+
+            $this->clearPublicStorageData();
+
+            Artisan::call('migrate:fresh', ['--force' => true]);
+
+            $superAdmin = User::firstOrCreate(
+                ['email' => $superAdminEmail],
+                [
+                    'name' => 'Super Admin',
+                    'password' => Hash::make($generatedPassword),
+                ]
+            );
+
+            if ($preservedSuperAdmin) {
+                $preservedPayload = $this->filterColumns('users', $preservedSuperAdmin->toArray());
+                unset($preservedPayload['id']);
+                unset($preservedPayload['email']);
+                unset($preservedPayload['created_at']);
+                unset($preservedPayload['updated_at']);
+
+                if (!empty($preservedPayload)) {
+                    $superAdmin->fill($preservedPayload);
+                }
+            }
+
+            $superAdmin->name = 'Super Admin';
+            $superAdmin->password = Hash::make($generatedPassword);
+            $superAdmin->employee_id = null;
+            $superAdmin->branch_id = null;
+            $superAdmin->designation_id = null;
+            $superAdmin->save();
+
+            $superAdminRole = Role::firstOrCreate(
+                ['name' => 'Super Admin'],
+                ['description' => 'Full system access with all permissions']
+            );
+
+            $superAdmin->roles()->sync([
+                $superAdminRole->id => [
+                    'assigned_at' => now(),
+                    'assigned_by' => $superAdmin->id,
+                ],
+            ]);
+
+            $this->setSystemOnlineValue(true);
+
+            if (Schema::hasTable('personal_access_tokens')) {
+                DB::table('personal_access_tokens')->truncate();
+            }
+
+            return response()->json([
+                'message' => 'Full system reset completed. All table data was deleted and only Super Admin was recreated.',
+                'super_admin' => [
+                    'email' => $superAdminEmail,
+                    'password' => $generatedPassword,
+                ],
+            ]);
+        } catch (Throwable $exception) {
+            Log::error('Full system reset failed', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Full system reset failed. ' . $exception->getMessage(),
             ], 500);
         }
     }
