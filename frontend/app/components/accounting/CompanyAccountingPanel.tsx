@@ -28,6 +28,18 @@ import {
 
 type Notice = { type: 'success' | 'error'; text: string };
 
+type CompanyWalletUserStatus = {
+  company_id: number;
+  wallet_no: string;
+  company_fund: number;
+  email: string;
+  has_main_account: boolean;
+  user_exists: boolean;
+  is_branch_linked: boolean;
+  has_super_admin_role: boolean;
+  generated_password?: string | null;
+};
+
 type CompanyAccountingPanelProps = {
   token: string;
   companyId: number | null;
@@ -60,17 +72,23 @@ export default function CompanyAccountingPanel({
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [accountSummary, setAccountSummary] = useState<AccountingSummary | null>(null);
   const [bankAccounts, setBankAccounts] = useState<CompanyAccount[]>([]);
-  const [mainForm, setMainForm] = useState<AccountFormState>(emptyAccountForm());
   const [cashForm, setCashForm] = useState<AccountFormState>(emptyAccountForm());
   const [bankForm, setBankForm] = useState<BankFormState>(emptyBankForm());
   const [editingBankId, setEditingBankId] = useState<number | null>(null);
-  const [savingMainAccount, setSavingMainAccount] = useState(false);
   const [addingMainMoney, setAddingMainMoney] = useState(false);
   const [savingCashAccount, setSavingCashAccount] = useState(false);
   const [savingBankAccount, setSavingBankAccount] = useState(false);
   const [deletingBankId, setDeletingBankId] = useState<number | null>(null);
+  const [companyWalletStatus, setCompanyWalletStatus] = useState<CompanyWalletUserStatus | null>(null);
+  const [loadingCompanyWalletStatus, setLoadingCompanyWalletStatus] = useState(false);
+  const [provisioningCompanyWalletUser, setProvisioningCompanyWalletUser] = useState(false);
   const [mainTopUpAmount, setMainTopUpAmount] = useState('');
   const [mainTopUpNote, setMainTopUpNote] = useState('');
+
+  const totalBankCurrentBalance = (accountSummary?.banks || []).reduce(
+    (sum, row) => sum + toAmount(row.current_balance),
+    0
+  );
 
   const notify = (notice: Notice) => {
     onNotice?.(notice);
@@ -84,7 +102,6 @@ export default function CompanyAccountingPanel({
   });
 
   const loadAccountingForms = (summary: AccountingSummary | null) => {
-    setMainForm(accountFromRow(summary?.main));
     setCashForm(accountFromRow(summary?.cash));
     setBankAccounts(Array.isArray(summary?.banks) ? summary.banks : []);
     if (!editingBankId) {
@@ -104,7 +121,6 @@ export default function CompanyAccountingPanel({
     } catch {
       setAccountSummary(null);
       setBankAccounts([]);
-      setMainForm(emptyAccountForm());
       setCashForm(emptyAccountForm());
       setBankForm(emptyBankForm());
     } finally {
@@ -112,61 +128,80 @@ export default function CompanyAccountingPanel({
     }
   };
 
+  const fetchCompanyWalletStatus = async (authToken: string, selectedCompanyId: number) => {
+    setLoadingCompanyWalletStatus(true);
+    try {
+      const response = await axios.get(`/api/companies/${selectedCompanyId}/wallet-user`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      setCompanyWalletStatus((response.data?.wallet || null) as CompanyWalletUserStatus | null);
+    } catch {
+      setCompanyWalletStatus(null);
+    } finally {
+      setLoadingCompanyWalletStatus(false);
+    }
+  };
+
   useEffect(() => {
     if (!token || !companyId) {
       setAccountSummary(null);
       setBankAccounts([]);
-      setMainForm(emptyAccountForm());
       setCashForm(emptyAccountForm());
       setBankForm(emptyBankForm());
+      setCompanyWalletStatus(null);
       setEditingBankId(null);
       return;
     }
 
     fetchCompanyAccounts(token, companyId);
+    fetchCompanyWalletStatus(token, companyId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, companyId]);
 
   const refreshCompanyAccounts = async () => {
     if (!token || !companyId) return;
     await fetchCompanyAccounts(token, companyId);
+    await fetchCompanyWalletStatus(token, companyId);
   };
 
-  const handleSaveMainAccount = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleProvisionCompanyWalletUser = async () => {
     if (!token || !companyId) {
       notify({ type: 'error', text: 'Select a company first.' });
       return;
     }
 
-    setSavingMainAccount(true);
-
-    const payload = {
-      account_name: mainForm.account_name.trim() || 'Company Main Account',
-      account_code: mainForm.account_code.trim() || undefined,
-      opening_balance: toAmount(mainForm.opening_balance),
-      notes: mainForm.notes.trim() || null,
-    };
-
+    setProvisioningCompanyWalletUser(true);
     try {
-      if (accountSummary?.main?.id) {
-        await axios.put(`/api/companies/${companyId}/accounts/${accountSummary.main.id}`, payload, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        notify({ type: 'success', text: 'Main company account updated.' });
-      } else {
-        await axios.post(
-          `/api/companies/${companyId}/accounts`,
-          { ...payload, account_type: 'main' },
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        notify({ type: 'success', text: 'Main company account created.' });
+      const response = await axios.post(
+        `/api/companies/${companyId}/wallet-user/provision`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const walletData = (response.data?.wallet || null) as CompanyWalletUserStatus | null;
+      if (walletData) {
+        setCompanyWalletStatus(walletData);
       }
+
+      const generatedPassword = String(walletData?.generated_password || '').trim();
+      const generatedEmail = String(walletData?.email || '').trim();
+      if (generatedPassword) {
+        notify({
+          type: 'success',
+          text: `Company wallet user is ready. Email: ${generatedEmail} | Temp password: ${generatedPassword}`,
+        });
+      } else {
+        notify({ type: 'success', text: response.data?.message || 'Company wallet user linked successfully.' });
+      }
+
       await refreshCompanyAccounts();
     } catch (error: any) {
-      notify({ type: 'error', text: error?.response?.data?.message || 'Failed to save main account.' });
+      notify({
+        type: 'error',
+        text: error?.response?.data?.message || 'Failed to provision company wallet user.',
+      });
     } finally {
-      setSavingMainAccount(false);
+      setProvisioningCompanyWalletUser(false);
     }
   };
 
@@ -352,7 +387,7 @@ export default function CompanyAccountingPanel({
       <div className="rounded-2xl border border-violet-100 bg-gradient-to-r from-violet-50/80 to-cyan-50/50 px-4 py-3">
         <p className="text-sm font-bold text-slate-900">Company accounting setup</p>
         <p className="text-xs text-slate-600 mt-0.5">
-          Create the company main account and set starting balances for cash and bank accounts before daily operations.
+          Add money to the main account and manage starting balances for cash and bank accounts.
         </p>
       </div>
 
@@ -378,25 +413,22 @@ export default function CompanyAccountingPanel({
               },
               {
                 label: 'Cash on hand',
-                value: accountSummary?.cash ? formatMoney(accountSummary.cash.opening_balance, currency) : 'Not set',
-                sub: accountSummary?.cash ? 'Opening cash balance' : 'Set starting cash float',
+                value: accountSummary?.cash ? formatMoney(accountSummary.cash.current_balance, currency) : 'Not set',
+                sub: accountSummary?.cash ? 'Current cash balance' : 'Set starting cash float',
                 icon: Coins,
                 accent: 'from-emerald-500 to-teal-600',
               },
               {
                 label: 'Bank accounts',
                 value: String(accountSummary?.bank_count ?? 0),
-                sub: formatMoney(
-                  (accountSummary?.banks || []).reduce((sum, row) => sum + toAmount(row.opening_balance), 0),
-                  currency
-                ),
+                sub: formatMoney(totalBankCurrentBalance, currency),
                 icon: Wallet,
                 accent: 'from-blue-500 to-indigo-600',
               },
               {
-                label: 'Total opening',
-                value: formatMoney(accountSummary?.total_opening_balance ?? 0, currency),
-                sub: 'Main + cash + bank opening balances',
+                label: 'Total current',
+                value: formatMoney(accountSummary?.total_current_balance ?? 0, currency),
+                sub: 'Main + cash + bank current balances',
                 icon: Building2,
                 accent: 'from-cyan-500 to-blue-600',
               },
@@ -419,56 +451,64 @@ export default function CompanyAccountingPanel({
             })}
           </div>
 
+          <div className="rounded-2xl border border-emerald-100 bg-white p-5 shadow-sm space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-slate-900">Company User Wallet</p>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Link or create the company super user wallet profile so that company fund appears when that user logs in.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleProvisionCompanyWalletUser()}
+                disabled={provisioningCompanyWalletUser || loadingCompanyWalletStatus}
+                className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-60"
+              >
+                {provisioningCompanyWalletUser ? 'Provisioning…' : 'Make company wallet user'}
+              </button>
+            </div>
+
+            {loadingCompanyWalletStatus ? (
+              <p className="text-xs text-slate-500">Checking wallet user status…</p>
+            ) : companyWalletStatus ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-[11px] font-semibold text-slate-500">Wallet No</p>
+                  <p className="text-sm font-bold text-slate-900">{companyWalletStatus.wallet_no || '-'}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-[11px] font-semibold text-slate-500">Company Fund</p>
+                  <p className="text-sm font-bold text-emerald-800">{formatMoney(companyWalletStatus.company_fund, currency)}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-[11px] font-semibold text-slate-500">Login Email</p>
+                  <p className="text-sm font-bold text-slate-900 truncate" title={companyWalletStatus.email || '-'}>
+                    {companyWalletStatus.email || '-'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-[11px] font-semibold text-slate-500">Status</p>
+                  <p className="text-xs font-semibold text-slate-800">
+                    {companyWalletStatus.user_exists ? 'User ready' : 'User missing'} |{' '}
+                    {companyWalletStatus.is_branch_linked ? 'Branch linked' : 'Branch not linked'} |{' '}
+                    {companyWalletStatus.has_super_admin_role ? 'Super role linked' : 'Super role missing'}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">Wallet user status is unavailable for this company.</p>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 gap-5">
-            <form onSubmit={handleSaveMainAccount} className="rounded-2xl border border-violet-100 bg-white p-5 shadow-sm space-y-4">
+            <div className="rounded-2xl border border-violet-100 bg-white p-5 shadow-sm space-y-4">
               <div className="flex items-center gap-2">
                 <Landmark className="h-5 w-5 text-violet-700" />
                 <div>
                   <h3 className="text-base font-bold text-slate-900">Main company account</h3>
                   <p className="text-xs text-slate-500">Primary ledger / capital account for the company</p>
                 </div>
-              </div>
-              <div>
-                <label className={accountingLabelClass}>Account name</label>
-                <input
-                  value={mainForm.account_name}
-                  onChange={(e) => setMainForm({ ...mainForm, account_name: e.target.value })}
-                  className={accountingInputClass}
-                  placeholder="Company Main Account"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={accountingLabelClass}>Account code</label>
-                  <input
-                    value={mainForm.account_code}
-                    onChange={(e) => setMainForm({ ...mainForm, account_code: e.target.value })}
-                    className={accountingInputClass}
-                    placeholder="3000"
-                  />
-                </div>
-                <div>
-                  <label className={accountingLabelClass}>Opening balance ({currency})</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={mainForm.opening_balance}
-                    onChange={(e) => setMainForm({ ...mainForm, opening_balance: e.target.value })}
-                    className={accountingInputClass}
-                    placeholder="0.00"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className={accountingLabelClass}>Notes</label>
-                <textarea
-                  value={mainForm.notes}
-                  onChange={(e) => setMainForm({ ...mainForm, notes: e.target.value })}
-                  rows={2}
-                  className={accountingInputClass}
-                  placeholder="Optional notes"
-                />
               </div>
               {accountSummary?.main ? (
                 <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3.5">
@@ -513,15 +553,13 @@ export default function CompanyAccountingPanel({
                     </div>
                   </div>
                 </div>
-              ) : null}
-              <button
-                type="submit"
-                disabled={savingMainAccount}
-                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
-              >
-                <Save className="h-4 w-4" />
-                {savingMainAccount ? 'Saving…' : accountSummary?.main ? 'Update main account' : 'Create main account'}
-              </button>
+              ) : (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3">
+                  <p className="text-xs font-semibold text-amber-900">
+                    Main account is not available yet. Please contact system admin to provision it.
+                  </p>
+                </div>
+              )}
 
               {accountSummary?.main ? (
                 <div className="rounded-xl border border-violet-100 overflow-x-auto">
@@ -555,7 +593,7 @@ export default function CompanyAccountingPanel({
                   </table>
                 </div>
               ) : null}
-            </form>
+            </div>
           </div>
 
           <div className="rounded-2xl border border-blue-100 bg-white p-5 shadow-sm space-y-4">

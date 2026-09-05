@@ -13,6 +13,7 @@ use App\Models\EmployeeWallet;
 use App\Models\MicrofinanceCenter;
 use App\Models\MicrofinanceGroup;
 use App\Models\MicrofinanceLoanGuarantor;
+use App\Models\MicrofinanceActionCenterStepRole;
 use App\Models\MicrofinanceLoanRequest;
 use App\Models\MicrofinancePenaltySetting;
 use App\Models\MicrofinanceRoute;
@@ -306,10 +307,7 @@ class LoanRequestController extends Controller
      */
     private function workflowNotificationRecipientIds(MicrofinanceLoanRequest $loanRequest, int $actorUserId = 0): array
     {
-        $recipientIds = $this->approvalNotificationRecipientIds(
-            $loanRequest->branch_id !== null ? (int) $loanRequest->branch_id : null,
-            null
-        );
+        $recipientIds = [];
 
         $assignedApproverEmployeeId = (int) ($loanRequest->approval_employee_id ?? 0);
         if ($assignedApproverEmployeeId > 0) {
@@ -393,11 +391,9 @@ class LoanRequestController extends Controller
     private function notifyLoanRequestCreated(MicrofinanceLoanRequest $loanRequest, Request $request): void
     {
         $actorUserId = (int) ($request->user()?->id ?? 0);
+        $branchId = (int) ($loanRequest->branch_id ?? 0);
 
-        $recipientIds = $this->approvalNotificationRecipientIds(
-            $loanRequest->branch_id !== null ? (int) $loanRequest->branch_id : null,
-            $actorUserId > 0 ? $actorUserId : null
-        );
+        $recipientIds = [];
 
         $assignedApproverEmployeeId = (int) ($loanRequest->approval_employee_id ?? 0);
         if ($assignedApproverEmployeeId > 0) {
@@ -409,6 +405,35 @@ class LoanRequestController extends Controller
             if ($assignedApproverUserId > 0 && $assignedApproverUserId !== $actorUserId) {
                 $recipientIds[] = $assignedApproverUserId;
             }
+        }
+
+        $createdByUserId = (int) ($loanRequest->created_by ?? 0);
+        if ($createdByUserId > 0) {
+            $recipientIds[] = $createdByUserId;
+        }
+
+        // Also notify branch up-level approval users (Credit Officer / approvers) for Step 1 visibility.
+        $branchApproverUsers = User::query()
+            ->with(['designation:id,name', 'roles:id,name'])
+            ->where(function ($query) use ($branchId) {
+                if ($branchId > 0) {
+                    $query->where('branch_id', $branchId)
+                        ->orWhereNull('branch_id');
+                }
+            })
+            ->get(['id', 'branch_id', 'designation_id']);
+
+        foreach ($branchApproverUsers as $candidateUser) {
+            $candidateId = (int) ($candidateUser->id ?? 0);
+            if ($candidateId <= 0 || $candidateId === $actorUserId) {
+                continue;
+            }
+
+            if (!$this->hasLoanApprovalAccess($candidateUser)) {
+                continue;
+            }
+
+            $recipientIds[] = $candidateId;
         }
 
         $recipientIds = array_values(array_unique(array_filter($recipientIds, fn ($id) => (int) $id > 0)));
@@ -1505,6 +1530,137 @@ class LoanRequestController extends Controller
         return $date->modify('+' . $safeSteps . ' months');
     }
 
+    private function normalizeAccessText(?string $value): string
+    {
+        return strtolower(trim((string) $value));
+    }
+
+    private function isExecutiveLoanRequester(?object $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $keywords = ['executive', 'cro', 'credit officer', 'field officer'];
+
+        $designation = $this->normalizeAccessText((string) optional($user->designation)->name);
+        foreach ($keywords as $keyword) {
+            if ($designation !== '' && str_contains($designation, $keyword)) {
+                return true;
+            }
+        }
+
+        if (!method_exists($user, 'roles')) {
+            return false;
+        }
+
+        foreach ($user->roles()->pluck('name') as $roleName) {
+            $normalized = $this->normalizeAccessText((string) $roleName);
+            foreach ($keywords as $keyword) {
+                if ($normalized !== '' && str_contains($normalized, $keyword)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function resolveReportingApproverEmployee(?object $user): ?Employee
+    {
+        if (!$user) {
+            return null;
+        }
+
+        $employeeId = (int) ($user->employee_id ?? 0);
+        if ($employeeId <= 0) {
+            return null;
+        }
+
+        $employee = Employee::query()
+            ->with(['user:id,employee_id,designation_id,name,email', 'user.designation:id,name', 'user.roles:id,name'])
+            ->find($employeeId);
+
+        if (!$employee) {
+            return null;
+        }
+
+        $reportingPerson = trim((string) ($employee->reporting_person ?? ''));
+        if ($reportingPerson === '') {
+            return null;
+        }
+
+        $reportingEmployeeQuery = Employee::query()
+            ->with(['branch:id,name', 'designation:id,name', 'user:id,employee_id,designation_id,name,email', 'user.designation:id,name', 'user.roles:id,name']);
+
+        if (Schema::hasColumn('employees', 'status')) {
+            $reportingEmployeeQuery->where('status', 'active');
+        }
+
+        $reportingEmployeeQuery->where(function ($query) use ($reportingPerson) {
+            $query->whereRaw('LOWER(TRIM(employee_code)) = ?', [mb_strtolower($reportingPerson)])
+                ->orWhereRaw('LOWER(TRIM(email)) = ?', [mb_strtolower($reportingPerson)])
+                ->orWhereRaw('LOWER(TRIM(CONCAT(first_name, " ", last_name))) = ?', [mb_strtolower($reportingPerson)]);
+
+            if (ctype_digit($reportingPerson)) {
+                $query->orWhere('id', (int) $reportingPerson);
+            }
+        });
+
+        $reportingEmployee = $reportingEmployeeQuery
+            ->orderByDesc('id')
+            ->first();
+
+        if (!$reportingEmployee) {
+            return null;
+        }
+
+        $reportingUser = $reportingEmployee->user;
+        if (!$reportingUser || !$this->hasLoanApprovalAccess($reportingUser)) {
+            return null;
+        }
+
+        return $reportingEmployee;
+    }
+
+    private function canAssignToRequestedApprover(?object $requester, Employee $candidate): bool
+    {
+        if ($this->isAdminUser($requester)) {
+            return true;
+        }
+
+        if (!$this->isExecutiveLoanRequester($requester)) {
+            return true;
+        }
+
+        $reportingApprover = $this->resolveReportingApproverEmployee($requester);
+        if (!$reportingApprover) {
+            return false;
+        }
+
+        return (int) $reportingApprover->id === (int) $candidate->id;
+    }
+
+    private function toApprovalCandidatePayload(object $employee): array
+    {
+        $candidateUser = $employee->user;
+
+        $fullName = trim((string) (($employee->first_name ?? '') . ' ' . ($employee->last_name ?? '')));
+        if ($fullName === '') {
+            $fullName = trim((string) ($candidateUser?->name ?? ''));
+        }
+
+        return [
+            'id' => (int) $employee->id,
+            'name' => $fullName,
+            'employee_code' => (string) ($employee->employee_code ?? ''),
+            'designation' => (string) (optional($employee->designation)->name ?? optional($candidateUser?->designation)->name ?? ''),
+            'branch_id' => $employee->branch_id !== null ? (int) $employee->branch_id : null,
+            'branch_name' => (string) (optional($employee->branch)->name ?? ''),
+            'email' => (string) ($candidateUser?->email ?? ''),
+        ];
+    }
+
     private function canReviewLoan(?object $user): bool
     {
         if (!$user) {
@@ -1512,6 +1668,304 @@ class LoanRequestController extends Controller
         }
 
         return $this->hasLoanApprovalAccess($user);
+    }
+
+    private function hasAdministrativeWorkflowOverride(?object $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if (method_exists($user, 'isSystemAdmin') && $user->isSystemAdmin()) {
+            return true;
+        }
+
+        $keywords = ['super admin', 'superadmin', 'admin', 'managing director', 'md', 'ceo', 'director', 'business owner'];
+
+        $designation = strtolower(trim((string) optional($user->designation)->name));
+        if ($designation !== '') {
+            foreach ($keywords as $keyword) {
+                if (str_contains($designation, $keyword)) {
+                    return true;
+                }
+            }
+        }
+
+        if (!method_exists($user, 'roles')) {
+            return false;
+        }
+
+        foreach ($user->roles()->pluck('name') as $roleName) {
+            $normalized = strtolower(trim((string) $roleName));
+            if ($normalized === '') {
+                continue;
+            }
+
+            foreach ($keywords as $keyword) {
+                if (str_contains($normalized, $keyword)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<int, array{allow_all_roles: bool, role_ids: array<int>}>
+     */
+    private function actionCenterDefaultStepRoleRules(): array
+    {
+        return [
+            1 => ['allow_all_roles' => true, 'role_ids' => []],
+            2 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['credit officer'])],
+            3 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['branch manager'])],
+            4 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+            5 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+            6 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+            7 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+            8 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+            9 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+            10 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+            11 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+            12 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+            13 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+            14 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'managing director', 'director', 'ceo', 'admin'])],
+        ];
+    }
+
+    /**
+     * @param array<int, string> $keywords
+     * @return array<int>
+     */
+    private function resolveRoleIdsByKeywords(array $keywords): array
+    {
+        if (count($keywords) === 0) {
+            return [];
+        }
+
+        $roles = Role::query()->get(['id', 'name']);
+        $ids = [];
+
+        foreach ($roles as $role) {
+            $name = strtolower(trim((string) $role->name));
+            if ($name === '') {
+                continue;
+            }
+
+            foreach ($keywords as $keyword) {
+                if (str_contains($name, strtolower(trim((string) $keyword)))) {
+                    $ids[] = (int) $role->id;
+                    break;
+                }
+            }
+        }
+
+        return array_values(array_unique(array_filter($ids, fn ($id) => $id > 0)));
+    }
+
+    /**
+     * @return array{allow_all_roles: bool, role_ids: array<int>}
+     */
+    private function actionCenterStepRoleRule(int $step): array
+    {
+        $safeStep = max(1, min(14, $step));
+        $defaults = $this->actionCenterDefaultStepRoleRules();
+        $fallback = $defaults[$safeStep] ?? ['allow_all_roles' => false, 'role_ids' => []];
+
+        if (!Schema::hasTable('mf_action_center_step_roles')) {
+            return $fallback;
+        }
+
+        $row = MicrofinanceActionCenterStepRole::query()
+            ->where('workflow_step', $safeStep)
+            ->first();
+
+        if (!$row) {
+            return $fallback;
+        }
+
+        $roleIds = array_values(array_unique(array_filter(array_map('intval', (array) ($row->role_ids ?? [])), fn ($id) => $id > 0)));
+
+        return [
+            'allow_all_roles' => (bool) ($row->allow_all_roles ?? false),
+            'role_ids' => $roleIds,
+        ];
+    }
+
+    /**
+     * @return array<int>
+     */
+    private function resolveUserRoleIds(?object $user): array
+    {
+        if (!$user || !method_exists($user, 'roles')) {
+            return [];
+        }
+
+        return $user->roles()->pluck('roles.id')->map(fn ($id) => (int) $id)->filter(fn ($id) => $id > 0)->unique()->values()->all();
+    }
+
+    private function userHasActionCenterStepAccess(?object $user, int $step): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if ($this->hasAdministrativeWorkflowOverride($user)) {
+            return true;
+        }
+
+        $rule = $this->actionCenterStepRoleRule($step);
+        if (!empty($rule['allow_all_roles'])) {
+            return true;
+        }
+
+        $allowedRoleIds = $rule['role_ids'] ?? [];
+        if (count($allowedRoleIds) === 0) {
+            return false;
+        }
+
+        $userRoleIds = $this->resolveUserRoleIds($user);
+        if (count($userRoleIds) === 0) {
+            return false;
+        }
+
+        return count(array_intersect($allowedRoleIds, $userRoleIds)) > 0;
+    }
+
+    /**
+     * @return array<int>
+     */
+    private function allowedActionCenterStepsForUser(?object $user): array
+    {
+        if (!$user) {
+            return [];
+        }
+
+        if ($this->hasAdministrativeWorkflowOverride($user)) {
+            return range(1, 14);
+        }
+
+        $allowed = [];
+        for ($step = 1; $step <= 14; $step++) {
+            if ($this->userHasActionCenterStepAccess($user, $step)) {
+                $allowed[] = $step;
+            }
+        }
+
+        return $allowed;
+    }
+
+    private function canCreditOfficerHandlePendingCallConfirmation(?object $user, MicrofinanceLoanRequest $loanRequest): bool
+    {
+        return $this->canPerformConfiguredStepAction($user, $loanRequest, 2);
+    }
+
+    private function canCreditOfficerSendBack(?object $user, MicrofinanceLoanRequest $loanRequest): bool
+    {
+        return $this->canPerformConfiguredStepAction($user, $loanRequest, 2);
+    }
+
+    private function canCreditOfficerAdvanceStepOne(?object $user, MicrofinanceLoanRequest $loanRequest): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if ($this->canLoanRequesterAdvanceStepOne($user, $loanRequest)) {
+            return true;
+        }
+
+        return $this->canPerformConfiguredStepAction($user, $loanRequest, 1);
+    }
+
+    private function canPerformConfiguredStepAction(?object $user, MicrofinanceLoanRequest $loanRequest, int $step): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if ($this->hasAdministrativeWorkflowOverride($user)) {
+            return true;
+        }
+
+        if (!$this->userHasActionCenterStepAccess($user, $step)) {
+            return false;
+        }
+
+        if (!in_array((string) ($loanRequest->status ?? ''), ['requested', 'hold'], true)) {
+            return false;
+        }
+
+        $viewerBranchId = $this->resolveUserBranchId($user);
+        if ($viewerBranchId <= 0) {
+            return false;
+        }
+
+        if ((int) ($loanRequest->branch_id ?? 0) !== $viewerBranchId) {
+            return false;
+        }
+
+        return $this->resolveWorkflowStep($loanRequest) === $step;
+    }
+
+    private function resolveUserBranchId(?object $user): int
+    {
+        $directBranchId = (int) ($user?->branch_id ?? 0);
+        if ($directBranchId > 0) {
+            return $directBranchId;
+        }
+
+        $directEmployeeId = (int) ($user?->employee_id ?? 0);
+        if ($directEmployeeId > 0) {
+            $employeeBranchId = (int) (Employee::query()->where('id', $directEmployeeId)->value('branch_id') ?? 0);
+            if ($employeeBranchId > 0) {
+                return $employeeBranchId;
+            }
+        }
+
+        $userId = (int) ($user?->id ?? 0);
+        if ($userId > 0) {
+            $employeeByUserIdBranchId = (int) (Employee::query()->where('user_id', $userId)->orderByDesc('id')->value('branch_id') ?? 0);
+            if ($employeeByUserIdBranchId > 0) {
+                return $employeeByUserIdBranchId;
+            }
+        }
+
+        $email = strtolower(trim((string) ($user?->email ?? '')));
+        if ($email !== '') {
+            $employeeByEmailBranchId = (int) (Employee::query()
+                ->whereRaw('LOWER(TRIM(email)) = ?', [$email])
+                ->orderByDesc('id')
+                ->value('branch_id') ?? 0);
+            if ($employeeByEmailBranchId > 0) {
+                return $employeeByEmailBranchId;
+            }
+        }
+
+        return 0;
+    }
+
+    private function canLoanRequesterAdvanceStepOne(?object $user, MicrofinanceLoanRequest $loanRequest): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $userId = (int) ($user->id ?? 0);
+        if ($userId <= 0) {
+            return false;
+        }
+
+        if ((int) ($loanRequest->created_by ?? 0) !== $userId) {
+            return false;
+        }
+
+        if (!in_array((string) ($loanRequest->status ?? ''), ['requested', 'hold'], true)) {
+            return false;
+        }
+
+        return $this->resolveWorkflowStep($loanRequest) === 1;
     }
 
     private function hasLoanApprovalAccess(?object $user): bool
@@ -1524,7 +1978,7 @@ class LoanRequestController extends Controller
             return true;
         }
 
-        $allowedKeywords = ['loan approver', 'finance manager', 'branch manager', 'managing director', 'admin'];
+        $allowedKeywords = ['loan approver', 'finance manager', 'branch manager', 'managing director', 'ceo', 'director', 'business owner', 'admin', 'super admin'];
 
         $designationName = strtolower((string) optional($user->designation)->name);
         foreach ($allowedKeywords as $keyword) {
@@ -1776,7 +2230,7 @@ class LoanRequestController extends Controller
             return null;
         }
 
-        $branchId = (int) ($request->user()?->branch_id ?? 0);
+        $branchId = $this->resolveUserBranchId($request->user());
         return $branchId > 0 ? $branchId : null;
     }
 
@@ -1785,6 +2239,7 @@ class LoanRequestController extends Controller
         $status = $request->get('status');
         $branchId = (int)$request->get('branch_id', 0);
         $fieldOfficer = trim((string)$request->get('field_officer', ''));
+        $viewer = $request->user();
 
         $query = MicrofinanceLoanRequest::with([
             'branch:id,name',
@@ -1840,7 +2295,53 @@ class LoanRequestController extends Controller
             $query->whereRaw('LOWER(TRIM(field_officer)) = ?', [mb_strtolower($fieldOfficer)]);
         }
 
+        if (!$this->isAdminUser($viewer)) {
+            $viewerUserId = (int) ($viewer?->id ?? 0);
+            $viewerEmployeeId = (int) ($viewer?->employee_id ?? 0);
+            $viewerBranchId = $this->resolveUserBranchId($viewer);
+            $allowedBranchSteps = $this->allowedActionCenterStepsForUser($viewer);
+            $hasBranchWorkflowScope = $viewerBranchId > 0 && count($allowedBranchSteps) > 0;
+
+            if ($viewerUserId <= 0 && $viewerEmployeeId <= 0) {
+                if (!$hasBranchWorkflowScope) {
+                    $query->whereRaw('1 = 0');
+                }
+            }
+
+            $query->where(function ($scope) use ($viewerUserId, $viewerEmployeeId, $viewerBranchId, $allowedBranchSteps, $hasBranchWorkflowScope) {
+                if ($viewerUserId > 0) {
+                    $scope->orWhere('created_by', $viewerUserId);
+                }
+
+                if ($viewerEmployeeId > 0) {
+                    $scope->orWhere('approval_employee_id', $viewerEmployeeId);
+                }
+
+                if ($hasBranchWorkflowScope) {
+                    $scope->orWhere(function ($branchScope) use ($viewerBranchId, $allowedBranchSteps) {
+                        $branchScope->where('branch_id', $viewerBranchId);
+
+                        if (count($allowedBranchSteps) > 0) {
+                            $branchScope->whereIn('workflow_step', $allowedBranchSteps);
+                        }
+                    });
+                }
+            });
+        }
+
         $loans = $query->get();
+
+        $loans->each(function (MicrofinanceLoanRequest $loan) use ($viewer) {
+            $currentStep = $this->resolveWorkflowStep($loan);
+            $canConfiguredStepAction = $this->canPerformConfiguredStepAction($viewer, $loan, $currentStep);
+            $canRequesterAdvance = $this->canLoanRequesterAdvanceStepOne($viewer, $loan);
+            $canCreditOfficerMarkCalled = $this->canCreditOfficerHandlePendingCallConfirmation($viewer, $loan);
+            $canCreditOfficerSendBack = $this->canCreditOfficerSendBack($viewer, $loan);
+            $loan->setAttribute('can_advance_workflow', $canConfiguredStepAction || $canRequesterAdvance);
+            $loan->setAttribute('can_send_back_workflow', $canCreditOfficerSendBack);
+            $loan->setAttribute('can_mark_called_workflow', $canCreditOfficerMarkCalled);
+        });
+
         $this->attachCustomerPhotoUrls($loans);
 
         return response()->json($loans);
@@ -2131,6 +2632,20 @@ class LoanRequestController extends Controller
             $employeeQuery->where('branch_id', $viewerBranchId);
         }
 
+        if (!$isSystemAdmin && $this->isExecutiveLoanRequester($user)) {
+            $reportingApprover = $this->resolveReportingApproverEmployee($user);
+            if (!$reportingApprover) {
+                return response()->json([
+                    'data' => [],
+                    'message' => 'Reporting person approver is not configured for this executive account.',
+                ]);
+            }
+
+            return response()->json([
+                'data' => [$this->toApprovalCandidatePayload($reportingApprover)],
+            ]);
+        }
+
         $rows = $employeeQuery->get();
 
         $candidates = [];
@@ -2140,20 +2655,7 @@ class LoanRequestController extends Controller
                 continue;
             }
 
-            $fullName = trim((string) (($employee->first_name ?? '') . ' ' . ($employee->last_name ?? '')));
-            if ($fullName === '') {
-                $fullName = trim((string) ($candidateUser->name ?? ''));
-            }
-
-            $candidates[] = [
-                'id' => (int) $employee->id,
-                'name' => $fullName,
-                'employee_code' => (string) ($employee->employee_code ?? ''),
-                'designation' => (string) (optional($employee->designation)->name ?? optional($candidateUser->designation)->name ?? ''),
-                'branch_id' => $employee->branch_id !== null ? (int) $employee->branch_id : null,
-                'branch_name' => (string) (optional($employee->branch)->name ?? ''),
-                'email' => (string) ($candidateUser->email ?? ''),
-            ];
+            $candidates[] = $this->toApprovalCandidatePayload($employee);
         }
 
         return response()->json([
@@ -2191,6 +2693,12 @@ class LoanRequestController extends Controller
             ], 422);
         }
 
+        if (!$this->canAssignToRequestedApprover($user, $approvalEmployee)) {
+            return response()->json([
+                'message' => 'Executive users can submit approval only to their configured reporting person.'
+            ], 422);
+        }
+
         $isRequesterSystemAdmin = method_exists($user, 'isSystemAdmin') && $user->isSystemAdmin();
         $isCandidateSystemAdmin = method_exists($approvalUser, 'isSystemAdmin') && $approvalUser->isSystemAdmin();
 
@@ -2223,9 +2731,9 @@ class LoanRequestController extends Controller
     public function sendBack(Request $request, MicrofinanceLoanRequest $loanRequest)
     {
         $user = $request->user();
-        if (!$this->canReviewLoan($user)) {
+        if (!$this->canCreditOfficerSendBack($user, $loanRequest)) {
             return response()->json([
-                'message' => 'Only Loan Approver, Finance Manager, Branch Manager, and Admin can send back loan requests.'
+                'message' => 'You are not allowed to send back this loan based on current Action Center flow settings.'
             ], 403);
         }
 
@@ -2755,6 +3263,23 @@ class LoanRequestController extends Controller
         if ($validated['charge_payment_mode'] === 'deduct_from_loan' && $totalCharges > $loanAmount) {
             return response()->json([
                 'message' => 'Total charges cannot exceed loan amount when deducting charges from the loan.'
+            ], 422);
+        }
+
+        $approvalEmployee = Employee::query()
+            ->with(['user:id,employee_id,branch_id,designation_id,name,email', 'user.designation:id,name', 'user.roles:id,name'])
+            ->findOrFail((int) $validated['approval_employee_id']);
+
+        $approvalUser = $approvalEmployee->user;
+        if (!$approvalUser || !$this->hasLoanApprovalAccess($approvalUser)) {
+            return response()->json([
+                'message' => 'Selected approval person does not have loan approval access.'
+            ], 422);
+        }
+
+        if (!$this->canAssignToRequestedApprover($request->user(), $approvalEmployee)) {
+            return response()->json([
+                'message' => 'Executive users can submit loan requests only to their configured reporting person.'
             ], 422);
         }
 
@@ -3548,9 +4073,15 @@ class LoanRequestController extends Controller
 
     public function advanceWorkflowStep(Request $request, MicrofinanceLoanRequest $loanRequest)
     {
-        if (!$this->canReviewLoan($request->user())) {
+        $actorUser = $request->user();
+        $currentStep = $this->resolveWorkflowStep($loanRequest);
+        $canStepConfigured = $this->canPerformConfiguredStepAction($actorUser, $loanRequest, $currentStep);
+        $canRequesterAdvance = $this->canLoanRequesterAdvanceStepOne($actorUser, $loanRequest);
+        $canCreditOfficerAdvance = $this->canCreditOfficerAdvanceStepOne($actorUser, $loanRequest);
+
+        if (!$canStepConfigured && !$canRequesterAdvance && !$canCreditOfficerAdvance) {
             return response()->json([
-                'message' => 'Only Loan Approver, Finance Manager, Branch Manager, and Admin can move workflow steps.'
+                'message' => 'You are not allowed to move this workflow step based on current Action Center flow settings.'
             ], 403);
         }
 
@@ -3560,7 +4091,7 @@ class LoanRequestController extends Controller
             ], 422);
         }
 
-        $actor = $request->user();
+        $actor = $actorUser;
 
         $result = DB::transaction(function () use ($loanRequest, $actor) {
             $lockedLoan = MicrofinanceLoanRequest::query()
@@ -3625,9 +4156,10 @@ class LoanRequestController extends Controller
 
     public function markAsCalled(Request $request, MicrofinanceLoanRequest $loanRequest)
     {
-        if (!$this->canReviewLoan($request->user())) {
+        $actorUser = $request->user();
+        if (!$this->canCreditOfficerHandlePendingCallConfirmation($actorUser, $loanRequest)) {
             return response()->json([
-                'message' => 'Only Loan Approver, Finance Manager, Branch Manager, and Admin can mark calls.'
+                'message' => 'You are not allowed to mark calls for this workflow step based on current Action Center flow settings.'
             ], 403);
         }
 
@@ -3655,7 +4187,7 @@ class LoanRequestController extends Controller
             'called_date' => 'required|date',
         ]);
 
-        $actor = $request->user();
+        $actor = $actorUser;
 
         $result = DB::transaction(function () use ($loanRequest, $validated, $actor) {
             $lockedLoan = MicrofinanceLoanRequest::query()
@@ -3728,9 +4260,9 @@ class LoanRequestController extends Controller
 
     public function approveBmStep(Request $request, MicrofinanceLoanRequest $loanRequest)
     {
-        if (!$this->canReviewLoan($request->user())) {
+        if (!$this->canPerformConfiguredStepAction($request->user(), $loanRequest, 3)) {
             return response()->json([
-                'message' => 'Only Loan Approver, Finance Manager, Branch Manager, and Admin can complete BM approval.'
+                'message' => 'You are not allowed to complete BM approval based on current Action Center flow settings.'
             ], 403);
         }
 
@@ -3808,9 +4340,9 @@ class LoanRequestController extends Controller
 
     public function completeCashAllocationStep(Request $request, MicrofinanceLoanRequest $loanRequest)
     {
-        if (!$this->canReviewLoan($request->user())) {
+        if (!$this->canPerformConfiguredStepAction($request->user(), $loanRequest, 5)) {
             return response()->json([
-                'message' => 'Only Loan Approver, Finance Manager, Branch Manager, and Admin can complete cash allocation.'
+                'message' => 'You are not allowed to complete cash allocation based on current Action Center flow settings.'
             ], 403);
         }
 
@@ -3894,9 +4426,9 @@ class LoanRequestController extends Controller
 
     public function confirmSecondCallStep(Request $request, MicrofinanceLoanRequest $loanRequest)
     {
-        if (!$this->canReviewLoan($request->user())) {
+        if (!$this->canPerformConfiguredStepAction($request->user(), $loanRequest, 8)) {
             return response()->json([
-                'message' => 'Only Loan Approver, Finance Manager, Branch Manager, and Admin can complete second call confirmation.'
+                'message' => 'You are not allowed to complete second call confirmation based on current Action Center flow settings.'
             ], 403);
         }
 
@@ -4024,9 +4556,9 @@ class LoanRequestController extends Controller
 
     public function confirmDocumentVerificationStep(Request $request, MicrofinanceLoanRequest $loanRequest)
     {
-        if (!$this->canReviewLoan($request->user())) {
+        if (!$this->canPerformConfiguredStepAction($request->user(), $loanRequest, 10)) {
             return response()->json([
-                'message' => 'Only Loan Approver, Finance Manager, Branch Manager, and Admin can complete document verification.'
+                'message' => 'You are not allowed to complete document verification based on current Action Center flow settings.'
             ], 403);
         }
 

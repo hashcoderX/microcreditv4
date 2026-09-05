@@ -757,50 +757,37 @@ export default function Employees() {
     if (!tokenToUse) return;
     
     try {
-      const [designationRes, roleRes] = await Promise.all([
-        axios.get(`${apiBase}/hr/designations`, {
+      const allRows: any[] = [];
+      let page = 1;
+      let lastPage = 1;
+
+      do {
+        const designationRes = await axios.get(`${apiBase}/hr/designations`, {
           headers: { Authorization: `Bearer ${tokenToUse}` },
-        }),
-        axios.get(`${apiBase}/roles`, {
-          headers: { Authorization: `Bearer ${tokenToUse}` },
-          params: { per_page: 1000 },
-        }),
-      ]);
-
-      const designationRows = Array.isArray(designationRes.data)
-        ? designationRes.data
-        : (designationRes.data?.data || []);
-
-      const roleRows = Array.isArray(roleRes.data)
-        ? roleRes.data
-        : (roleRes.data?.data || []);
-
-      const normalizedDesignationRows: Designation[] = designationRows.map((row: any) => ({
-        id: Number(row.id),
-        name: String(row.name || ''),
-        source: 'designation',
-      }));
-
-      const usedNames = new Set(
-        normalizedDesignationRows
-          .map((row) => row.name.trim().toLowerCase())
-          .filter(Boolean)
-      );
-
-      const roleOnlyRows: Designation[] = (roleRows as RoleOption[])
-        .map((row) => ({
-          id: -Math.abs(Number(row.id) || 0),
-          name: String(row.name || ''),
-          source: 'role' as const,
-        }))
-        .filter((row) => {
-          const key = row.name.trim().toLowerCase();
-          if (!key || usedNames.has(key)) return false;
-          usedNames.add(key);
-          return true;
+          params: { page, per_page: 100 },
         });
 
-      setDesignations([...normalizedDesignationRows, ...roleOnlyRows]);
+        const payload = designationRes.data || {};
+        const rows = Array.isArray(payload)
+          ? payload
+          : (Array.isArray(payload?.data) ? payload.data : []);
+
+        allRows.push(...rows);
+
+        const parsedLastPage = Number(payload?.last_page || 1);
+        lastPage = Number.isFinite(parsedLastPage) && parsedLastPage > 0 ? parsedLastPage : 1;
+        page += 1;
+      } while (page <= lastPage && page <= 100);
+
+      const normalizedDesignationRows: Designation[] = allRows
+        .map((row: any) => ({
+          id: Number(row.id),
+          name: String(row.name || ''),
+          source: 'designation' as const,
+        }))
+        .filter((row) => row.id > 0 && row.name.trim() !== '');
+
+      setDesignations(normalizedDesignationRows);
     } catch (error) {
       console.error('Error fetching designations:', error);
     }
@@ -894,10 +881,28 @@ export default function Employees() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
 
     const selectedDesignation = designations.find((desig) => desig.id.toString() === designationId);
+    const parsedDepartmentId = Number(departmentId);
     const parsedDesignationId = Number(designationId);
+    const parsedBranchId = Number(branchId);
+
+    if (!Number.isFinite(parsedDepartmentId) || parsedDepartmentId <= 0) {
+      showNotice('Validation', 'Please select a valid department.', 'error');
+      return;
+    }
+
+    if (!Number.isFinite(parsedDesignationId) || parsedDesignationId <= 0) {
+      showNotice('Validation', 'Please select a valid designation from the designation list.', 'error');
+      return;
+    }
+
+    if (!Number.isFinite(parsedBranchId) || parsedBranchId <= 0) {
+      showNotice('Validation', 'Please select a valid branch.', 'error');
+      return;
+    }
+
+    setLoading(true);
 
     const employeeData = {
       first_name: firstName,
@@ -926,10 +931,10 @@ export default function Employees() {
       tin: tin || undefined,
       tax_applicable: taxApplicable === 'yes',
       tax_relief_eligible: taxReliefEligible === 'yes',
-      department_id: parseInt(departmentId),
-      designation_id: Number.isFinite(parsedDesignationId) && parsedDesignationId > 0 ? parsedDesignationId : undefined,
+      department_id: parsedDepartmentId,
+      designation_id: parsedDesignationId,
       designation_name: selectedDesignation?.name || undefined,
-      branch_id: parseInt(branchId),
+      branch_id: parsedBranchId,
       reporting_person: reportingPerson.trim() ? reportingPerson.trim() : undefined,
       status,
       create_wallet: !editingEmployee ? createWallet : undefined,
@@ -955,11 +960,15 @@ export default function Employees() {
       resetForm();
     } catch (error: any) {
       console.error('Error saving employee:', error);
+      const validationErrors = error?.response?.data?.errors;
+      const firstValidationMessage = validationErrors && typeof validationErrors === 'object'
+        ? Object.values(validationErrors)
+            .flat()
+            .find((msg) => typeof msg === 'string')
+        : undefined;
       const backendMessage = error?.response?.data?.message
         || error?.response?.data?.error
-        || (Array.isArray(error?.response?.data?.errors)
-          ? error.response.data.errors.join(', ')
-          : undefined)
+        || firstValidationMessage
         || 'Failed to save employee. Please try again.';
       showNotice('Error', backendMessage, 'error');
     } finally {
@@ -2589,7 +2598,7 @@ export default function Employees() {
                     required
                   >
                     <option value="">Select Designation</option>
-                    {designations.map((desig) => (
+                    {designations.filter((desig) => Number(desig.id) > 0).map((desig) => (
                       <option key={desig.id} value={desig.id}>
                         {desig.name}
                       </option>

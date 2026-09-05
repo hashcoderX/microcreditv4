@@ -59,7 +59,15 @@ class CustomerController extends Controller
 
         $submittedCode = strtoupper(trim((string) ($payload['customer_code'] ?? '')));
         $nic = strtoupper(trim((string) ($payload['nic_passport'] ?? '')));
-        if ($submittedCode === '' || ($nic !== '' && $submittedCode === $nic)) {
+
+        $submittedCodeExists = false;
+        if ($submittedCode !== '') {
+            $submittedCodeExists = Customer::query()
+                ->whereRaw('UPPER(customer_code) = ?', [$submittedCode])
+                ->exists();
+        }
+
+        if ($submittedCode === '' || ($nic !== '' && $submittedCode === $nic) || $submittedCodeExists) {
             $payload['customer_code'] = Customer::generateUniqueCustomerCode();
         } else {
             $payload['customer_code'] = $submittedCode;
@@ -349,6 +357,20 @@ class CustomerController extends Controller
         $customer->update(['photo_path' => $path]);
 
         return response()->json($customer->fresh());
+    }
+
+    public function photoByCode(string $customerCode)
+    {
+        $customer = $this->findCustomerByCodeOrSerial($customerCode);
+        if (!$customer || empty($customer->photo_path)) {
+            return response()->noContent();
+        }
+
+        if (!Storage::disk('public')->exists($customer->photo_path)) {
+            return response()->noContent();
+        }
+
+        return response()->file(Storage::disk('public')->path($customer->photo_path));
     }
 
     private function createDefaultSavingsAccountForCustomer(Customer $customer, ?object $user): void

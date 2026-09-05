@@ -70,6 +70,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         const rows = Array.isArray(response.data?.widgets) ? response.data.widgets : [];
         const hiddenKeys = new Set<string>();
         const hiddenRoutePrefixes = new Set<string>();
+        const routeLevelWidgetKeys = new Set(routeMappings.map(([key]) => key));
 
         for (const row of rows) {
           const key = String(row?.widget_key || '').trim();
@@ -77,7 +78,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           if (row?.is_visible === false) {
             hiddenKeys.add(key);
             const routePath = String(row?.hidden_route_path || '').trim();
-            if (routePath.startsWith('/dashboard')) {
+            // Only route-level widgets may block navigation routes.
+            if (routePath.startsWith('/dashboard') && routeLevelWidgetKeys.has(key)) {
               hiddenRoutePrefixes.add(routePath.replace(/\/+$/, ''));
             }
           }

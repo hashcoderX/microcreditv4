@@ -348,17 +348,72 @@ export default function Branches() {
     if (!tokenToUse) return;
 
     try {
+      // Primary source: load all users linked to employees (paginated).
+      const employeeUsers: UserOption[] = [];
+      const seen = new Set<number>();
+      let page = 1;
+      let lastPage = 1;
+
+      do {
+        const employeeResponse = await axios.get(`/api/hr/employees`, {
+          headers: { Authorization: `Bearer ${tokenToUse}` },
+          params: { page },
+        });
+
+        const employeePayload: unknown = employeeResponse.data;
+        const employeePayloadRecord = (employeePayload && typeof employeePayload === 'object')
+          ? (employeePayload as { data?: unknown; last_page?: unknown })
+          : null;
+        const employeeRows = Array.isArray(employeePayload)
+          ? employeePayload
+          : (Array.isArray(employeePayloadRecord?.data) ? employeePayloadRecord.data : []);
+
+        employeeRows.forEach((row: any) => {
+          const userId = Number(row?.user?.id || 0);
+          if (userId <= 0 || seen.has(userId)) return;
+
+          const firstName = String(row?.first_name || '').trim();
+          const lastName = String(row?.last_name || '').trim();
+          const fullName = `${firstName} ${lastName}`.trim();
+
+          employeeUsers.push({
+            id: userId,
+            name: fullName || String(row?.user?.email || `User #${userId}`),
+            email: String(row?.user?.email || row?.email || ''),
+          });
+          seen.add(userId);
+        });
+
+        const parsedLastPage = Number(employeePayloadRecord?.last_page || 1);
+        lastPage = Number.isFinite(parsedLastPage) && parsedLastPage > 0 ? parsedLastPage : 1;
+        page += 1;
+      } while (page <= lastPage && page <= 100);
+
+      if (employeeUsers.length > 0) {
+        setUsers(employeeUsers);
+        return;
+      }
+
+      // Fallback: if there are no employee-linked users, use manager-candidates endpoint.
       const response = await axios.get(`/api/manager-candidates`, {
         headers: { Authorization: `Bearer ${tokenToUse}` },
       });
-      const rows = Array.isArray(response.data) ? response.data : [];
-      setUsers(
-        rows.map((user: { id: number; name?: string; email?: string }) => ({
+
+      const payload: unknown = response.data;
+      const payloadRecord = (payload && typeof payload === 'object') ? (payload as { data?: unknown }) : null;
+      const rows = Array.isArray(payload)
+        ? payload
+        : (Array.isArray(payloadRecord?.data) ? payloadRecord.data : []);
+
+      const normalizedRows: UserOption[] = rows
+        .map((user: { id: number; name?: string; email?: string }) => ({
           id: Number(user.id),
           name: String(user.name || 'Unknown User'),
           email: String(user.email || ''),
         }))
-      );
+        .filter((user) => user.id > 0);
+
+      setUsers(normalizedRows);
     } catch {
       setUsers([]);
     }
@@ -485,6 +540,10 @@ export default function Branches() {
   };
 
   const handleEdit = (company: Company) => {
+    if (users.length === 0) {
+      void fetchUsers();
+    }
+
     setEditingCompany(company);
     setName(company.name);
     setEmail(company.email);

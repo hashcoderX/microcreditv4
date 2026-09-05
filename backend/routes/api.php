@@ -37,6 +37,7 @@ use App\Http\Controllers\Api\Microfinance\PenaltySettingController as Microfinan
 use App\Http\Controllers\Api\Microfinance\LoanProductController as MicrofinanceLoanProductController;
 use App\Http\Controllers\Api\Microfinance\LoanRequestController as MicrofinanceLoanRequestController;
 use App\Http\Controllers\Api\Microfinance\LoanCollectionController as MicrofinanceLoanCollectionController;
+use App\Http\Controllers\Api\Microfinance\ActionCenterStepRoleController;
 use App\Http\Controllers\Api\FinanceController;
 use App\Http\Controllers\Api\FinanceProductTypeController;
 use App\Http\Controllers\Api\LoanProductController as LoanModuleProductController;
@@ -146,6 +147,8 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('dashboard/widgets/employee-hidden', [UserDashboardWidgetController::class, 'employeeHiddenWidgets']);
     Route::get('notifications', [UserNotificationController::class, 'index']);
     Route::get('notifications/preview', [UserNotificationController::class, 'preview']);
+    Route::get('microfinance/action-center/step-roles', [ActionCenterStepRoleController::class, 'index']);
+    Route::put('microfinance/action-center/step-roles', [ActionCenterStepRoleController::class, 'update']);
     Route::patch('notifications/{notification}/read', [UserNotificationController::class, 'markRead']);
     Route::patch('notifications/{notification}/important', [UserNotificationController::class, 'toggleImportant']);
     Route::patch('notifications/read-all', [UserNotificationController::class, 'markAllRead']);
@@ -174,6 +177,8 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('companies/{company}/accounts', [CompanyAccountController::class, 'index']);
     Route::post('companies/{company}/accounts', [CompanyAccountController::class, 'store']);
     Route::post('companies/{company}/accounts/transfer-to-branch', [CompanyAccountController::class, 'transferToBranch']);
+    Route::get('companies/{company}/wallet-user', [CompanyAccountController::class, 'companyWalletStatus']);
+    Route::post('companies/{company}/wallet-user/provision', [CompanyAccountController::class, 'provisionCompanyWalletUser']);
     Route::put('companies/{company}/accounts/{account}', [CompanyAccountController::class, 'update']);
     Route::delete('companies/{company}/accounts/{account}', [CompanyAccountController::class, 'destroy']);
     Route::get('companies/{company}/expenses', [AccountingExpenseController::class, 'index']);
@@ -364,6 +369,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('customers/finance-lookup', [CustomerController::class, 'financeLookup']);
     Route::get('customers/finance-search', [CustomerController::class, 'financeSearch']);
     Route::get('customers/by-code/{customerCode}', [CustomerController::class, 'findByCode']);
+    Route::get('customers/by-code/{customerCode}/photo', [CustomerController::class, 'photoByCode']);
     Route::post('customers/by-code/{customerCode}/photo', [CustomerController::class, 'uploadPhotoByCode']);
     Route::apiResource('customers', CustomerController::class);
     Route::get('customers/{customer}/documents', [CustomerDocumentController::class, 'index']);

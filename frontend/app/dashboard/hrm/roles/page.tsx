@@ -82,6 +82,96 @@ interface Role {
   created_at?: string;
 }
 
+type DefaultRoleGroup = {
+  level: string;
+  roles: string[];
+};
+
+const DEFAULT_ROLE_GROUPS: DefaultRoleGroup[] = [
+  {
+    level: 'Level 1 - Board / Ownership',
+    roles: [
+      'Chairman / Chairperson',
+      'Vice Chairman',
+      'Non-Executive Director',
+      'Executive Director',
+      'Board Director',
+    ],
+  },
+  {
+    level: 'Level 2 - Executive Management',
+    roles: [
+      'Managing Director (MD)',
+      'Chief Executive Officer (CEO)',
+      'Deputy Chief Executive Officer (DCEO)',
+      'Chief Operating Officer (COO)',
+      'Chief Financial Officer (CFO)',
+      'Chief Risk Officer (CRO)',
+      'Chief Technology Officer (CTO)',
+      'Chief Information Officer (CIO)',
+      'Chief Human Resources Officer (CHRO)',
+      'Chief Marketing Officer (CMO)',
+      'Chief Compliance Officer (CCO)',
+    ],
+  },
+  {
+    level: 'Level 3 - Senior Management',
+    roles: [
+      'General Manager (GM)',
+      'Deputy General Manager (DGM)',
+      'Assistant General Manager (AGM)',
+      'Senior Vice President (SVP)',
+      'Vice President (VP)',
+      'Assistant Vice President (AVP)',
+    ],
+  },
+  {
+    level: 'Level 4 - Department Management',
+    roles: [
+      'Senior Manager',
+      'Manager',
+      'Assistant Manager',
+      'Branch Manager',
+      'Department Manager',
+    ],
+  },
+  {
+    level: 'Level 5 - Supervisory / Professional',
+    roles: [
+      'Senior Executive',
+      'Executive',
+      'Senior Officer',
+      'Officer',
+      'Assistant Officer',
+      'Supervisor',
+    ],
+  },
+  {
+    level: 'Level 6 - Operational Staff',
+    roles: [
+      'Senior Associate',
+      'Associate',
+      'Customer Service Officer',
+      'Finance Officer',
+      'Credit Officer',
+      'Loan Officer',
+      'Field Officer',
+      'Recovery Officer',
+      'Accounts Officer',
+      'Administrative Officer',
+      'Clerk / Assistant',
+      'Trainee / Intern',
+    ],
+  },
+];
+
+const ALL_DEFAULT_ROLES = DEFAULT_ROLE_GROUPS.flatMap((group) => group.roles);
+
+function getRoleStartIndex(groupIndex: number): number {
+  if (groupIndex <= 0) return 0;
+  return DEFAULT_ROLE_GROUPS.slice(0, groupIndex).reduce((sum, group) => sum + group.roles.length, 0);
+}
+
 export default function RolesAddPage() {
   const router = useRouter();
   const apiBase = getApiBaseUrl();
@@ -95,6 +185,9 @@ export default function RolesAddPage() {
   const [formError, setFormError] = useState('');
   const [formSuccess, setFormSuccess] = useState('');
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [showDefaultRolesModal, setShowDefaultRolesModal] = useState(false);
+  const [defaultRolesAgreed, setDefaultRolesAgreed] = useState(false);
+  const [defaultRolesSaving, setDefaultRolesSaving] = useState(false);
   const [roleSearchTerm, setRoleSearchTerm] = useState('');
   const [rolesPage, setRolesPage] = useState(1);
   const [noticeOpen, setNoticeOpen] = useState(false);
@@ -295,6 +388,17 @@ export default function RolesAddPage() {
     setShowCreateForm(true);
   };
 
+  const openDefaultRolesModal = () => {
+    setDefaultRolesAgreed(false);
+    setShowDefaultRolesModal(true);
+  };
+
+  const closeDefaultRolesModal = () => {
+    if (defaultRolesSaving) return;
+    setShowDefaultRolesModal(false);
+    setDefaultRolesAgreed(false);
+  };
+
   const resetForm = () => {
     setRoleName('');
     setRoleDescription('');
@@ -383,6 +487,58 @@ export default function RolesAddPage() {
       }
 
       openNotice('Delete failed', extractApiMessage(error, 'Failed to delete role.'));
+    }
+  };
+
+  const handleCreateDefaultRoles = async () => {
+    if (!token) return;
+    if (!defaultRolesAgreed) {
+      openNotice('Validation', 'Please tick the agreement checkbox before confirming.');
+      return;
+    }
+
+    setDefaultRolesSaving(true);
+    try {
+      const latestRoles = await fetchRoles();
+      const existing = new Set(
+        latestRoles.map((role) => role.name.trim().toLowerCase()).filter(Boolean)
+      );
+
+      let createdCount = 0;
+      let skippedCount = 0;
+
+      for (const roleName of ALL_DEFAULT_ROLES) {
+        const normalizedName = roleName.trim().toLowerCase();
+        if (existing.has(normalizedName)) {
+          skippedCount += 1;
+          continue;
+        }
+
+        try {
+          await axios.post(
+            `${apiBase}/roles`,
+            {
+              name: roleName,
+              description: `Default organizational role (${roleName})`,
+              is_active: true,
+            },
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          createdCount += 1;
+          existing.add(normalizedName);
+        } catch (error: unknown) {
+          const message = extractApiMessage(error, 'Failed to create one or more default roles.');
+          openNotice('Default role creation failed', message);
+          return;
+        }
+      }
+
+      await fetchRoles();
+      setShowDefaultRolesModal(false);
+      setDefaultRolesAgreed(false);
+      openNotice('Default roles completed', `Created ${createdCount} role(s). Skipped ${skippedCount} existing role(s).`);
+    } finally {
+      setDefaultRolesSaving(false);
     }
   };
 
@@ -539,9 +695,105 @@ export default function RolesAddPage() {
                   </button>
                 </div>
               )}
+              {!hiddenWidgetKeys.includes(`${widgetPrefix}hero_add_default_roles`) && (
+                <div className="relative">
+                  <WidgetCloseGate>
+                    <button
+                      type="button"
+                      onClick={() => hideWidget(`${widgetPrefix}hero_add_default_roles`)}
+                      className="absolute -top-2 -right-2 h-6 w-6 rounded-full border border-white/60 bg-white text-gray-500 hover:text-rose-600 hover:border-rose-300"
+                      aria-label="Hide create default roles button widget"
+                      title="Hide widget"
+                    >
+                      ×
+                    </button>
+                  </WidgetCloseGate>
+                  <button
+                    type="button"
+                    onClick={openDefaultRolesModal}
+                    className="inline-flex items-center gap-2 rounded-xl border border-white/50 bg-blue-900/30 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-900/45 transition"
+                  >
+                    <Shield className="h-4 w-4" />
+                    Create default roles
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
+        )}
+
+        {showDefaultRolesModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeDefaultRolesModal} />
+            <div className="relative flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-2xl">
+              <div className="shrink-0 bg-gradient-to-r from-blue-600 via-cyan-600 to-teal-600 px-6 py-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Create default roles</h3>
+                    <p className="mt-1 text-sm text-blue-50">
+                      Review the predefined role structure and confirm to create missing roles.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeDefaultRolesModal}
+                    disabled={defaultRolesSaving}
+                    className="h-10 w-10 rounded-xl bg-white/20 text-white hover:bg-white/30 disabled:opacity-60"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 space-y-4 overflow-y-auto p-6">
+                {DEFAULT_ROLE_GROUPS.map((group, groupIndex) => (
+                  <div key={group.level} className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                    <h4 className="text-sm font-extrabold text-slate-900">{group.level}</h4>
+                    <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                      {group.roles.map((roleName, index) => (
+                        <p key={`${group.level}-${roleName}`} className="text-sm text-slate-700">
+                          {getRoleStartIndex(groupIndex) + index + 1}. {roleName}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+
+                <label className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-sm text-emerald-900">
+                  <input
+                    type="checkbox"
+                    checked={defaultRolesAgreed}
+                    onChange={(e) => setDefaultRolesAgreed(e.target.checked)}
+                    className="mt-0.5 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+                    disabled={defaultRolesSaving}
+                  />
+                  <span>I agree to create these default roles in the system.</span>
+                </label>
+              </div>
+
+              <div className="shrink-0 border-t border-slate-200 bg-white px-6 py-4">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={closeDefaultRolesModal}
+                    disabled={defaultRolesSaving}
+                    className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleCreateDefaultRoles()}
+                    disabled={defaultRolesSaving || !defaultRolesAgreed}
+                    className="rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-60"
+                  >
+                    {defaultRolesSaving ? 'Creating…' : 'Confirm & save roles'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {showCreateForm && (

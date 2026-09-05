@@ -146,6 +146,18 @@ type NotificationPreviewItem = {
   created_at: string;
 };
 
+type ActionCenterPreviewItem = {
+  loan_request_id: number;
+  customer_name?: string;
+  customer_no?: string;
+  reference_no?: string;
+  loan_code?: string;
+  status?: string;
+  workflow_step?: number;
+  workflow_step_updated_at?: string | null;
+  created_at?: string | null;
+};
+
 export default function Dashboard() {
   const [token, setToken] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -225,6 +237,8 @@ export default function Dashboard() {
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [notificationTypeCounts, setNotificationTypeCounts] = useState<Record<string, number>>({});
   const [notificationPreviewItems, setNotificationPreviewItems] = useState<NotificationPreviewItem[]>([]);
+  const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
+  const [actionCenterPreviewItems, setActionCenterPreviewItems] = useState<ActionCenterPreviewItem[]>([]);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [calculatorInput, setCalculatorInput] = useState('');
   const [calculatorResult, setCalculatorResult] = useState('0');
@@ -611,6 +625,7 @@ export default function Dashboard() {
     (value) => value === 'admin' || value === 'super admin'
   );
   const canUseWalletDeposit = isCollectionOfficer || isFieldOfficer;
+  const canUseCompanyFundWallet = !canUseWalletDeposit && canRestoreHiddenWidgets && resolvedBranchId > 0;
   const collectorCashInHand = Number(
     walletSummary?.cash_in_hand ?? authUser?.employee?.wallet?.current_balance ?? 0
   );
@@ -645,7 +660,7 @@ export default function Dashboard() {
   }, [router]);
 
   useEffect(() => {
-    if (!token || !canUseWalletDeposit) {
+    if (!token) {
       setWalletSummary(null);
       setWalletBankAccounts([]);
       setWalletManagers([]);
@@ -654,44 +669,88 @@ export default function Dashboard() {
       return;
     }
 
-    const fetchMyWallet = async () => {
-      try {
-        const response = await axios.get(`${apiBaseUrl}/hr/wallet/my`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+    const fetchWalletPreviewData = async () => {
+      if (canUseWalletDeposit) {
+        try {
+          const response = await axios.get(`${apiBaseUrl}/hr/wallet/my`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
 
-        setWalletSummary((response.data?.wallet || null) as WalletSummary | null);
-        setWalletBankAccounts(
-          Array.isArray(response.data?.bank_accounts)
-            ? (response.data.bank_accounts as WalletBankAccount[])
-            : []
-        );
-        setWalletManagers(
-          Array.isArray(response.data?.managers)
-            ? (response.data.managers as WalletManager[])
-            : []
-        );
-        setWalletRecentDeposits(
-          Array.isArray(response.data?.recent_deposits)
-            ? (response.data.recent_deposits as WalletDepositHistory[])
-            : []
-        );
-        setWalletRecentHandovers(
-          Array.isArray(response.data?.recent_handovers)
-            ? (response.data.recent_handovers as WalletCashHandoverHistory[])
-            : []
-        );
-      } catch {
-        setWalletSummary(null);
-        setWalletBankAccounts([]);
-        setWalletManagers([]);
-        setWalletRecentDeposits([]);
-        setWalletRecentHandovers([]);
+          setWalletSummary((response.data?.wallet || null) as WalletSummary | null);
+          setWalletBankAccounts(
+            Array.isArray(response.data?.bank_accounts)
+              ? (response.data.bank_accounts as WalletBankAccount[])
+              : []
+          );
+          setWalletManagers(
+            Array.isArray(response.data?.managers)
+              ? (response.data.managers as WalletManager[])
+              : []
+          );
+          setWalletRecentDeposits(
+            Array.isArray(response.data?.recent_deposits)
+              ? (response.data.recent_deposits as WalletDepositHistory[])
+              : []
+          );
+          setWalletRecentHandovers(
+            Array.isArray(response.data?.recent_handovers)
+              ? (response.data.recent_handovers as WalletCashHandoverHistory[])
+              : []
+          );
+          return;
+        } catch {
+          setWalletSummary(null);
+          setWalletBankAccounts([]);
+          setWalletManagers([]);
+          setWalletRecentDeposits([]);
+          setWalletRecentHandovers([]);
+          return;
+        }
       }
+
+      if (canUseCompanyFundWallet) {
+        try {
+          const response = await axios.get(`${apiBaseUrl}/companies/${resolvedBranchId}/accounts`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+
+          const summary = response.data?.summary || {};
+          const main = summary?.main || null;
+          const walletNo = `CW${String(resolvedBranchId).padStart(6, '0')}`;
+
+          setWalletSummary({
+            id: Number(main?.id || 0) || undefined,
+            wallet_no: walletNo,
+            cash_in_hand: Number(main?.current_balance || 0),
+            total_deposited: 0,
+            total_handed_over: 0,
+            opening_balance: Number(main?.opening_balance || 0),
+            status: main ? 'active' : 'inactive',
+          });
+          setWalletBankAccounts(Array.isArray(summary?.banks) ? (summary.banks as WalletBankAccount[]) : []);
+          setWalletManagers([]);
+          setWalletRecentDeposits([]);
+          setWalletRecentHandovers([]);
+          return;
+        } catch {
+          setWalletSummary(null);
+          setWalletBankAccounts([]);
+          setWalletManagers([]);
+          setWalletRecentDeposits([]);
+          setWalletRecentHandovers([]);
+          return;
+        }
+      }
+
+      setWalletSummary(null);
+      setWalletBankAccounts([]);
+      setWalletManagers([]);
+      setWalletRecentDeposits([]);
+      setWalletRecentHandovers([]);
     };
 
-    void fetchMyWallet();
-  }, [token, canUseWalletDeposit, apiBaseUrl]);
+    void fetchWalletPreviewData();
+  }, [token, canUseWalletDeposit, canUseCompanyFundWallet, resolvedBranchId, apiBaseUrl]);
 
   useEffect(() => {
     const handleOutsideClick = (event: MouseEvent) => {
@@ -722,6 +781,9 @@ export default function Dashboard() {
       const items = Array.isArray(response.data?.items) ? response.data.items : [];
       setNotificationPreviewItems(items as NotificationPreviewItem[]);
       setNotificationUnreadCount(Number(response.data?.unread_count || 0));
+      setActionCenterTotalCount(Number(response.data?.action_center_total || 0));
+      const workflowItems = Array.isArray(response.data?.action_center_items) ? response.data.action_center_items : [];
+      setActionCenterPreviewItems(workflowItems as ActionCenterPreviewItem[]);
       const nextTypeCounts =
         response.data?.type_counts && typeof response.data.type_counts === 'object'
           ? (response.data.type_counts as Record<string, number>)
@@ -731,6 +793,8 @@ export default function Dashboard() {
       setNotificationPreviewItems([]);
       setNotificationUnreadCount(0);
       setNotificationTypeCounts({});
+      setActionCenterTotalCount(0);
+      setActionCenterPreviewItems([]);
     } finally {
       setNotificationPreviewLoading(false);
     }
@@ -1406,8 +1470,21 @@ export default function Dashboard() {
     'bg-blue-200 text-blue-800',
   ];
 
+  const visibleActionCenterSteps = notificationWorkflowSteps.filter(
+    (step) => !hiddenWidgetKeys.has(`action_center_step_${step.key}`)
+  );
+
   const getWorkflowStepCount = (typeKeys: string[]) => {
     const uniqueKeys = Array.from(new Set(typeKeys.map((key) => String(key || '').trim()).filter(Boolean)));
+    if (uniqueKeys.length === 0) {
+      return 0;
+    }
+
+    const canonicalKey = uniqueKeys[0];
+    if (Object.prototype.hasOwnProperty.call(notificationTypeCounts, canonicalKey)) {
+      return Number(notificationTypeCounts[canonicalKey] || 0);
+    }
+
     return uniqueKeys.reduce((sum, key) => sum + Number(notificationTypeCounts[key] || 0), 0);
   };
 
@@ -1469,7 +1546,7 @@ export default function Dashboard() {
                   <span className="text-sm">🔔</span>
                   <span className="text-xs font-semibold text-amber-800">Action Center</span>
                   <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-900">
-                    {notificationUnreadCount}
+                    {actionCenterTotalCount}
                   </span>
                 </button>
 
@@ -1477,24 +1554,25 @@ export default function Dashboard() {
                   <div className="absolute right-0 mt-2 w-80 rounded-2xl border border-amber-100 bg-white/95 p-3 shadow-2xl backdrop-blur z-30">
                     <div className="flex items-center justify-between">
                       <h4 className="text-sm font-semibold text-slate-900">Action Center</h4>
-                      <span className="text-xs text-slate-500">{notificationUnreadCount} unread</span>
+                      <span className="text-xs text-slate-500">{actionCenterTotalCount} pending loans</span>
                     </div>
                     <div className="mt-3 space-y-2">
                       {notificationPreviewLoading ? (
                         <p className="text-xs text-slate-500">Loading...</p>
-                      ) : notificationPreviewItems.length === 0 ? (
-                        <p className="text-xs text-slate-500">No notifications.</p>
+                      ) : actionCenterPreviewItems.length === 0 ? (
+                        <p className="text-xs text-slate-500">No pending loan requests.</p>
                       ) : (
-                        notificationPreviewItems.map((item) => (
+                        actionCenterPreviewItems.map((item) => (
                           <div
-                            key={item.id}
-                            className={`rounded-xl border px-3 py-2 ${
-                              item.is_read ? 'border-slate-200 bg-slate-50' : 'border-amber-200 bg-amber-50'
-                            }`}
+                            key={item.loan_request_id}
+                            className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2"
                           >
-                            <p className="text-xs font-semibold text-slate-800">{item.title}</p>
+                            <p className="text-xs font-semibold text-slate-800">{item.customer_name || 'Loan Request'}</p>
+                            <p className="mt-0.5 text-[11px] text-slate-600">
+                              Ref: {item.reference_no || item.loan_code || '-'} | Step {Number(item.workflow_step || 1)}
+                            </p>
                             <p className="mt-1 text-[11px] text-slate-500">
-                              {new Date(item.created_at).toLocaleString('en-GB', {
+                              {new Date(String(item.workflow_step_updated_at || item.created_at || new Date().toISOString())).toLocaleString('en-GB', {
                                 day: '2-digit',
                                 month: 'short',
                                 hour: '2-digit',
@@ -1538,46 +1616,105 @@ export default function Dashboard() {
       </nav>
 
       <main className="relative z-10 max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-        <section className="mb-8 rounded-2xl border border-slate-200 bg-white/85 p-3 shadow-lg backdrop-blur-sm">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="px-2 text-xs font-bold uppercase tracking-wide text-slate-600">Action Center</h3>
-            <button
-              type="button"
-              onClick={() => router.push('/dashboard/action-center')}
-              className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
-            >
-              Open Action Center
-            </button>
+        {!hiddenWidgetKeys.has('action_center_section') && (
+        <section className="relative mb-8 rounded-2xl border border-slate-200 bg-white/90 px-4 py-4 shadow-lg backdrop-blur-sm sm:px-5 sm:py-5">
+          {canUseWidgetCloseFeature && (
+            <WidgetCloseGate>
+              <button
+                type="button"
+                onClick={() => {
+                  void hideWidget('action_center_section');
+                }}
+                className="absolute -top-2 right-0 z-20 h-8 w-8 rounded-full border border-gray-200 bg-white text-gray-500 shadow-sm hover:border-rose-300 hover:text-rose-600"
+                aria-label="Hide Action Center section"
+              >
+                ×
+              </button>
+            </WidgetCloseGate>
+          )}
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="px-1 text-xs font-extrabold uppercase tracking-[0.14em] text-slate-600">Action Center</h3>
+            {!hiddenWidgetKeys.has('action_center_open_btn') && (
+              <div className="flex items-center gap-2">
+                {canUseWidgetCloseFeature && (
+                  <WidgetCloseGate>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void hideWidget('action_center_open_btn');
+                      }}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-500 hover:border-rose-300 hover:text-rose-600"
+                      aria-label="Hide Open Action Center button"
+                    >
+                      ×
+                    </button>
+                  </WidgetCloseGate>
+                )}
+                <button
+                  type="button"
+                  onClick={() => router.push('/dashboard/action-center')}
+                  className="rounded-full border border-slate-200 bg-slate-50 px-3.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Open Action Center
+                </button>
+              </div>
+            )}
           </div>
 
-          <div className="mt-2 flex items-center gap-2 overflow-x-auto overflow-y-visible pb-1">
-            {notificationWorkflowSteps.map((step, index) => {
+          <div className="mt-3 flex items-start gap-3 overflow-x-auto overflow-y-visible pb-2">
+            {visibleActionCenterSteps.map((step, index) => {
               const count = getWorkflowStepCount(step.typeKeys);
               const badgeTone = notificationStepBadgeTones[index % notificationStepBadgeTones.length];
-              const tooltip = `${index + 1}. ${step.title} - ${count} request${count === 1 ? '' : 's'}`;
+              const accessibleLabel = `${index + 1}. ${step.title} - ${count} request${count === 1 ? '' : 's'}`;
 
               return (
                 <div key={step.key} className="group relative shrink-0">
+                  {canUseWidgetCloseFeature && (
+                    <WidgetCloseGate>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void hideWidget(`action_center_step_${step.key}`);
+                        }}
+                        className="absolute -right-1 -top-1 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-500 shadow-sm hover:border-rose-300 hover:text-rose-600"
+                        aria-label={`Hide ${step.title} action`}
+                      >
+                        ×
+                      </button>
+                    </WidgetCloseGate>
+                  )}
                   <button
                     type="button"
                     onClick={() => router.push('/dashboard/action-center')}
-                    className="relative inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-lg transition hover:border-blue-200 hover:bg-blue-50 hover:shadow"
-                    aria-label={tooltip}
-                    title={tooltip}
+                    className="relative inline-flex h-14 w-14 cursor-pointer items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-2xl shadow-sm transition-all duration-300 ease-out hover:-translate-y-1 hover:scale-105 hover:border-blue-200 hover:bg-blue-50 hover:shadow-md hover:shadow-blue-200/70"
+                    aria-label={accessibleLabel}
                   >
-                    <span aria-hidden="true">{step.icon}</span>
-                    <span className={`absolute -right-2 -top-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-extrabold ${badgeTone}`}>
+                    <span
+                      className="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-br from-transparent via-white/30 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+                      aria-hidden="true"
+                    />
+                    <span aria-hidden="true" className="transition-transform duration-300 group-hover:scale-110 group-hover:-rotate-6">
+                      {step.icon}
+                    </span>
+                    <span className={`absolute right-1 top-1 inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-xs font-extrabold leading-none shadow-sm transition-transform duration-300 group-hover:scale-110 ${badgeTone}`}>
                       {count}
                     </span>
                   </button>
-                  <div className="pointer-events-none absolute left-1/2 top-[calc(100%+6px)] z-30 hidden w-56 -translate-x-1/2 rounded-md border border-slate-200 bg-slate-900 px-2 py-1.5 text-[11px] font-medium text-white shadow-xl group-hover:block">
-                    {tooltip}
-                  </div>
+                  <p className="mt-1.5 w-14 text-center text-[10px] font-semibold leading-tight text-slate-600 transition-colors duration-300 group-hover:text-slate-800">
+                    {step.title}
+                  </p>
                 </div>
               );
             })}
+            {visibleActionCenterSteps.length === 0 && (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs font-medium text-slate-600">
+                All Action Center actions are hidden. Use Restore Hidden Widgets to show them.
+              </div>
+            )}
           </div>
         </section>
+        )}
 
         {/* Hero Section */}
         <div className="text-center mb-12">

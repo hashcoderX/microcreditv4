@@ -19,7 +19,12 @@ export default function Designations() {
   const apiBase = getApiBaseUrl();
   const widgetPrefix = 'hrm_designations_widget_';
   const [designations, setDesignations] = useState<Designation[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [perPage] = useState(15);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalRows, setTotalRows] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingDesignation, setEditingDesignation] = useState<Designation | null>(null);
@@ -108,6 +113,49 @@ export default function Designations() {
     [saveWidgetPreference]
   );
 
+  const fetchDesignations = useCallback(
+    async (authToken?: string, page = 1) => {
+      const tokenToUse = authToken || token;
+      if (!tokenToUse) return;
+
+      try {
+        setListLoading(true);
+        const response = await axios.get(`${apiBase}/hr/designations`, {
+          headers: { Authorization: `Bearer ${tokenToUse}`, Accept: 'application/json' },
+          params: { page, per_page: perPage },
+        });
+
+        const payload = response.data || {};
+        const rows = Array.isArray(payload?.data)
+          ? (payload.data as Designation[])
+          : Array.isArray(payload)
+            ? (payload as Designation[])
+            : [];
+
+        const serverPage = Number(payload?.current_page || page || 1);
+        const serverLastPage = Number(payload?.last_page || 1);
+        const serverTotal = Number(payload?.total || rows.length);
+
+        setDesignations(rows);
+        setCurrentPage(serverPage > 0 ? serverPage : 1);
+        setTotalPages(serverLastPage > 0 ? serverLastPage : 1);
+        setTotalRows(serverTotal >= 0 ? serverTotal : rows.length);
+        setApiError(null);
+      } catch (error) {
+        const err: any = error;
+        console.error('Error fetching designations:', err?.response?.status, err?.response?.data || err?.message);
+        setApiError(
+          err?.response?.data?.message ||
+          err?.response?.data?.error ||
+          `Failed to fetch designations (${err?.response?.status || 'network error'})`
+        );
+      } finally {
+        setListLoading(false);
+      }
+    },
+    [apiBase, token, perPage]
+  );
+
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
     if (!storedToken) {
@@ -115,30 +163,10 @@ export default function Designations() {
     } else {
       setToken(storedToken);
       setApiError(null);
-      fetchDesignations(storedToken);
+      fetchDesignations(storedToken, 1);
       fetchWidgetPreferences(storedToken);
     }
-  }, [router, fetchWidgetPreferences]);
-
-  const fetchDesignations = async (authToken?: string) => {
-    const tokenToUse = authToken || token;
-    if (!tokenToUse) return;
-    
-    try {
-      const response = await axios.get(`${apiBase}/hr/designations`, {
-        headers: { Authorization: `Bearer ${tokenToUse}`, Accept: 'application/json' },
-      });
-      setDesignations(response.data.data || []);
-    } catch (error) {
-      const err: any = error;
-      console.error('Error fetching designations:', err?.response?.status, err?.response?.data || err?.message);
-      setApiError(
-        err?.response?.data?.message ||
-        err?.response?.data?.error ||
-        `Failed to fetch designations (${err?.response?.status || 'network error'})`
-      );
-    }
-  };
+  }, [router, fetchWidgetPreferences, fetchDesignations]);
 
   const resetForm = () => {
     setName('');
@@ -165,7 +193,7 @@ export default function Designations() {
           headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
         });
       }
-      fetchDesignations();
+      await fetchDesignations(token, 1);
       setShowForm(false);
       resetForm();
     } catch (error) {
@@ -200,7 +228,7 @@ export default function Designations() {
       });
       setShowDeleteModal(false);
       setDesignationToDelete(null);
-      fetchDesignations();
+      await fetchDesignations(token, currentPage);
     } catch (error) {
       const err: any = error;
       console.error('Error deleting designation:', err?.response?.status, err?.response?.data || err?.message);
@@ -320,7 +348,7 @@ export default function Designations() {
             </div>
             <div className="flex flex-col sm:flex-row gap-4 sm:space-x-6 sm:gap-0 mt-2 sm:mt-4">
               <div className="text-center">
-                <div className="text-xl sm:text-2xl font-bold text-blue-600">{designations.length}</div>
+                <div className="text-xl sm:text-2xl font-bold text-blue-600">{totalRows}</div>
                 <div className="text-sm text-gray-500">Total Designations</div>
               </div>
             </div>
@@ -416,7 +444,13 @@ export default function Designations() {
               <span>Designation List</span>
             </h3>
           </div>
-          {showAnyColumn ? (
+          {listLoading ? (
+            <div className="p-6 space-y-3">
+              {[1, 2, 3, 4].map((row) => (
+                <div key={row} className="h-12 animate-pulse rounded-xl bg-blue-50" />
+              ))}
+            </div>
+          ) : showAnyColumn ? (
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
@@ -448,7 +482,17 @@ export default function Designations() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {designations.map((designation) => (
+                {designations.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={(showNameColumn ? 1 : 0) + (showDescriptionColumn ? 1 : 0) + (showCreatedColumn ? 1 : 0) || 1}
+                      className="px-6 py-12 text-center text-sm text-gray-500"
+                    >
+                      No designations found.
+                    </td>
+                  </tr>
+                ) : (
+                designations.map((designation) => (
                   <tr key={designation.id} className="hover:bg-gray-50 transition-colors duration-200">
                     {showNameColumn && (
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
@@ -466,13 +510,40 @@ export default function Designations() {
                       </td>
                     )}
                   </tr>
-                ))}
+                ))) }
               </tbody>
             </table>
           </div>
           ) : (
             <div className="text-center py-12 text-gray-500">All designation table columns are hidden.</div>
           )}
+
+          <div className="px-6 py-4 border-t border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <p className="text-sm text-gray-600">
+              Showing {totalRows === 0 ? 0 : (currentPage - 1) * perPage + 1} to {Math.min(currentPage * perPage, totalRows)} of {totalRows}
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => fetchDesignations(token, Math.max(1, currentPage - 1))}
+                disabled={currentPage <= 1 || listLoading}
+                className="px-3 py-1.5 rounded-md border border-gray-300 text-sm disabled:opacity-50"
+              >
+                Previous
+              </button>
+              <span className="text-sm text-gray-700">
+                Page {currentPage} of {Math.max(totalPages, 1)}
+              </span>
+              <button
+                type="button"
+                onClick={() => fetchDesignations(token, Math.min(totalPages, currentPage + 1))}
+                disabled={currentPage >= totalPages || listLoading}
+                className="px-3 py-1.5 rounded-md border border-gray-300 text-sm disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
         )}
 

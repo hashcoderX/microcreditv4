@@ -56,6 +56,33 @@ type WalletCashHandoverHistory = {
   } | null;
 };
 
+type AuthRole = {
+  id?: number;
+  name?: string;
+};
+
+type AuthUser = {
+  id?: number;
+  name?: string;
+  email?: string;
+  role?: string;
+  branch_id?: number;
+  branch?: {
+    name?: string;
+  } | null;
+  employee?: {
+    branch_id?: number;
+    branch_name?: string;
+    branch?: {
+      name?: string;
+    } | null;
+  } | null;
+  designation?: {
+    name?: string;
+  } | null;
+  roles?: AuthRole[];
+};
+
 export default function WalletPage() {
   const router = useRouter();
   const apiBaseUrl = getApiBaseUrl();
@@ -67,6 +94,8 @@ export default function WalletPage() {
   const [walletManagers, setWalletManagers] = useState<WalletManager[]>([]);
   const [walletRecentDeposits, setWalletRecentDeposits] = useState<WalletDepositHistory[]>([]);
   const [walletRecentHandovers, setWalletRecentHandovers] = useState<WalletCashHandoverHistory[]>([]);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [walletNotice, setWalletNotice] = useState<{ open: boolean; title: string; message: string }>({
     open: false,
     title: '',
@@ -104,6 +133,24 @@ export default function WalletPage() {
     note: '',
     saving: false,
   });
+  const [walletMode, setWalletMode] = useState<'employee' | 'company' | 'none'>('none');
+
+  const normalizeText = (value: string) =>
+    String(value || '')
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const isPrivilegedForCompanyWallet = (user: AuthUser | null): boolean => {
+    if (!user) return false;
+    const roleNames = (user.roles || []).map((role) => normalizeText(String(role?.name || '')));
+    const designationName = normalizeText(String(user.designation?.name || ''));
+    const directRoleName = normalizeText(String(user.role || ''));
+    const sources = [directRoleName, designationName, ...roleNames].filter(Boolean);
+    return sources.some((value) => value.includes('admin'));
+  };
 
   const formatLkr = (value: number) =>
     `LKR ${Number(value || 0).toLocaleString(undefined, {
@@ -121,6 +168,26 @@ export default function WalletPage() {
       month: 'short',
       year: 'numeric',
     });
+  };
+
+  const fetchNavContext = async (authToken: string) => {
+    try {
+      const userResponse = await axios.get(`${apiBaseUrl}/user`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      setAuthUser((userResponse.data || null) as AuthUser | null);
+    } catch {
+      setAuthUser(null);
+    }
+
+    try {
+      const notificationResponse = await axios.get(`${apiBaseUrl}/notifications/preview`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      setNotificationUnreadCount(Number(notificationResponse.data?.unread_count || 0));
+    } catch {
+      setNotificationUnreadCount(0);
+    }
   };
 
   const getHandoverBadge = (row: WalletCashHandoverHistory) => {
@@ -142,6 +209,7 @@ export default function WalletPage() {
       });
 
       setWalletSummary((walletResponse.data?.wallet || null) as WalletSummary | null);
+      setWalletMode('employee');
       setWalletBankAccounts(
         Array.isArray(walletResponse.data?.bank_accounts)
           ? (walletResponse.data.bank_accounts as WalletBankAccount[])
@@ -163,16 +231,53 @@ export default function WalletPage() {
           : []
       );
     } catch (error: unknown) {
-      const message =
-        axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
-          ? error.response.data.message
-          : 'Failed to load wallet details.';
-      setWalletSummary(null);
-      setWalletBankAccounts([]);
-      setWalletManagers([]);
-      setWalletRecentDeposits([]);
-      setWalletRecentHandovers([]);
-      setWalletNotice({ open: true, title: 'Wallet', message });
+      try {
+        const userResponse = await axios.get(`${apiBaseUrl}/user`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+
+        const user = (userResponse.data || null) as AuthUser | null;
+        const branchId = Number(user?.branch_id || user?.employee?.branch_id || 0);
+        const canUseCompanyWallet = branchId > 0 && isPrivilegedForCompanyWallet(user);
+
+        if (!canUseCompanyWallet) {
+          throw error;
+        }
+
+        const accountResponse = await axios.get(`${apiBaseUrl}/companies/${branchId}/accounts`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+
+        const summary = accountResponse.data?.summary || {};
+        const main = summary?.main || null;
+
+        setWalletMode('company');
+        setWalletSummary({
+          id: Number(main?.id || 0) || undefined,
+          wallet_no: `CW${String(branchId).padStart(6, '0')}`,
+          cash_in_hand: Number(main?.current_balance || 0),
+          total_deposited: 0,
+          total_handed_over: 0,
+          opening_balance: Number(main?.opening_balance || 0),
+          status: main ? 'active' : 'inactive',
+        });
+        setWalletBankAccounts(Array.isArray(summary?.banks) ? (summary.banks as WalletBankAccount[]) : []);
+        setWalletManagers([]);
+        setWalletRecentDeposits([]);
+        setWalletRecentHandovers([]);
+      } catch {
+        const message =
+          axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
+            ? error.response.data.message
+            : 'Failed to load wallet details.';
+        setWalletMode('none');
+        setWalletSummary(null);
+        setWalletBankAccounts([]);
+        setWalletManagers([]);
+        setWalletRecentDeposits([]);
+        setWalletRecentHandovers([]);
+        setWalletNotice({ open: true, title: 'Wallet', message });
+      }
     } finally {
       setLoading(false);
     }
@@ -186,8 +291,30 @@ export default function WalletPage() {
     }
 
     setToken(storedToken);
+    void fetchNavContext(storedToken);
     void fetchWalletData(storedToken);
   }, [router]);
+
+  const displayName = String(authUser?.name || authUser?.email || 'User').trim();
+  const firstRoleName =
+    authUser?.roles?.find((role) => String(role?.name || '').trim())?.name ||
+    authUser?.designation?.name ||
+    authUser?.role ||
+    'User';
+  const primaryRoleName = String(firstRoleName || 'User').trim();
+  const resolvedBranchName = String(
+    authUser?.branch?.name || authUser?.employee?.branch?.name || authUser?.employee?.branch_name || ''
+  ).trim();
+  const resolvedBranchId = Number(authUser?.branch_id || authUser?.employee?.branch_id || 0);
+  const branchBadgeLabel = resolvedBranchName || (resolvedBranchId > 0 ? `Branch #${resolvedBranchId}` : 'No Branch');
+  const walletPreviewBalance = Number(walletSummary?.cash_in_hand ?? 0);
+  const walletPreviewHasWallet = Boolean(walletSummary?.wallet_no);
+  const walletPreviewNo = String(walletSummary?.wallet_no || '-');
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    router.push('/');
+  };
 
   const cashInHand = Number(walletSummary?.cash_in_hand ?? 0);
   const totalDeposited = Number(walletSummary?.total_deposited ?? 0);
@@ -197,6 +324,7 @@ export default function WalletPage() {
   const cashShare = Math.min((cashInHand / portfolioTotal) * 100, 100);
   const depositShare = Math.min((totalDeposited / portfolioTotal) * 100, 100);
   const handoverShare = Math.min((totalHandedOver / portfolioTotal) * 100, 100);
+  const totalBankBalance = walletBankAccounts.reduce((sum, row) => sum + Number(row.current_balance || 0), 0);
 
   const recentDepositBars = walletRecentDeposits.slice(0, 6);
   const maxDepositBarAmount = Math.max(
@@ -340,26 +468,112 @@ export default function WalletPage() {
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-100 via-white to-cyan-50 p-4 sm:p-6 lg:p-8">
-      <div className="pointer-events-none absolute -left-20 top-16 h-64 w-64 rounded-full bg-emerald-200/40 blur-3xl" />
-      <div className="pointer-events-none absolute -right-16 bottom-10 h-72 w-72 rounded-full bg-cyan-200/40 blur-3xl" />
+    <div className="relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_15%_20%,rgba(16,185,129,0.14),transparent_40%),radial-gradient(circle_at_85%_12%,rgba(6,182,212,0.16),transparent_42%),linear-gradient(120deg,#f8fafc_0%,#f0fdfa_55%,#ecfeff_100%)] p-4 sm:p-6 lg:p-8">
+      <div className="pointer-events-none absolute -left-24 top-14 h-72 w-72 rounded-full bg-emerald-200/40 blur-3xl" />
+      <div className="pointer-events-none absolute -right-20 bottom-8 h-80 w-80 rounded-full bg-cyan-200/40 blur-3xl" />
+      <div className="pointer-events-none absolute inset-0 opacity-[0.16]" style={{ backgroundImage: 'linear-gradient(rgba(15,23,42,0.09) 1px, transparent 1px), linear-gradient(90deg, rgba(15,23,42,0.08) 1px, transparent 1px)', backgroundSize: '28px 28px' }} />
+
+      <nav className="relative z-20 mb-6 rounded-2xl border border-white/70 bg-white/85 shadow-lg backdrop-blur-lg">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6">
+          <div className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center">
+              <div className="flex items-center space-x-3">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-r from-red-500 to-pink-500">
+                  <span className="text-sm font-bold text-white">DOF</span>
+                </div>
+                <h1 className="max-w-[180px] truncate bg-gradient-to-r from-red-600 to-pink-600 bg-clip-text text-base font-bold text-transparent sm:max-w-none sm:text-xl">
+                  Desk of Finance
+                </h1>
+              </div>
+            </div>
+
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
+              <div className="hidden items-center space-x-2 text-xs text-gray-600 sm:flex sm:text-sm">
+                <div className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
+                <span>System Online</span>
+              </div>
+
+              <div className="hidden items-center rounded-full border border-sky-100 bg-sky-50/80 px-3 py-1.5 text-xs font-semibold text-sky-900 sm:flex">
+                <span className="mr-1.5 inline-flex h-2 w-2 rounded-full bg-sky-500" />
+                {branchBadgeLabel}
+              </div>
+
+              <div className="hidden items-center rounded-full border border-red-100 bg-white/80 px-3 py-1.5 text-left sm:flex">
+                <div className="leading-tight">
+                  <p className="text-xs font-semibold text-slate-900">{displayName}</p>
+                  <p className="text-[11px] font-medium text-slate-500">{primaryRoleName}</p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/action-center')}
+                className="flex w-full items-center gap-2 rounded-full border border-amber-200 bg-amber-50/90 px-3 py-1.5 text-left transition hover:bg-amber-100 sm:w-auto"
+              >
+                <span className="text-sm">🔔</span>
+                <span className="text-xs font-semibold text-amber-800">Action Center</span>
+                <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-900">
+                  {notificationUnreadCount}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/wallet')}
+                className="flex w-full items-center rounded-full border border-emerald-200 bg-emerald-50/90 px-3 py-1.5 text-left transition hover:bg-emerald-100 sm:w-auto"
+              >
+                <div className="leading-tight">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-emerald-700">Wallet Preview</p>
+                  <p className="text-xs font-semibold text-emerald-900">{formatLkr(walletPreviewBalance)}</p>
+                  <p className="text-[11px] font-medium text-emerald-700">Wallet No: {walletPreviewHasWallet ? walletPreviewNo : 'Not created'}</p>
+                </div>
+              </button>
+
+              <button
+                onClick={handleLogout}
+                className="w-full rounded-full bg-gradient-to-r from-red-500 to-pink-500 px-4 py-2 text-xs font-medium text-white shadow-lg transition-all duration-300 hover:from-red-600 hover:to-pink-600 hover:shadow-xl sm:w-auto sm:px-6 sm:text-sm"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      </nav>
 
       <div className="relative mx-auto max-w-6xl space-y-6">
-        <div className="rounded-3xl border border-white/70 bg-white/80 p-5 shadow-xl backdrop-blur sm:p-7">
+        <div className="relative overflow-hidden rounded-3xl border border-white/80 bg-white/85 p-5 shadow-[0_24px_60px_-30px_rgba(15,23,42,0.55)] backdrop-blur sm:p-7">
+          <div className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-gradient-to-br from-cyan-300/35 to-transparent blur-2xl" />
+          <div className="pointer-events-none absolute -left-20 -bottom-24 h-60 w-60 rounded-full bg-gradient-to-br from-emerald-300/30 to-transparent blur-2xl" />
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
-                Wallet Control Center
+              <p className="inline-flex rounded-full border border-emerald-200 bg-gradient-to-r from-emerald-50 to-cyan-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                Wallet Command Deck
               </p>
-              <h1 className="mt-3 text-2xl font-bold text-slate-900 sm:text-3xl">Employee Wallet</h1>
-              <p className="mt-1 text-sm text-slate-600">Track balance, bank deposits, and cash handovers in one place.</p>
+              <h1 className="mt-3 text-2xl font-bold text-slate-900 sm:text-3xl">
+                {walletMode === 'company' ? 'Company Wallet' : 'Employee Wallet'}
+              </h1>
+              <p className="mt-1 text-sm text-slate-600">
+                {walletMode === 'company'
+                  ? 'View company fund available in the main company account.'
+                  : 'Track balance, bank deposits, and cash handovers in one place.'}
+              </p>
             </div>
-            <button
-              onClick={() => router.push('/dashboard')}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-100"
-            >
-              Back to Dashboard
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-800">
+                <p className="font-semibold">Cash</p>
+                <p>{formatLkr(cashInHand)}</p>
+              </div>
+              <div className="rounded-xl border border-cyan-100 bg-cyan-50/80 px-3 py-2 text-xs text-cyan-800">
+                <p className="font-semibold">Bank</p>
+                <p>{formatLkr(totalBankBalance)}</p>
+              </div>
+              <button
+                onClick={() => router.push('/dashboard')}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-100"
+              >
+                Back to Dashboard
+              </button>
+            </div>
           </div>
         </div>
 
@@ -374,24 +588,88 @@ export default function WalletPage() {
         ) : (
           <>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-emerald-50 to-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
                 <p className="text-xs uppercase tracking-wide text-emerald-700">Wallet No</p>
                 <p className="mt-2 text-sm font-semibold text-slate-900">{walletSummary?.wallet_no || '-'}</p>
               </div>
-              <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
                 <p className="text-xs uppercase tracking-wide text-emerald-700">Cash In Hand</p>
                 <p className="mt-2 text-lg font-bold text-emerald-800">{formatLkr(cashInHand)}</p>
               </div>
-              <div className="rounded-2xl border border-cyan-100 bg-gradient-to-br from-cyan-50 to-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-cyan-100 bg-gradient-to-br from-cyan-50 via-white to-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
                 <p className="text-xs uppercase tracking-wide text-cyan-700">Total Deposited</p>
                 <p className="mt-2 text-lg font-bold text-cyan-800">{formatLkr(totalDeposited)}</p>
               </div>
-              <div className="rounded-2xl border border-amber-100 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-amber-100 bg-gradient-to-br from-amber-50 via-white to-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
                 <p className="text-xs uppercase tracking-wide text-amber-700">Total Handed Over</p>
                 <p className="mt-2 text-lg font-bold text-amber-800">{formatLkr(totalHandedOver)}</p>
               </div>
             </div>
 
+            <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
+              <div className="relative overflow-hidden rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-900 via-emerald-800 to-teal-800 p-6 text-white shadow-xl xl:col-span-2">
+                <div className="pointer-events-none absolute -right-12 -top-12 h-36 w-36 rounded-full bg-white/10" />
+                <div className="pointer-events-none absolute -left-10 bottom-6 h-24 w-24 rounded-full bg-white/10" />
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-100/90">Cash Vault</p>
+                <p className="mt-2 text-3xl font-black tracking-tight">{formatLkr(cashInHand)}</p>
+                <p className="mt-2 text-sm text-emerald-50/90">
+                  Ready cash available now for field collection operations and immediate movements.
+                </p>
+                <div className="mt-5 grid grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-white/15 bg-white/10 p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-emerald-100">Opening</p>
+                    <p className="mt-1 text-sm font-semibold">{formatLkr(Number(walletSummary?.opening_balance || 0))}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/15 bg-white/10 p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-emerald-100">Status</p>
+                    <p className="mt-1 text-sm font-semibold capitalize">{walletSummary?.status || 'active'}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-cyan-100 bg-white/90 p-6 shadow-lg backdrop-blur xl:col-span-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">Bank Accounts</h3>
+                    <p className="mt-1 text-xs text-slate-500">Linked branch/company bank accounts and live balances.</p>
+                  </div>
+                  <div className="rounded-xl border border-cyan-100 bg-cyan-50 px-3 py-2 text-right">
+                    <p className="text-[11px] uppercase tracking-wide text-cyan-700">Total Bank Balance</p>
+                    <p className="text-sm font-bold text-cyan-800">{formatLkr(totalBankBalance)}</p>
+                  </div>
+                </div>
+
+                {walletBankAccounts.length === 0 ? (
+                  <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                    No bank account is connected to this wallet yet.
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {walletBankAccounts.map((account) => (
+                      <div
+                        key={account.id}
+                        className="group rounded-2xl border border-slate-200 bg-gradient-to-r from-slate-50 to-white px-4 py-3 transition hover:-translate-y-0.5 hover:border-cyan-200 hover:shadow-md"
+                      >
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">{account.account_name || 'Bank Account'}</p>
+                            <p className="text-xs text-slate-500">
+                              {account.bank_name || 'Unknown bank'}
+                              {account.account_number ? ` | ${account.account_number}` : ''}
+                            </p>
+                          </div>
+                          <div className="rounded-lg border border-cyan-100 bg-cyan-50 px-3 py-1.5 text-sm font-bold text-cyan-800">
+                            {formatLkr(Number(account.current_balance || 0))}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {walletMode === 'employee' && (
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
               <div className="rounded-2xl border border-white/80 bg-white/90 p-5 shadow-lg backdrop-blur xl:col-span-1">
                 <h3 className="text-sm font-semibold text-slate-900">Wallet Distribution</h3>
@@ -477,22 +755,30 @@ export default function WalletPage() {
                 </div>
               </div>
             </div>
+            )}
 
-            <div className="flex flex-wrap gap-3 rounded-2xl border border-white/80 bg-white/80 p-4 shadow-sm backdrop-blur">
-              <button
-                onClick={openDepositModal}
-                className="rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow transition hover:-translate-y-0.5 hover:from-emerald-600 hover:to-teal-600"
-              >
-                Deposit to Bank
-              </button>
-              <button
-                onClick={openHandoverModal}
-                className="rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-semibold text-white shadow transition hover:-translate-y-0.5 hover:from-amber-600 hover:to-orange-600"
-              >
-                Cash Handover
-              </button>
-            </div>
+            {walletMode === 'employee' ? (
+              <div className="flex flex-wrap gap-3 rounded-2xl border border-white/80 bg-white/80 p-4 shadow-sm backdrop-blur">
+                <button
+                  onClick={openDepositModal}
+                  className="rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow transition hover:-translate-y-0.5 hover:from-emerald-600 hover:to-teal-600"
+                >
+                  Deposit to Bank
+                </button>
+                <button
+                  onClick={openHandoverModal}
+                  className="rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-semibold text-white shadow transition hover:-translate-y-0.5 hover:from-amber-600 hover:to-orange-600"
+                >
+                  Cash Handover
+                </button>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-cyan-100 bg-cyan-50 px-4 py-3 text-sm text-cyan-900">
+                Company wallet view is enabled for this login. Use Company Accounting tab to add or manage company funds.
+              </div>
+            )}
 
+            {walletMode === 'employee' && (
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
               <div className="overflow-hidden rounded-2xl border border-white/80 bg-white/90 shadow-lg backdrop-blur">
                 <div className="border-b border-slate-100 bg-slate-50/90 px-5 py-4">
@@ -579,11 +865,12 @@ export default function WalletPage() {
                 )}
               </div>
             </div>
+            )}
           </>
         )}
       </div>
 
-      {depositModal.open && (
+      {walletMode === 'employee' && depositModal.open && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/45 backdrop-blur-sm" onClick={closeDepositModal} />
           <div className="relative w-full max-w-lg rounded-2xl border border-emerald-100 bg-white shadow-2xl">
@@ -674,7 +961,7 @@ export default function WalletPage() {
         </div>
       )}
 
-      {handoverModal.open && (
+      {walletMode === 'employee' && handoverModal.open && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/45 backdrop-blur-sm" onClick={closeHandoverModal} />
           <div className="relative w-full max-w-lg rounded-2xl border border-amber-100 bg-white shadow-2xl">

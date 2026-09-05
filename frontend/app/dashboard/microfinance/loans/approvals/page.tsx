@@ -38,6 +38,9 @@ type LoanGuarantor = {
 type LoanRequest = {
   id: number;
   created_by?: number | null;
+  can_advance_workflow?: boolean;
+  can_send_back_workflow?: boolean;
+  can_mark_called_workflow?: boolean;
   reference_no?: string | null;
   loan_code?: string | null;
   customer_no: string;
@@ -2358,8 +2361,15 @@ export default function LoanApprovalsPage() {
 
   const handleAdvanceWorkflowStep = async (loan: LoanRequest): Promise<boolean> => {
     if (!token) return false;
-    if (!canApproveOrReject) {
-      openModal('Only Loan Approver, Finance Manager, Branch Manager, Managing Director, and Admin can move workflow steps.', 'Access Denied');
+    const isLoanRequester = Number(loan.created_by || loan.createdBy?.id || 0) === Number(authUser?.id || 0);
+    const canRequesterAdvanceStepOne =
+      isLoanRequester &&
+      resolveWorkflowStep(loan) === 1 &&
+      (loan.status === 'requested' || loan.status === 'hold');
+    const canAdvanceWorkflow = Boolean(loan.can_advance_workflow) || canRequesterAdvanceStepOne;
+
+    if (!canAdvanceWorkflow) {
+      openModal('You are not allowed to move this loan to the next workflow step.', 'Access Denied');
       return false;
     }
 
@@ -2410,8 +2420,8 @@ export default function LoanApprovalsPage() {
 
   const handleApprove = async (loan: LoanRequest) => {
     if (!token) return;
-    if (!canApproveOrReject) {
-      openModal('Only Loan Approver, Finance Manager, Branch Manager, Managing Director, and Admin can accept loans.', 'Access Denied');
+    if (!Boolean(loan.can_advance_workflow) && !canApproveOrReject) {
+      openModal('You are not allowed to accept this loan based on current Action Center flow settings.', 'Access Denied');
       return;
     }
 
@@ -2718,6 +2728,17 @@ export default function LoanApprovalsPage() {
               const isFinalWorkflowStep = currentWorkflowStep >= WORKFLOW_STEP_LABELS.length;
               const nextWorkflowStep = isFinalWorkflowStep ? WORKFLOW_STEP_LABELS.length : currentWorkflowStep + 1;
               const nextWorkflowLabel = getWorkflowStepLabel(nextWorkflowStep);
+              const isLoanRequester = Number(loan.created_by || loan.createdBy?.id || 0) === Number(authUser?.id || 0);
+              const canRequesterAdvanceStepOne =
+                isLoanRequester &&
+                currentWorkflowStep === 1 &&
+                (loan.status === 'requested' || loan.status === 'hold');
+              const canUseApprovalActions =
+                Boolean(loan.can_advance_workflow) ||
+                Boolean(loan.can_mark_called_workflow) ||
+                canRequesterAdvanceStepOne;
+              const canSendBackWorkflow = Boolean(loan.can_send_back_workflow);
+              const canMarkCalledWorkflow = Boolean(loan.can_mark_called_workflow);
 
               return (
               <div key={loan.id} className="bg-white/90 rounded-2xl shadow-lg border border-orange-100 p-5 relative">
@@ -2952,7 +2973,7 @@ export default function LoanApprovalsPage() {
                     >
                       Edit Loan Details
                     </button>
-                    {canApproveOrReject && (
+                    {canUseApprovalActions && (
                       <>
                         <button
                           onClick={(e) => {
@@ -2969,8 +2990,9 @@ export default function LoanApprovalsPage() {
                           onClick={(e) => {
                             handleSendBackButtonClick(loan, e);
                           }}
-                          disabled={sendBackSubmittingId === loan.id}
+                          disabled={sendBackSubmittingId === loan.id || !canSendBackWorkflow}
                           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-rose-500 to-pink-500 text-white font-semibold shadow disabled:opacity-70"
+                          title={canSendBackWorkflow ? 'Send back to previous step' : 'Only approver roles can send back'}
                         >
                           {sendBackSubmittingId === loan.id ? 'Sending...' : 'Send Back'}
                         </button>
@@ -2992,8 +3014,9 @@ export default function LoanApprovalsPage() {
                               e.stopPropagation();
                               openMarkCalledModal(loan);
                             }}
-                            disabled={markCalledSubmittingId === loan.id || approvingId === loan.id}
+                            disabled={markCalledSubmittingId === loan.id || approvingId === loan.id || !canMarkCalledWorkflow}
                             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-semibold shadow disabled:opacity-70"
+                            title={canMarkCalledWorkflow ? 'Mark customer call confirmation and move to next step' : 'Only allowed for approvers or branch Credit Officer at Step 2'}
                           >
                             {(markCalledSubmittingId === loan.id || approvingId === loan.id) && (
                               <span className="h-4 w-4 rounded-full border-2 border-white/40 border-t-white animate-spin"></span>
@@ -4316,7 +4339,7 @@ export default function LoanApprovalsPage() {
                 >
                   Edit Loan Details
                 </button>
-                {canApproveOrReject && (
+                {Boolean(detailsViewer.loan?.can_send_back_workflow) && (
                   <button
                     type="button"
                     onClick={() => {

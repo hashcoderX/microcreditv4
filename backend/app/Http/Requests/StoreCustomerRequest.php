@@ -14,7 +14,7 @@ class StoreCustomerRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'customer_code' => ['nullable', 'string', 'max:60', 'unique:customers,customer_code'],
+            'customer_code' => ['nullable', 'string', 'max:60'],
             'full_name_with_initials' => ['required', 'string', 'max:255'],
             'first_name' => ['nullable', 'string', 'max:120'],
             'last_name' => ['nullable', 'string', 'max:120'],

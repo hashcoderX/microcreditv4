@@ -313,6 +313,34 @@ const getDocumentCompletionScore = (customer: Customer): number => {
 
 const API_BASE = getApiBaseUrl();
 
+const extractAxiosErrorMessage = (error: unknown, fallback: string): string => {
+  if (!axios.isAxiosError(error)) {
+    return fallback;
+  }
+
+  const responseData = error.response?.data as
+    | { message?: unknown; errors?: Record<string, unknown> }
+    | undefined;
+
+  const errors = responseData?.errors;
+  if (errors && typeof errors === 'object') {
+    for (const value of Object.values(errors)) {
+      if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'string') {
+        return value[0];
+      }
+      if (typeof value === 'string' && value.trim() !== '') {
+        return value;
+      }
+    }
+  }
+
+  if (typeof responseData?.message === 'string' && responseData.message.trim() !== '') {
+    return responseData.message;
+  }
+
+  return fallback;
+};
+
 export default function MicrofinanceCustomersPage() {
   const router = useRouter();
   const [token, setToken] = useState('');
@@ -1277,10 +1305,7 @@ export default function MicrofinanceCustomersPage() {
       await loadCustomers();
       closeProfileModal();
     } catch (error: unknown) {
-      const message =
-        axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
-          ? error.response.data.message
-          : 'Failed to update customer profile.';
+      const message = extractAxiosErrorMessage(error, 'Failed to update customer profile.');
       setProfileError(message);
     } finally {
       setProfileSaving(false);
@@ -1626,12 +1651,10 @@ export default function MicrofinanceCustomersPage() {
             : 'Customer registered successfully with onboarding details and documents.',
       });
     } catch (error: unknown) {
-      const message =
-        axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
-          ? error.response.data.message
-          : registerMode === 'update'
-            ? 'Failed to update customer profile.'
-            : 'Failed to register customer.';
+      const message = extractAxiosErrorMessage(
+        error,
+        registerMode === 'update' ? 'Failed to update customer profile.' : 'Failed to register customer.'
+      );
 
       setRegisterError(message);
     } finally {

@@ -65,6 +65,21 @@ type ApiNotificationRow = {
   meta?: Record<string, unknown> | null;
 };
 
+type StepRoleOption = {
+  id: number;
+  name: string;
+  is_active?: boolean;
+};
+
+type StepRoleSettingRow = {
+  workflow_step: number;
+  title: string;
+  allow_all_roles: boolean;
+  role_ids: number[];
+  updated_by_user_id?: number | null;
+  updated_at?: string | null;
+};
+
 const typeStyles: Record<NotificationType, string> = {
   system: 'bg-violet-100 text-violet-700 border-violet-200',
   task: 'bg-blue-100 text-blue-700 border-blue-200',
@@ -137,6 +152,44 @@ const resolveActionUrl = (row: NotificationItem): string | undefined => {
   return undefined;
 };
 
+const toNotificationSignature = (row: NotificationItem): string => {
+  const meta = row.meta || {};
+  const normalizedMeta = [
+    String(meta.finance_id ?? ''),
+    String(meta.finance_ref ?? ''),
+    String(meta.customer_no ?? ''),
+    String(meta.status ?? ''),
+    String(meta.workflow_step ?? ''),
+    String(meta.workflow_step_title ?? ''),
+  ].join('|');
+
+  return [
+    row.type,
+    String(row.title || '').trim().toLowerCase(),
+    String(row.message || '').trim().toLowerCase(),
+    String(row.actionUrl || '').trim().toLowerCase(),
+    normalizedMeta,
+    new Date(row.createdAt).toISOString().slice(0, 19),
+  ].join('||');
+};
+
+const dedupeNotifications = (rows: NotificationItem[]): NotificationItem[] => {
+  const signatures = new Set<string>();
+  const uniqueRows: NotificationItem[] = [];
+
+  for (const row of rows) {
+    const signature = toNotificationSignature(row);
+    if (signatures.has(signature)) {
+      continue;
+    }
+
+    signatures.add(signature);
+    uniqueRows.push(row);
+  }
+
+  return uniqueRows;
+};
+
 export default function NotificationsPage() {
   const router = useRouter();
   const apiBaseUrl = getApiBaseUrl();
@@ -150,7 +203,14 @@ export default function NotificationsPage() {
   const [barUnreadCount, setBarUnreadCount] = useState(0);
   const [barImportantUnreadCount, setBarImportantUnreadCount] = useState(0);
   const [barTypeCounts, setBarTypeCounts] = useState<Record<string, number>>({});
+  const [barGroupedCounts, setBarGroupedCounts] = useState<Record<string, number>>({});
   const [notice, setNotice] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsNotice, setSettingsNotice] = useState('');
+  const [settingsRoles, setSettingsRoles] = useState<StepRoleOption[]>([]);
+  const [settingsSteps, setSettingsSteps] = useState<StepRoleSettingRow[]>([]);
 
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
@@ -179,8 +239,7 @@ export default function NotificationsPage() {
       });
 
       const rows = Array.isArray(response.data?.notifications) ? response.data.notifications : [];
-      setNotifications(
-        (rows as ApiNotificationRow[]).map((row) => ({
+      const mappedRows = (rows as ApiNotificationRow[]).map((row) => ({
           id: Number(row.id),
           title: String(row.title || 'Notification'),
           message: String(row.message || ''),
@@ -190,8 +249,9 @@ export default function NotificationsPage() {
           important: Boolean(row.is_important),
           actionUrl: typeof row.action_url === 'string' ? row.action_url : undefined,
           meta: toMetaObject(row.meta),
-        }))
-      );
+        }));
+
+      setNotifications(dedupeNotifications(mappedRows));
       setSummary({
         total: Number(response.data?.summary?.total || 0),
         unread: Number(response.data?.summary?.unread || 0),
@@ -229,12 +289,158 @@ export default function NotificationsPage() {
           ? (response.data.type_counts as Record<string, number>)
           : {};
       setBarTypeCounts(nextTypeCounts);
+
+      const nextGroupedCounts =
+        response.data?.grouped_counts && typeof response.data.grouped_counts === 'object'
+          ? (response.data.grouped_counts as Record<string, number>)
+          : {};
+      setBarGroupedCounts(nextGroupedCounts);
     } catch {
       setBarUnreadCount(0);
       setBarImportantUnreadCount(0);
       setBarTypeCounts({});
+      setBarGroupedCounts({});
     }
   }, [apiBaseUrl, token]);
+
+  const fetchFlowStepRoleSettings = useCallback(async (preserveNotice = false) => {
+    if (!token) return false;
+
+    try {
+      setSettingsLoading(true);
+      if (!preserveNotice) {
+        setSettingsNotice('');
+      }
+
+      const response = await axios.get(`${apiBaseUrl}/microfinance/action-center/step-roles`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+
+      const roles = Array.isArray(response.data?.roles) ? response.data.roles : [];
+      const steps = Array.isArray(response.data?.steps) ? response.data.steps : [];
+
+      setSettingsRoles(
+        roles.map((row: Record<string, unknown>) => ({
+          id: Number(row.id || 0),
+          name: String(row.name || ''),
+          is_active: Boolean(row.is_active ?? true),
+        }))
+      );
+
+      setSettingsSteps(
+        steps.map((row: Record<string, unknown>) => ({
+          workflow_step: Number(row.workflow_step || 0),
+          title: String(row.title || ''),
+          allow_all_roles: Boolean(row.allow_all_roles),
+          role_ids: Array.isArray(row.role_ids)
+            ? row.role_ids.map((id) => Number(id || 0)).filter((id) => Number.isFinite(id) && id > 0)
+            : [],
+          updated_by_user_id: row.updated_by_user_id == null ? null : Number(row.updated_by_user_id || 0),
+          updated_at: row.updated_at == null ? null : String(row.updated_at),
+        }))
+      );
+
+      return true;
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error) && error.response?.status === 403) {
+        setSettingsNotice('Only Super Admin, Admin, MD, CEO, Director, or Business Owner can manage flow settings.');
+      } else {
+        setSettingsNotice('Failed to load flow settings.');
+      }
+
+      return false;
+    } finally {
+      setSettingsLoading(false);
+    }
+  }, [apiBaseUrl, token]);
+
+  const openFlowSettingsModal = async () => {
+    setSettingsOpen(true);
+    const ok = await fetchFlowStepRoleSettings();
+    if (!ok) {
+      return;
+    }
+  };
+
+  const closeFlowSettingsModal = () => {
+    if (settingsSaving) return;
+    setSettingsOpen(false);
+  };
+
+  const toggleStepAllowAll = (workflowStep: number, nextValue: boolean) => {
+    setSettingsSteps((prev) =>
+      prev.map((step) =>
+        step.workflow_step === workflowStep
+          ? {
+              ...step,
+              allow_all_roles: nextValue,
+            }
+          : step
+      )
+    );
+  };
+
+  const toggleStepRole = (workflowStep: number, roleId: number) => {
+    setSettingsSteps((prev) =>
+      prev.map((step) => {
+        if (step.workflow_step !== workflowStep) return step;
+
+        const exists = step.role_ids.includes(roleId);
+        return {
+          ...step,
+          role_ids: exists ? step.role_ids.filter((id) => id !== roleId) : [...step.role_ids, roleId],
+        };
+      })
+    );
+  };
+
+  const saveFlowSettings = async () => {
+    if (!token) return;
+
+    try {
+      setSettingsSaving(true);
+      setSettingsNotice('');
+
+      await axios.put(
+        `${apiBaseUrl}/microfinance/action-center/step-roles`,
+        {
+          steps: settingsSteps.map((step) => ({
+            workflow_step: step.workflow_step,
+            allow_all_roles: Boolean(step.allow_all_roles),
+            role_ids: Array.from(new Set(step.role_ids.map((id) => Number(id)).filter((id) => id > 0))),
+          })),
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+        }
+      );
+
+      setSettingsNotice('Flow settings saved successfully.');
+      await fetchNotificationBarSnapshot();
+      await fetchNotifications();
+      await fetchFlowStepRoleSettings(true);
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
+          ? error.response.data.message
+          : 'Failed to save flow settings.';
+      setSettingsNotice(message);
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  const loanRequestCount = Number(barGroupedCounts.loan_requests ?? barTypeCounts['microfinance_loan_request'] ?? 0);
+  const approvalRequestCount = Number(
+    barGroupedCounts.approval_requests
+      ?? (Number(barTypeCounts['microfinance_approval_request'] || 0) + Number(barTypeCounts['microfinance_send_back'] || 0))
+  );
 
   useEffect(() => {
     void fetchNotifications();
@@ -350,14 +556,14 @@ export default function NotificationsPage() {
       key: 'loan' as NotificationScope,
       icon: '📄',
       title: 'Loan Requests',
-      count: Number(barTypeCounts['microfinance_loan_request'] || 0),
+      count: loanRequestCount,
       color: 'bg-blue-100 text-blue-800 border-blue-200',
     },
     {
       key: 'approval' as NotificationScope,
       icon: '✅',
       title: 'Approval Requests',
-      count: Number(barTypeCounts['microfinance_approval_request'] || 0),
+      count: approvalRequestCount,
       color: 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200',
     },
   ];
@@ -374,12 +580,20 @@ export default function NotificationsPage() {
               <h1 className="mt-3 text-2xl font-bold text-slate-900 sm:text-3xl">Action Center</h1>
               <p className="mt-1 text-sm text-slate-600">Stay updated with alerts, approvals, and workflow actions.</p>
             </div>
-            <button
-              onClick={() => router.push('/dashboard')}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-100"
-            >
-              Back to Dashboard
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void openFlowSettingsModal()}
+                className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-700 shadow-sm transition hover:bg-indigo-100"
+              >
+                Flow Settings
+              </button>
+              <button
+                onClick={() => router.push('/dashboard')}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-100"
+              >
+                Back to Dashboard
+              </button>
+            </div>
           </div>
         </div>
 
@@ -549,6 +763,115 @@ export default function NotificationsPage() {
             ))
           )}
         </div>
+
+        {settingsOpen && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 p-4">
+            <div className="w-full max-w-5xl rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">Action Center Flow Settings</h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Assign roles for each workflow step. Super Admin, MD, CEO, Directors, and Admin keep full override access.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeFlowSettingsModal}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-semibold text-slate-600 hover:bg-slate-100"
+                  disabled={settingsSaving}
+                >
+                  Close
+                </button>
+              </div>
+
+              {settingsNotice && (
+                <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  {settingsNotice}
+                </div>
+              )}
+
+              {settingsLoading ? (
+                <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+                  Loading flow settings...
+                </div>
+              ) : (
+                <div className="mt-4 max-h-[62vh] overflow-auto rounded-xl border border-slate-200">
+                  <table className="min-w-full divide-y divide-slate-200 text-sm">
+                    <thead className="sticky top-0 bg-slate-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold text-slate-700">Step</th>
+                        <th className="px-3 py-2 text-left font-semibold text-slate-700">Allow All Roles</th>
+                        <th className="px-3 py-2 text-left font-semibold text-slate-700">Allowed Roles</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 bg-white">
+                      {settingsSteps.map((step) => (
+                        <tr key={step.workflow_step}>
+                          <td className="px-3 py-3 align-top">
+                            <p className="font-semibold text-slate-900">Step {step.workflow_step}</p>
+                            <p className="text-xs text-slate-600">{step.title}</p>
+                          </td>
+                          <td className="px-3 py-3 align-top">
+                            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={step.allow_all_roles}
+                                onChange={(e) => toggleStepAllowAll(step.workflow_step, e.target.checked)}
+                                disabled={settingsSaving}
+                              />
+                              Enabled
+                            </label>
+                          </td>
+                          <td className="px-3 py-3 align-top">
+                            {step.allow_all_roles ? (
+                              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">All roles can access this step.</p>
+                            ) : (
+                              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                                {settingsRoles.map((role) => {
+                                  const checked = step.role_ids.includes(role.id);
+                                  return (
+                                    <label key={`${step.workflow_step}-${role.id}`} className="inline-flex items-center gap-2 text-xs text-slate-700">
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() => toggleStepRole(step.workflow_step, role.id)}
+                                        disabled={settingsSaving || step.allow_all_roles}
+                                      />
+                                      {role.name}
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeFlowSettingsModal}
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                  disabled={settingsSaving}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveFlowSettings()}
+                  className="rounded-lg border border-indigo-300 bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-70"
+                  disabled={settingsSaving || settingsLoading || settingsSteps.length === 0}
+                >
+                  {settingsSaving ? 'Saving...' : 'Save Settings'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

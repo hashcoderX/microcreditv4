@@ -237,18 +237,46 @@ export default function BranchDashboardPage() {
     loadBranchAccounts();
   }, [apiBase, token, branchId]);
 
+  const visibleBranchAccounts = useMemo(() => {
+    const activeRows = branchAccounts.filter((account) => account.is_active !== false);
+    return activeRows.length > 0 ? activeRows : branchAccounts;
+  }, [branchAccounts]);
+
   const bankAccounts = useMemo(
-    () => branchAccounts.filter((account) => String(account.account_type || '').toLowerCase() === 'bank'),
-    [branchAccounts]
+    () =>
+      [...visibleBranchAccounts]
+        .filter((account) => String(account.account_type || '').toLowerCase() === 'bank')
+        .sort((a, b) => Number(b.id || 0) - Number(a.id || 0)),
+    [visibleBranchAccounts]
   );
 
-  const cashAccount = useMemo(
-    () =>
-      branchAccounts.find(
-        (account) => String(account.account_type || '').toLowerCase() === 'cash'
-      ) || null,
-    [branchAccounts]
-  );
+  const cashAccount = useMemo(() => {
+    const rows = [...visibleBranchAccounts]
+      .filter((account) => String(account.account_type || '').toLowerCase() === 'cash')
+      .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+    return rows[0] || null;
+  }, [visibleBranchAccounts]);
+
+  const mainAccount = useMemo(() => {
+    const rows = [...visibleBranchAccounts]
+      .filter((account) => String(account.account_type || '').toLowerCase() === 'main')
+      .sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+    return rows[0] || null;
+  }, [visibleBranchAccounts]);
+
+  const cashOpeningValue = Number(cashAccount?.opening_balance || 0);
+  const cashCurrentValue = Number(cashAccount?.current_balance || 0);
+  const mainOpeningValue = Number(mainAccount?.opening_balance || 0);
+  const mainCurrentValue = Number(mainAccount?.current_balance || 0);
+
+  const showMainBalanceAsCashFallback =
+    !!cashAccount &&
+    cashOpeningValue <= 0 &&
+    cashCurrentValue <= 0 &&
+    (mainOpeningValue > 0 || mainCurrentValue > 0);
+
+  const displayedCashOpeningValue = showMainBalanceAsCashFallback ? mainOpeningValue : cashOpeningValue;
+  const displayedCashCurrentValue = showMainBalanceAsCashFallback ? mainCurrentValue : cashCurrentValue;
 
   const addBankAccountRow = () => {
     setBankAccountRows((prev) => [
@@ -1236,18 +1264,24 @@ export default function BranchDashboardPage() {
                           )}
                           {showCashColumnOpeningBalance && (
                             <td className="px-4 py-2 text-right font-semibold text-gray-900">
-                              {Number(cashAccount.opening_balance || 0).toLocaleString(undefined, {
+                              {Number(displayedCashOpeningValue || 0).toLocaleString(undefined, {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
                               })}
+                              {showMainBalanceAsCashFallback ? (
+                                <p className="text-[10px] font-medium text-cyan-700">Main account sync view</p>
+                              ) : null}
                             </td>
                           )}
                           {showCashColumnCurrentBalance && (
                             <td className="px-4 py-2 text-right font-semibold text-gray-900">
-                              {Number(cashAccount.current_balance || 0).toLocaleString(undefined, {
+                              {Number(displayedCashCurrentValue || 0).toLocaleString(undefined, {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
                               })}
+                              {showMainBalanceAsCashFallback ? (
+                                <p className="text-[10px] font-medium text-cyan-700">Main account sync view</p>
+                              ) : null}
                             </td>
                           )}
                         </tr>

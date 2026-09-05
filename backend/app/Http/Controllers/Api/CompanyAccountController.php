@@ -5,13 +5,37 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Company;
 use App\Models\CompanyAccount;
+use App\Models\Role;
+use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class CompanyAccountController extends Controller
 {
+    private function pickPreferredAccount($accounts, string $type): ?CompanyAccount
+    {
+        $typed = $accounts->where('account_type', $type);
+        if ($typed->isEmpty()) {
+            return null;
+        }
+
+        $active = $typed->where('is_active', true);
+        $pool = $active->isNotEmpty() ? $active : $typed;
+
+        /** @var CompanyAccount|null $selected */
+        $selected = $pool->sortByDesc('id')->first();
+        return $selected;
+    }
+
+    private function buildCompanyWalletNo(int $companyId): string
+    {
+        return 'CW' . str_pad((string) $companyId, 6, '0', STR_PAD_LEFT);
+    }
+
     public function index(Company $company): JsonResponse
     {
         $accounts = CompanyAccount::query()
@@ -20,9 +44,13 @@ class CompanyAccountController extends Controller
             ->orderBy('id')
             ->get();
 
-        $main = $accounts->firstWhere('account_type', CompanyAccount::TYPE_MAIN);
-        $cash = $accounts->firstWhere('account_type', CompanyAccount::TYPE_CASH);
-        $banks = $accounts->where('account_type', CompanyAccount::TYPE_BANK)->values();
+        $main = $this->pickPreferredAccount($accounts, CompanyAccount::TYPE_MAIN);
+        $cash = $this->pickPreferredAccount($accounts, CompanyAccount::TYPE_CASH);
+        $banks = $accounts
+            ->where('account_type', CompanyAccount::TYPE_BANK)
+            ->where('is_active', true)
+            ->sortByDesc('id')
+            ->values();
 
         $totalOpening = round(
             (float) ($main?->opening_balance ?? 0)
@@ -384,5 +412,109 @@ class CompanyAccountController extends Controller
             DB::rollBack();
             throw $exception;
         }
+    }
+
+    public function companyWalletStatus(Company $company): JsonResponse
+    {
+        $companyEmail = strtolower(trim((string) ($company->email ?? '')));
+
+        $companyUser = $companyEmail === ''
+            ? null
+            : User::query()
+                ->whereRaw('LOWER(email) = ?', [$companyEmail])
+                ->first();
+
+        $mainAccount = CompanyAccount::query()
+            ->where('company_id', (int) $company->id)
+            ->where('account_type', CompanyAccount::TYPE_MAIN)
+            ->where('is_active', true)
+            ->first();
+
+        $hasSuperAdminRole = $companyUser
+            ? $companyUser->roles()->where('name', 'like', '%Super Admin%')->exists()
+            : false;
+
+        return response()->json([
+            'wallet' => [
+                'company_id' => (int) $company->id,
+                'wallet_no' => $this->buildCompanyWalletNo((int) $company->id),
+                'company_fund' => round((float) ($mainAccount?->current_balance ?? 0), 2),
+                'email' => $companyEmail,
+                'has_main_account' => (bool) $mainAccount,
+                'user_exists' => (bool) $companyUser,
+                'is_branch_linked' => $companyUser ? ((int) ($companyUser->branch_id ?? 0) === (int) $company->id) : false,
+                'has_super_admin_role' => (bool) $hasSuperAdminRole,
+            ],
+        ]);
+    }
+
+    public function provisionCompanyWalletUser(Request $request, Company $company): JsonResponse
+    {
+        $actor = $request->user();
+        if (!$actor || (method_exists($actor, 'isSystemAdmin') && !$actor->isSystemAdmin())) {
+            return response()->json(['message' => 'Only system admins can provision company wallet users.'], 403);
+        }
+
+        $companyEmail = strtolower(trim((string) ($company->email ?? '')));
+        if ($companyEmail === '') {
+            return response()->json(['message' => 'Company email is required before provisioning wallet user.'], 422);
+        }
+
+        $generatedPassword = '';
+        $created = false;
+
+        $companyUser = User::query()->whereRaw('LOWER(email) = ?', [$companyEmail])->first();
+        if (!$companyUser) {
+            $generatedPassword = Str::password(14);
+            $companyUser = User::query()->create([
+                'name' => trim((string) ($company->name ?? 'Company')) . ' Super Admin',
+                'email' => $companyEmail,
+                'password' => Hash::make($generatedPassword),
+                'employee_id' => null,
+                'branch_id' => (int) $company->id,
+                'designation_id' => null,
+            ]);
+            $created = true;
+        }
+
+        $companyUser->name = trim((string) ($company->name ?? 'Company')) . ' Super Admin';
+        $companyUser->branch_id = (int) $company->id;
+        $companyUser->employee_id = null;
+        $companyUser->designation_id = null;
+        $companyUser->save();
+
+        $superAdminRole = Role::firstOrCreate(
+            ['name' => 'Super Admin'],
+            ['description' => 'Full system access with all permissions']
+        );
+
+        $companyUser->roles()->syncWithoutDetaching([
+            $superAdminRole->id => [
+                'assigned_at' => now(),
+                'assigned_by' => $actor->id,
+            ],
+        ]);
+
+        $mainAccount = CompanyAccount::query()
+            ->where('company_id', (int) $company->id)
+            ->where('account_type', CompanyAccount::TYPE_MAIN)
+            ->where('is_active', true)
+            ->first();
+
+        return response()->json([
+            'message' => $created
+                ? 'Company wallet user created and linked successfully.'
+                : 'Company wallet user linked successfully.',
+            'wallet' => [
+                'company_id' => (int) $company->id,
+                'wallet_no' => $this->buildCompanyWalletNo((int) $company->id),
+                'company_fund' => round((float) ($mainAccount?->current_balance ?? 0), 2),
+                'email' => $companyEmail,
+                'user_exists' => true,
+                'is_branch_linked' => true,
+                'has_super_admin_role' => true,
+                'generated_password' => $created ? $generatedPassword : null,
+            ],
+        ]);
     }
 }

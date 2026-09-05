@@ -15,6 +15,39 @@ interface Department {
   updated_at: string;
 }
 
+const DEFAULT_DEPARTMENTS = [
+  'Board of Directors',
+  'Executive Management',
+  'Finance & Accounts Department',
+  'Credit & Lending Department',
+  'Loan Processing Department',
+  'Credit Risk Department',
+  'Collections & Recovery Department',
+  'Branch Operations Department',
+  'Customer Service Department',
+  'Treasury Department',
+  'Risk Management Department',
+  'Compliance Department',
+  'Internal Audit Department',
+  'Legal Department',
+  'Human Resources (HR) Department',
+  'Information Technology (IT) Department',
+  'Cybersecurity Department',
+  'Information Security Department',
+  'Marketing Department',
+  'Sales Department',
+  'Business Development Department',
+  'Digital Banking / Digital Finance Department',
+  'Data & Analytics Department',
+  'Product Development Department',
+  'Procurement Department',
+  'Administration Department',
+  'Operations Support Department',
+  'Quality Assurance Department',
+  'Corporate Communications Department',
+  'Research & Strategy Department',
+];
+
 type CompanyProfileState = 'loading' | 'missing' | 'incomplete' | 'ready';
 
 type CompanyRow = {
@@ -100,6 +133,9 @@ export default function Departments() {
   const [companyProfileState, setCompanyProfileState] = useState<CompanyProfileState>('loading');
   const [companyProfileMessage, setCompanyProfileMessage] = useState('');
   const [showForm, setShowForm] = useState(false);
+  const [showDefaultDepartmentsModal, setShowDefaultDepartmentsModal] = useState(false);
+  const [defaultDepartmentsAgreed, setDefaultDepartmentsAgreed] = useState(false);
+  const [defaultDepartmentsSaving, setDefaultDepartmentsSaving] = useState(false);
   const [editingDepartment, setEditingDepartment] = useState<Department | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingDeleteDepartmentId, setPendingDeleteDepartmentId] = useState<number | null>(null);
@@ -264,10 +300,49 @@ export default function Departments() {
       if (!tokenToUse) return;
 
       try {
-        const response = await axios.get(`${apiBase}/hr/departments`, {
-          headers: { Authorization: `Bearer ${tokenToUse}`, Accept: 'application/json' },
-        });
-        setDepartments(response.data.data || []);
+        const allRows: Department[] = [];
+        let currentPage = 1;
+        let lastPage = 1;
+        let receivedPaginatedPayload = false;
+
+        do {
+          const response = await axios.get(`${apiBase}/hr/departments`, {
+            headers: { Authorization: `Bearer ${tokenToUse}`, Accept: 'application/json' },
+            params: { page: currentPage },
+          });
+
+          const payload = response.data || {};
+
+          if (Array.isArray(payload)) {
+            allRows.push(...(payload as Department[]));
+            break;
+          }
+
+          const rows = Array.isArray(payload?.data) ? (payload.data as Department[]) : [];
+          if (rows.length > 0 || Number(payload?.last_page || 1) > 1) {
+            receivedPaginatedPayload = true;
+          }
+          allRows.push(...rows);
+
+          const nextLastPage = Number(payload?.last_page || 1);
+          lastPage = Number.isFinite(nextLastPage) && nextLastPage > 0 ? nextLastPage : 1;
+          currentPage += 1;
+        } while (currentPage <= lastPage && currentPage <= 100);
+
+        if (!receivedPaginatedPayload && allRows.length === 0) {
+          const response = await axios.get(`${apiBase}/hr/departments`, {
+            headers: { Authorization: `Bearer ${tokenToUse}`, Accept: 'application/json' },
+          });
+          const payload = response.data || {};
+          if (Array.isArray(payload)) {
+            allRows.push(...(payload as Department[]));
+          } else if (Array.isArray(payload?.data)) {
+            allRows.push(...(payload.data as Department[]));
+          }
+        }
+
+        const normalizedRows = allRows.filter((row) => Number(row?.id || 0) > 0);
+        setDepartments(normalizedRows);
         setCurrentPage(1);
         setApiError(null);
       } catch (error) {
@@ -316,6 +391,21 @@ export default function Departments() {
     }
     resetForm();
     setShowForm(true);
+  };
+
+  const openDefaultDepartmentsModal = () => {
+    if (!canManageDepartments) {
+      openNotice('Company profile required', companyProfileMessage);
+      return;
+    }
+    setDefaultDepartmentsAgreed(false);
+    setShowDefaultDepartmentsModal(true);
+  };
+
+  const closeDefaultDepartmentsModal = () => {
+    if (defaultDepartmentsSaving) return;
+    setShowDefaultDepartmentsModal(false);
+    setDefaultDepartmentsAgreed(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -385,6 +475,61 @@ export default function Departments() {
       closeConfirm();
     } catch (error) {
       openNotice('Delete failed', extractApiMessage(error, 'Failed to delete department. Please try again.'));
+    }
+  };
+
+  const createDefaultDepartments = async () => {
+    if (!canManageDepartments) {
+      openNotice('Company profile required', companyProfileMessage);
+      return;
+    }
+
+    if (!defaultDepartmentsAgreed) {
+      openNotice('Validation', 'Please tick the agreement checkbox before confirming.');
+      return;
+    }
+
+    setDefaultDepartmentsSaving(true);
+    try {
+      const normalizedExisting = new Set(
+        departments.map((item) => String(item.name || '').trim().toLowerCase()).filter(Boolean)
+      );
+
+      let createdCount = 0;
+      let skippedCount = 0;
+
+      for (const departmentName of DEFAULT_DEPARTMENTS) {
+        const normalized = departmentName.trim().toLowerCase();
+        if (normalizedExisting.has(normalized)) {
+          skippedCount += 1;
+          continue;
+        }
+
+        try {
+          await axios.post(
+            `${apiBase}/hr/departments`,
+            {
+              name: departmentName,
+              description: `Default department (${departmentName})`,
+            },
+            {
+              headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+            }
+          );
+          normalizedExisting.add(normalized);
+          createdCount += 1;
+        } catch (error) {
+          openNotice('Save failed', extractApiMessage(error, 'Failed to create one or more default departments.'));
+          return;
+        }
+      }
+
+      await fetchDepartments();
+      setShowDefaultDepartmentsModal(false);
+      setDefaultDepartmentsAgreed(false);
+      openNotice('Default departments completed', `Created ${createdCount} department(s). Skipped ${skippedCount} existing department(s).`);
+    } finally {
+      setDefaultDepartmentsSaving(false);
     }
   };
 
@@ -488,9 +633,91 @@ export default function Departments() {
                 Add department
               </button>
               )}
+              {!hiddenWidgetKeys.includes(`${widgetPrefix}btn_add_default_departments`) && (
+              <button
+                type="button"
+                onClick={openDefaultDepartmentsModal}
+                disabled={!canManageDepartments}
+                className="inline-flex items-center gap-2 rounded-xl border border-white/60 bg-blue-900/30 px-4 py-3 text-sm font-bold text-white hover:bg-blue-900/45 disabled:opacity-60 disabled:cursor-not-allowed transition"
+              >
+                <Building2 className="h-4 w-4" />
+                Default departments
+              </button>
+              )}
             </div>
           </div>
         </div>
+        )}
+
+        {showDefaultDepartmentsModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeDefaultDepartmentsModal} />
+            <div className="relative flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-2xl">
+              <div className="shrink-0 bg-gradient-to-r from-blue-600 via-cyan-600 to-teal-600 px-6 py-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Create default departments</h3>
+                    <p className="mt-1 text-sm text-blue-50">
+                      Review and confirm to create missing default departments in the database.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeDefaultDepartmentsModal}
+                    disabled={defaultDepartmentsSaving}
+                    className="h-10 w-10 rounded-xl bg-white/20 text-white hover:bg-white/30 disabled:opacity-60"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6">
+                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                  <h4 className="text-sm font-extrabold text-slate-900">Default department list</h4>
+                  <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                    {DEFAULT_DEPARTMENTS.map((departmentName, index) => (
+                      <p key={departmentName} className="text-sm text-slate-700">
+                        {index + 1}. {departmentName}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="mt-4 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-sm text-emerald-900">
+                  <input
+                    type="checkbox"
+                    checked={defaultDepartmentsAgreed}
+                    onChange={(e) => setDefaultDepartmentsAgreed(e.target.checked)}
+                    className="mt-0.5 rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+                    disabled={defaultDepartmentsSaving}
+                  />
+                  <span>I agree to create these default departments in the system.</span>
+                </label>
+              </div>
+
+              <div className="shrink-0 border-t border-slate-200 bg-white px-6 py-4">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={closeDefaultDepartmentsModal}
+                    disabled={defaultDepartmentsSaving}
+                    className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void createDefaultDepartments()}
+                    disabled={defaultDepartmentsSaving || !defaultDepartmentsAgreed}
+                    className="rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-60"
+                  >
+                    {defaultDepartmentsSaving ? 'Saving…' : 'Confirm & save departments'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {!canManageDepartments && companyProfileState !== 'loading' && (
