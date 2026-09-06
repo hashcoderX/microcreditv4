@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Download, Eye, Search, SlidersHorizontal, Users, UserPlus, UserRoundPen } from 'lucide-react';
+import { Bell, Download, Eye, Search, SlidersHorizontal, Users, UserPlus, UserRoundPen } from 'lucide-react';
 
 type Customer = {
   id: number;
@@ -42,8 +42,11 @@ type Customer = {
 
 type AuthUser = {
   id: number;
+  name?: string;
+  email?: string;
   branch_id?: number | null;
   designation?: { id: number; name: string } | null;
+  roles?: Array<{ id?: number; name?: string }>;
 };
 
 type RegisterStepId = 1 | 2;
@@ -345,6 +348,7 @@ export default function MicrofinanceCustomersPage() {
   const router = useRouter();
   const [token, setToken] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingWidgets, setLoadingWidgets] = useState(true);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
@@ -487,6 +491,31 @@ export default function MicrofinanceCustomersPage() {
   const designationName = String(authUser?.designation?.name || '').toLowerCase();
   const isFieldOfficer = designationName.includes('field') && designationName.includes('officer');
 
+  const fetchNotificationPreview = useCallback(async (authToken: string) => {
+    try {
+      const response = await axios.get(`${API_BASE}/notifications/preview`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: 'application/json',
+        },
+        params: { limit: 4 },
+      });
+
+      setActionCenterTotalCount(Number(response.data?.action_center_total || 0));
+    } catch {
+      setActionCenterTotalCount(0);
+    }
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('auth_user');
+    router.push('/');
+  };
+
+  const displayName = String(authUser?.name || authUser?.email || 'User').trim();
+  const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
+
   const fetchWidgetPreferences = async (authToken: string) => {
     setLoadingWidgets(true);
     try {
@@ -551,6 +580,7 @@ export default function MicrofinanceCustomersPage() {
 
     setToken(storedToken);
     void fetchWidgetPreferences(storedToken);
+  void fetchNotificationPreview(storedToken);
 
     const storedUser = localStorage.getItem('auth_user');
     if (storedUser) {
@@ -560,7 +590,7 @@ export default function MicrofinanceCustomersPage() {
         setAuthUser(null);
       }
     }
-  }, [router]);
+  }, [fetchNotificationPreview, router]);
 
   const filteredCustomers = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -1679,6 +1709,63 @@ export default function MicrofinanceCustomersPage() {
       </div>
 
       <div className="relative z-10 max-w-7xl mx-auto space-y-6">
+        <nav className="relative z-10 rounded-2xl border border-white/20 bg-white/80 p-3 shadow-lg backdrop-blur-lg">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center">
+              <div className="flex items-center space-x-3">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-r from-emerald-500 to-cyan-500">
+                  <span className="text-sm font-bold text-white">DOF</span>
+                </div>
+                <h1 className="max-w-[220px] truncate bg-gradient-to-r from-emerald-600 to-cyan-600 bg-clip-text text-base font-bold text-transparent sm:max-w-none sm:text-xl">
+                  Desk of Finance
+                </h1>
+              </div>
+            </div>
+
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/microfinance')}
+                className="rounded-full border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-50"
+              >
+                Back to Microfinance
+              </button>
+
+              <div className="hidden items-center space-x-2 text-xs text-gray-600 sm:flex sm:text-sm">
+                <div className="h-2 w-2 animate-pulse rounded-full bg-green-500"></div>
+                <span>System Online</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/action-center')}
+                className="flex w-full items-center gap-2 rounded-full border border-amber-200 bg-amber-50/90 px-3 py-1.5 text-left transition hover:bg-amber-100 sm:w-auto"
+              >
+                <Bell className="h-4 w-4 text-amber-700" />
+                <span className="text-xs font-semibold text-amber-800">Action Center</span>
+                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-300 px-1.5 text-[11px] font-bold text-amber-900">
+                  {actionCenterTotalCount}
+                </span>
+              </button>
+
+              <div className="hidden items-center rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-left sm:flex">
+                <div className="leading-tight">
+                  <p className="max-w-[220px] truncate text-xs font-semibold text-slate-900">{displayName}</p>
+                  <p className="truncate text-[11px] text-slate-500">{roleName}</p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="w-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-xs font-medium text-white shadow-lg transition-all duration-300 hover:from-emerald-600 hover:to-cyan-600 hover:shadow-xl sm:w-auto sm:px-6 sm:text-sm"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </nav>
+
         <div className="rounded-3xl border border-white/60 bg-white/75 p-5 shadow-[0_28px_70px_-36px_rgba(2,132,199,0.45)] backdrop-blur-xl sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>

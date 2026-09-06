@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Employee;
+use App\Models\Finance;
 use App\Models\MicrofinanceActionCenterStepRole;
 use App\Models\MicrofinanceLoanRequest;
 use App\Models\Role;
@@ -11,6 +12,7 @@ use App\Models\UserNotification;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 class UserNotificationController extends Controller
@@ -337,7 +339,7 @@ class UserNotificationController extends Controller
         $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
 
         $query = MicrofinanceLoanRequest::query()
-            ->whereIn('status', ['requested', 'hold'])
+            ->whereIn('status', ['requested', 'hold', 'approved'])
             ->whereNotNull('workflow_step');
 
         if (!$this->hasAdministrativeNotificationAccess($user)) {
@@ -374,6 +376,55 @@ class UserNotificationController extends Controller
         return $query;
     }
 
+    private function financeWorkflowStepSql(): string
+    {
+        return "CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(repayment_plan, '$.approval_workflow.current_step')), '1') AS UNSIGNED)";
+    }
+
+    private function scopedFinanceActionCenterWorkflowQuery(Request $request): Builder
+    {
+        $user = $request->user();
+        $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
+        $stepSql = $this->financeWorkflowStepSql();
+
+        $query = Finance::query()
+            ->whereIn('status', ['pending_approval'])
+            ->whereRaw("{$stepSql} BETWEEN 1 AND 14");
+
+        if (!$this->hasAdministrativeNotificationAccess($user)) {
+            $viewerUserId = (int) ($user?->id ?? 0);
+            $viewerEmployeeId = $this->resolveViewerEmployeeId($user);
+            $viewerBranchId = $this->resolveViewerBranchId($user);
+            $hasBranchWorkflowScope = $viewerBranchId > 0 && count($allowedBranchSteps) > 0;
+
+            if ($viewerUserId <= 0 && $viewerEmployeeId <= 0) {
+                if (!$hasBranchWorkflowScope) {
+                    $query->whereRaw('1 = 0');
+                }
+            } else {
+                $query->where(function ($scope) use ($viewerUserId, $viewerEmployeeId, $viewerBranchId, $hasBranchWorkflowScope, $allowedBranchSteps, $stepSql) {
+                    if ($viewerUserId > 0) {
+                        $scope->orWhere('created_by', $viewerUserId);
+                    }
+
+                    if ($viewerEmployeeId > 0) {
+                        $scope->orWhere('responsible_officer_employee_id', $viewerEmployeeId);
+                    }
+
+                    if ($hasBranchWorkflowScope) {
+                        $scope->orWhere(function ($branchScope) use ($viewerBranchId, $allowedBranchSteps, $stepSql) {
+                            $branchScope
+                                ->where('branch_id', $viewerBranchId)
+                                ->whereIn(DB::raw($stepSql), array_values($allowedBranchSteps));
+                        });
+                    }
+                });
+            }
+        }
+
+        return $query;
+    }
+
     /**
      * @return array<string, int>
      */
@@ -393,6 +444,22 @@ class UserNotificationController extends Controller
             }
 
             $counts['step_' . $step] = (int) ($row->aggregate_count ?? 0);
+        }
+
+        $stepSql = $this->financeWorkflowStepSql();
+        $financeRows = $this->scopedFinanceActionCenterWorkflowQuery($request)
+            ->selectRaw("{$stepSql} as workflow_step, COUNT(*) as aggregate_count")
+            ->groupBy(DB::raw($stepSql))
+            ->get();
+
+        foreach ($financeRows as $row) {
+            $step = (int) ($row->workflow_step ?? 0);
+            if ($step < 1 || $step > 14) {
+                continue;
+            }
+
+            $key = 'step_' . $step;
+            $counts[$key] = (int) ($counts[$key] ?? 0) + (int) ($row->aggregate_count ?? 0);
         }
 
         return $counts;
@@ -417,10 +484,10 @@ class UserNotificationController extends Controller
             ])
             ->orderByDesc('workflow_step_updated_at')
             ->orderByDesc('id')
-            ->limit(max(1, min($limit, 20)))
+            ->limit(max(1, min($limit * 3, 20)))
             ->get();
 
-        return $rows->map(function (MicrofinanceLoanRequest $loan) {
+        $mfItems = $rows->map(function (MicrofinanceLoanRequest $loan) {
             return [
                 'loan_request_id' => (int) $loan->id,
                 'customer_name' => (string) ($loan->customer_name ?? ''),
@@ -433,6 +500,54 @@ class UserNotificationController extends Controller
                 'created_at' => optional($loan->created_at)->toIso8601String(),
             ];
         })->values()->all();
+
+        $stepSql = $this->financeWorkflowStepSql();
+        $financeRows = $this->scopedFinanceActionCenterWorkflowQuery($request)
+            ->with(['customer:id,first_name,last_name'])
+            ->select([
+                'id',
+                'customer_id',
+                'status',
+                'created_at',
+                'updated_at',
+                DB::raw("{$stepSql} as workflow_step"),
+            ])
+            ->orderByDesc('updated_at')
+            ->orderByDesc('id')
+            ->limit(max(1, min($limit * 3, 20)))
+            ->get();
+
+        $financeItems = $financeRows->map(function (Finance $finance) {
+            $customerName = trim(
+                ((string) ($finance->customer?->first_name ?? '')) . ' ' .
+                ((string) ($finance->customer?->last_name ?? ''))
+            );
+
+            return [
+                'loan_request_id' => 1000000000 + (int) $finance->id,
+                'customer_name' => $customerName,
+                'customer_no' => '',
+                'reference_no' => 'FIN-' . str_pad((string) $finance->id, 6, '0', STR_PAD_LEFT),
+                'loan_code' => '',
+                'status' => (string) ($finance->status ?? ''),
+                'workflow_step' => (int) ($finance->workflow_step ?? 1),
+                'workflow_step_updated_at' => optional($finance->updated_at)->toIso8601String(),
+                'created_at' => optional($finance->created_at)->toIso8601String(),
+            ];
+        })->values()->all();
+
+        $merged = array_merge($mfItems, $financeItems);
+
+        usort($merged, function (array $a, array $b): int {
+            $aTs = strtotime((string) ($a['workflow_step_updated_at'] ?? $a['created_at'] ?? '')) ?: 0;
+            $bTs = strtotime((string) ($b['workflow_step_updated_at'] ?? $b['created_at'] ?? '')) ?: 0;
+            if ($aTs === $bTs) {
+                return ((int) ($b['loan_request_id'] ?? 0)) <=> ((int) ($a['loan_request_id'] ?? 0));
+            }
+            return $bTs <=> $aTs;
+        });
+
+        return array_values(array_slice($merged, 0, max(1, min($limit, 20))));
     }
 
     public function index(Request $request): JsonResponse

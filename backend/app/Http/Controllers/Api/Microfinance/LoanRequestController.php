@@ -1785,7 +1785,13 @@ class LoanRequestController extends Controller
             return $fallback;
         }
 
-        $roleIds = array_values(array_unique(array_filter(array_map('intval', (array) ($row->role_ids ?? [])), fn ($id) => $id > 0)));
+        $rawRoleIds = $row->role_ids;
+        if (is_string($rawRoleIds)) {
+            $decodedRoleIds = json_decode($rawRoleIds, true);
+            $rawRoleIds = is_array($decodedRoleIds) ? $decodedRoleIds : [];
+        }
+
+        $roleIds = array_values(array_unique(array_filter(array_map('intval', (array) ($rawRoleIds ?? [])), fn ($id) => $id > 0)));
 
         return [
             'allow_all_roles' => (bool) ($row->allow_all_roles ?? false),
@@ -1802,7 +1808,63 @@ class LoanRequestController extends Controller
             return [];
         }
 
-        return $user->roles()->pluck('roles.id')->map(fn ($id) => (int) $id)->filter(fn ($id) => $id > 0)->unique()->values()->all();
+        $loadedRoles = $user->relationLoaded('roles') ? $user->roles : null;
+        if ($loadedRoles) {
+            $loadedRoleIds = $loadedRoles
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->filter(fn ($id) => $id > 0)
+                ->unique()
+                ->values()
+                ->all();
+
+            if (count($loadedRoleIds) > 0) {
+                return $loadedRoleIds;
+            }
+        }
+
+        $userRoleIds = $user->roles()
+            ->select('roles.id')
+            ->pluck('roles.id')
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        if (count($userRoleIds) > 0) {
+            return $userRoleIds;
+        }
+
+        $fallbackRoleIds = $user->roles()->pluck('roles.id')->map(fn ($id) => (int) $id)->filter(fn ($id) => $id > 0)->unique()->values()->all();
+        if (count($fallbackRoleIds) > 0) {
+            return $fallbackRoleIds;
+        }
+
+        $designationName = strtolower(trim((string) optional($user->designation)->name));
+        if ($designationName === '') {
+            return [];
+        }
+
+        $designationRoleIds = Role::query()
+            ->get(['id', 'name'])
+            ->filter(function (Role $role) use ($designationName) {
+                $roleName = strtolower(trim((string) $role->name));
+                if ($roleName === '') {
+                    return false;
+                }
+
+                return $roleName === $designationName
+                    || str_contains($roleName, $designationName)
+                    || str_contains($designationName, $roleName);
+            })
+            ->map(fn (Role $role) => (int) $role->id)
+            ->filter(fn (int $id) => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+
+        return $designationRoleIds;
     }
 
     private function userHasActionCenterStepAccess(?object $user, int $step): bool
@@ -1863,7 +1925,12 @@ class LoanRequestController extends Controller
 
     private function canCreditOfficerSendBack(?object $user, MicrofinanceLoanRequest $loanRequest): bool
     {
-        return $this->canPerformConfiguredStepAction($user, $loanRequest, 2);
+        $currentStep = $this->resolveWorkflowStep($loanRequest);
+        if ($currentStep <= 1) {
+            return false;
+        }
+
+        return $this->canPerformConfiguredStepAction($user, $loanRequest, $currentStep);
     }
 
     private function canCreditOfficerAdvanceStepOne(?object $user, MicrofinanceLoanRequest $loanRequest): bool
@@ -3829,9 +3896,9 @@ class LoanRequestController extends Controller
             ], 422);
         }
 
-        if (!$this->hasLoanApprovalAccess($request->user())) {
+        if (!$this->canPerformConfiguredStepAction($request->user(), $loanRequest, self::WORKFLOW_FINAL_STEP)) {
             return response()->json([
-                'message' => 'Only Loan Approver, Finance Manager, Branch Manager, and Admin can approve loans.'
+                'message' => 'You are not allowed to approve this loan based on current Action Center flow settings.'
             ], 403);
         }
 
@@ -3978,9 +4045,10 @@ class LoanRequestController extends Controller
             ], 422);
         }
 
-        if (!$this->canReviewLoan($request->user())) {
+        $currentStep = $this->resolveWorkflowStep($loanRequest);
+        if (!$this->canPerformConfiguredStepAction($request->user(), $loanRequest, $currentStep)) {
             return response()->json([
-                'message' => 'Only Loan Approver, Finance Manager, Branch Manager, and Admin can reject loans.'
+                'message' => 'You are not allowed to reject this loan based on current Action Center flow settings.'
             ], 403);
         }
 
@@ -4054,7 +4122,8 @@ class LoanRequestController extends Controller
             ], 422);
         }
 
-        if (!$this->canReviewLoan($request->user())) {
+        $currentStep = $this->resolveWorkflowStep($loanRequest);
+        if (!$this->canPerformConfiguredStepAction($request->user(), $loanRequest, $currentStep)) {
             return response()->json([
                 'message' => 'You are not allowed to request documents for this loan.'
             ], 403);

@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
-import { ArrowLeft, Banknote, Calculator, Car, Check, FileText, Plus, Shield, User, X } from 'lucide-react';
+import { ArrowLeft, Banknote, Bell, Calculator, Car, Check, FileText, Plus, Shield, User, X } from 'lucide-react';
+import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
 
 type ProductTypeRow = {
   id: number;
@@ -35,6 +36,14 @@ type RepaymentInstallmentRow = {
   installment_no: number;
   payment_date: string;
   amount: string;
+};
+
+type AuthUser = {
+  id: number;
+  name?: string;
+  email?: string;
+  designation?: { id?: number; name?: string } | null;
+  roles?: Array<{ id?: number; name?: string }>;
 };
 
 type InterestRatePeriod = 'yearly' | 'monthly';
@@ -261,6 +270,16 @@ type FinanceIssueDraft = {
   snapshot: FinanceIssueDraftSnapshot;
 };
 
+type ConfirmActionType = 'submit_register' | 'save_product_type' | 'delete_draft';
+
+type ConfirmModalState = {
+  open: boolean;
+  title: string;
+  message: string;
+  action: ConfirmActionType | null;
+  draftId?: string;
+};
+
 const FINANCE_ISSUE_DRAFTS_KEY = 'finance_issue_wizard_drafts_v1';
 
 function isCustomerDetail(value: unknown): value is CustomerDetail {
@@ -269,9 +288,42 @@ function isCustomerDetail(value: unknown): value is CustomerDetail {
   return typeof candidate.id === 'number';
 }
 
+function extractApiErrorMessage(error: unknown, fallback: string): string {
+  if (!axios.isAxiosError(error)) {
+    return fallback;
+  }
+
+  const responseData = error.response?.data as {
+    message?: string;
+    errors?: Record<string, string[] | string>;
+  } | undefined;
+  const statusCode = Number(error.response?.status || 0);
+
+  const validationMessages = responseData?.errors
+    ? Object.values(responseData.errors)
+      .flatMap((entry) => Array.isArray(entry) ? entry : [entry])
+      .filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
+    : [];
+
+  if (statusCode === 422) {
+    if (validationMessages.length > 0) {
+      return `Validation failed (422):\n- ${validationMessages.join('\n- ')}`;
+    }
+    return String(responseData?.message || 'Validation failed (422). Please review the form values.');
+  }
+
+  const firstValidationMessage = validationMessages[0];
+  return String(firstValidationMessage || responseData?.message || fallback);
+}
+
 export default function IssueFinancePage() {
   const router = useRouter();
   const [token, setToken] = useState('');
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
+  const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
+  const [widgetNotice, setWidgetNotice] = useState('');
+  const widgetPrefix = 'finance_issue_widget_';
   const [productTypes, setProductTypes] = useState<ProductTypeRow[]>([]);
 
   const [registerStep, setRegisterStep] = useState(1);
@@ -400,7 +452,120 @@ export default function IssueFinancePage() {
   const [showNewProductInterestTerms, setShowNewProductInterestTerms] = useState(false);
   const [savingProductType, setSavingProductType] = useState(false);
   const [activeDraftId, setActiveDraftId] = useState('');
+  const [alertModal, setAlertModal] = useState({
+    open: false,
+    title: 'Error',
+    message: '',
+  });
+  const [confirmModal, setConfirmModal] = useState<ConfirmModalState>({
+    open: false,
+    title: '',
+    message: '',
+    action: null,
+  });
+
+  const fetchNotificationPreview = async (authToken: string) => {
+    try {
+      const response = await axios.get('/api/notifications/preview', {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: 'application/json',
+        },
+        params: { limit: 4 },
+      });
+
+      setActionCenterTotalCount(Number(response.data?.action_center_total || 0));
+    } catch {
+      setActionCenterTotalCount(0);
+    }
+  };
+
+  const fetchWidgetPreferences = async (authToken: string) => {
+    try {
+      const response = await axios.get('/api/dashboard/widgets', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const rows = Array.isArray(response.data?.widgets) ? response.data.widgets : [];
+      const nextHidden = new Set<string>();
+      for (const row of rows) {
+        const key = String(row?.widget_key || '').trim();
+        if (!key.startsWith(widgetPrefix)) continue;
+        if (row?.is_visible === false) nextHidden.add(key);
+      }
+      setHiddenWidgetKeys(nextHidden);
+    } catch {
+      setHiddenWidgetKeys(new Set());
+    }
+  };
+
+  const saveWidgetPreference = async (widgetKey: string, isVisible: boolean) => {
+    if (!token) return false;
+    try {
+      await axios.patch(
+        '/api/dashboard/widgets',
+        { widget_key: widgetKey, is_visible: isVisible },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const hideWidget = async (widgetKey: string) => {
+    setWidgetNotice('');
+    const previous = new Set(hiddenWidgetKeys);
+    const next = new Set(hiddenWidgetKeys);
+    next.add(widgetKey);
+    setHiddenWidgetKeys(next);
+    const ok = await saveWidgetPreference(widgetKey, false);
+    if (!ok) {
+      setHiddenWidgetKeys(previous);
+      setWidgetNotice('Failed to hide widget. Please try again.');
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('auth_user');
+    router.push('/');
+  };
+
+  const displayName = String(authUser?.name || authUser?.email || 'User').trim();
+  const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
   const [savedDrafts, setSavedDrafts] = useState<FinanceIssueDraft[]>([]);
+
+  const openConfirmModal = (action: ConfirmActionType, title: string, message: string, draftId?: string) => {
+    setConfirmModal({
+      open: true,
+      title,
+      message,
+      action,
+      draftId,
+    });
+  };
+
+  const closeConfirmModal = () => {
+    if (savingRegister || savingProductType) return;
+    setConfirmModal({ open: false, title: '', message: '', action: null });
+  };
+
+  const closeAlertModal = () => {
+    setAlertModal((prev) => ({ ...prev, open: false }));
+    setErrorMessage('');
+  };
+
+  const requestSubmitRegister = () => {
+    openConfirmModal('submit_register', 'Complete Registration', 'Do you want to submit this finance registration now?');
+  };
+
+  const requestSaveProductType = () => {
+    openConfirmModal('save_product_type', 'Save Product Type', 'Do you want to create this new product type with the entered defaults?');
+  };
+
+  const requestDeleteDraft = (draftId: string) => {
+    openConfirmModal('delete_draft', 'Delete Draft', 'Do you want to permanently delete this draft?', draftId);
+  };
 
   const wizardStep3Label = regFinanceType === 'other'
     ? 'Loan'
@@ -847,7 +1012,7 @@ export default function IssueFinancePage() {
     setRegDocuments([]);
   };
 
-  const deleteDraft = (draftId: string) => {
+  const deleteDraftNow = (draftId: string) => {
     setSavedDrafts((prev) => {
       const next = prev.filter((draft) => draft.id !== draftId);
       persistDraftsToStorage(next);
@@ -856,6 +1021,26 @@ export default function IssueFinancePage() {
 
     if (activeDraftId === draftId) {
       setActiveDraftId('');
+    }
+  };
+
+  const handleConfirmAction = async () => {
+    const action = confirmModal.action;
+    const draftId = confirmModal.draftId;
+    closeConfirmModal();
+
+    if (action === 'submit_register') {
+      await submitRegister();
+      return;
+    }
+
+    if (action === 'save_product_type') {
+      await saveNewProductType();
+      return;
+    }
+
+    if (action === 'delete_draft' && draftId) {
+      deleteDraftNow(draftId);
     }
   };
 
@@ -872,7 +1057,21 @@ export default function IssueFinancePage() {
       return;
     }
     setToken(t);
+    void fetchNotificationPreview(t);
+    void fetchWidgetPreferences(t);
+
+    const storedUser = localStorage.getItem('auth_user');
+    if (storedUser) {
+      try {
+        setAuthUser(JSON.parse(storedUser));
+      } catch {
+        setAuthUser(null);
+      }
+    }
   }, [router]);
+
+  const showAddProductTypeWidget = !hiddenWidgetKeys.has(`${widgetPrefix}add_product_type`);
+  const showInterestTermsWidget = !hiddenWidgetKeys.has(`${widgetPrefix}interest_terms`);
 
   useEffect(() => {
     try {
@@ -1043,8 +1242,8 @@ export default function IssueFinancePage() {
       setProductTypes((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
       handleProductTypeChange(created.name);
       resetProductTypeModal();
-    } catch {
-      setErrorMessage('Failed to create product type.');
+    } catch (error: unknown) {
+      setErrorMessage(extractApiErrorMessage(error, 'Failed to create product type.'));
     } finally {
       setSavingProductType(false);
     }
@@ -1452,11 +1651,7 @@ export default function IssueFinancePage() {
     } catch (error: unknown) {
       setRegCustomerDetail(null);
       setRegMatchedInvestmentAccountNo('');
-      if (axios.isAxiosError(error)) {
-        setErrorMessage(String(error.response?.data?.message || 'Customer not found.'));
-      } else {
-        setErrorMessage('Customer search failed.');
-      }
+      setErrorMessage(extractApiErrorMessage(error, 'Customer search failed.'));
       return false;
     } finally {
       setSearchingCustomer(false);
@@ -1509,11 +1704,7 @@ export default function IssueFinancePage() {
       }
     } catch (error: unknown) {
       setAdvancedSearchMatches([]);
-      if (axios.isAxiosError(error)) {
-        setErrorMessage(String(error.response?.data?.message || 'Advanced search failed.'));
-      } else {
-        setErrorMessage('Advanced search failed.');
-      }
+      setErrorMessage(extractApiErrorMessage(error, 'Advanced search failed.'));
     } finally {
       setSearchingCustomer(false);
     }
@@ -1882,27 +2073,20 @@ export default function IssueFinancePage() {
 
       router.push('/dashboard/action-center');
     } catch (error: unknown) {
-      const fallback = 'Failed to register finance agreement.';
-      if (axios.isAxiosError(error)) {
-        const responseData = error.response?.data as {
-          message?: string;
-          errors?: Record<string, string[] | string>;
-        } | undefined;
-
-        const firstValidationMessage = responseData?.errors
-          ? Object.values(responseData.errors)
-            .flatMap((entry) => Array.isArray(entry) ? entry : [entry])
-            .find((entry) => typeof entry === 'string' && entry.trim() !== '')
-          : undefined;
-
-        setErrorMessage(String(firstValidationMessage || responseData?.message || fallback));
-      } else {
-        setErrorMessage(fallback);
-      }
+      setErrorMessage(extractApiErrorMessage(error, 'Failed to register finance agreement.'));
     } finally {
       setSavingRegister(false);
     }
   };
+
+  useEffect(() => {
+    if (!errorMessage.trim()) return;
+    setAlertModal({
+      open: true,
+      title: errorMessage.includes('422') ? 'Validation Error' : 'Error',
+      message: errorMessage,
+    });
+  }, [errorMessage]);
 
   if (!token) {
     return (
@@ -1922,6 +2106,69 @@ export default function IssueFinancePage() {
       </div>
 
       <div className="relative z-10 max-w-7xl mx-auto space-y-5">
+        <nav className="relative z-10 rounded-2xl border border-white/20 bg-white/80 p-3 shadow-lg backdrop-blur-lg">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center">
+              <div className="flex items-center space-x-3">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-r from-emerald-500 to-cyan-500">
+                  <span className="text-sm font-bold text-white">DOF</span>
+                </div>
+                <h1 className="max-w-[220px] truncate bg-gradient-to-r from-emerald-600 to-cyan-600 bg-clip-text text-base font-bold text-transparent sm:max-w-none sm:text-xl">
+                  Desk of Finance
+                </h1>
+              </div>
+            </div>
+
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/finance')}
+                className="rounded-full border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-50"
+              >
+                Back to Finance
+              </button>
+
+              <div className="hidden items-center space-x-2 text-xs text-gray-600 sm:flex sm:text-sm">
+                <div className="h-2 w-2 animate-pulse rounded-full bg-green-500"></div>
+                <span>System Online</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/action-center')}
+                className="flex w-full items-center gap-2 rounded-full border border-amber-200 bg-amber-50/90 px-3 py-1.5 text-left transition hover:bg-amber-100 sm:w-auto"
+              >
+                <Bell className="h-4 w-4 text-amber-700" />
+                <span className="text-xs font-semibold text-amber-800">Action Center</span>
+                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-300 px-1.5 text-[11px] font-bold text-amber-900">
+                  {actionCenterTotalCount}
+                </span>
+              </button>
+
+              <div className="hidden items-center rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-left sm:flex">
+                <div className="leading-tight">
+                  <p className="max-w-[220px] truncate text-xs font-semibold text-slate-900">{displayName}</p>
+                  <p className="truncate text-[11px] text-slate-500">{roleName}</p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="w-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-xs font-medium text-white shadow-lg transition-all duration-300 hover:from-emerald-600 hover:to-cyan-600 hover:shadow-xl sm:w-auto sm:px-6 sm:text-sm"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </nav>
+
+        {widgetNotice ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            {widgetNotice}
+          </div>
+        ) : null}
+
         <div className="rounded-3xl border border-white/80 bg-white/88 backdrop-blur-md shadow-[0_22px_40px_rgba(14,116,144,0.14)] overflow-hidden">
           <div className="bg-gradient-to-r from-cyan-700 via-sky-700 to-teal-600 px-5 py-5 sm:px-6 sm:py-6">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -1965,15 +2212,6 @@ export default function IssueFinancePage() {
             </div>
           </div>
         </div>
-
-        {errorMessage && (
-          <div className="flex items-start justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-            <span>{errorMessage}</span>
-            <button type="button" onClick={() => setErrorMessage('')} className="text-rose-500 hover:text-rose-700 shrink-0">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        )}
 
         <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-5 items-start">
           <div className="rounded-3xl border border-cyan-100/90 bg-white/88 backdrop-blur-md shadow-[0_18px_36px_rgba(14,116,144,0.12)] overflow-hidden flex flex-col">
@@ -2143,14 +2381,28 @@ export default function IssueFinancePage() {
                           <option key={pt.id} value={pt.name}>{pt.name}</option>
                         ))}
                       </select>
-                      <button
-                        type="button"
-                        onClick={() => setShowProductTypeModal(true)}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 transition"
-                      >
-                        <Plus className="h-3.5 w-3.5" />
-                        Add product type
-                      </button>
+                      {showAddProductTypeWidget ? (
+                        <div className="relative inline-flex">
+                          <WidgetCloseGate>
+                            <button
+                              type="button"
+                              onClick={() => void hideWidget(`${widgetPrefix}add_product_type`)}
+                              className="absolute -right-2 -top-2 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 bg-white text-[10px] font-bold text-slate-600 shadow-sm hover:bg-rose-50 hover:text-rose-700"
+                              aria-label="Hide add product type button"
+                            >
+                              ×
+                            </button>
+                          </WidgetCloseGate>
+                          <button
+                            type="button"
+                            onClick={() => setShowProductTypeModal(true)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 transition"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            Add product type
+                          </button>
+                        </div>
+                      ) : null}
                       {isDraftLoanSelected && (
                         <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-medium text-amber-800">
                           Draft Loan selected: this issue will also be saved in the dedicated Draft Loans table for separate calculations.
@@ -2161,7 +2413,18 @@ export default function IssueFinancePage() {
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-slate-50/60 overflow-hidden">
+                {showInterestTermsWidget ? (
+                <div className="relative rounded-2xl border border-slate-200 bg-slate-50/60 overflow-hidden">
+                  <WidgetCloseGate>
+                    <button
+                      type="button"
+                      onClick={() => void hideWidget(`${widgetPrefix}interest_terms`)}
+                      className="absolute right-3 top-3 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-600 shadow-sm hover:bg-rose-50 hover:text-rose-700"
+                      aria-label="Hide interest and repayment terms widget"
+                    >
+                      ×
+                    </button>
+                  </WidgetCloseGate>
                   <div className="flex items-center justify-between gap-4 px-4 py-3">
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-slate-800">Interest & repayment terms</p>
@@ -2273,6 +2536,7 @@ export default function IssueFinancePage() {
                     </div>
                   )}
                 </div>
+                ) : null}
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 rounded-xl border border-cyan-100 bg-white p-4">
                   <div>
@@ -3313,7 +3577,7 @@ export default function IssueFinancePage() {
                 <button
                   type="button"
                   disabled={savingRegister}
-                  onClick={submitRegister}
+                  onClick={requestSubmitRegister}
                   className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:from-cyan-700 hover:to-blue-700 disabled:opacity-60 transition"
                 >
                   <Banknote className="h-4 w-4" />
@@ -3461,7 +3725,7 @@ export default function IssueFinancePage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => deleteDraft(draft.id)}
+                        onClick={() => requestDeleteDraft(draft.id)}
                         className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition"
                       >
                         Delete
@@ -3628,11 +3892,64 @@ export default function IssueFinancePage() {
                 </button>
                 <button
                   type="button"
-                  onClick={saveNewProductType}
+                  onClick={requestSaveProductType}
                   disabled={savingProductType}
                   className="rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:from-cyan-700 hover:to-blue-700 disabled:opacity-60 transition"
                 >
                   {savingProductType ? 'Saving…' : 'Save product type'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {confirmModal.open && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/55 px-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl overflow-hidden">
+              <div className="border-b border-slate-100 bg-slate-50 px-5 py-4">
+                <h3 className="text-base font-bold text-slate-900">{confirmModal.title}</h3>
+              </div>
+              <div className="px-5 py-4">
+                <p className="text-sm text-slate-700 whitespace-pre-line">{confirmModal.message}</p>
+              </div>
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 bg-white px-5 py-4">
+                <button
+                  type="button"
+                  onClick={closeConfirmModal}
+                  disabled={savingRegister || savingProductType}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmAction()}
+                  disabled={savingRegister || savingProductType}
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {alertModal.open && (
+          <div className="fixed inset-0 z-[75] flex items-center justify-center bg-slate-900/55 px-4 backdrop-blur-sm">
+            <div className="w-full max-w-lg rounded-2xl border border-rose-200 bg-white shadow-2xl overflow-hidden">
+              <div className="border-b border-rose-100 bg-rose-50 px-5 py-4">
+                <h3 className="text-base font-bold text-rose-900">{alertModal.title}</h3>
+              </div>
+              <div className="px-5 py-4">
+                <p className="text-sm text-slate-700 whitespace-pre-line">{alertModal.message}</p>
+              </div>
+              <div className="flex items-center justify-end border-t border-rose-100 bg-white px-5 py-4">
+                <button
+                  type="button"
+                  onClick={closeAlertModal}
+                  className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"
+                >
+                  Close
                 </button>
               </div>
             </div>

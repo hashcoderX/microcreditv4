@@ -13,6 +13,8 @@ use App\Models\Finance;
 use App\Models\FinanceCollection;
 use App\Models\FinanceDocument;
 use App\Models\FinanceWorkflowEvent;
+use App\Models\MicrofinanceActionCenterStepRole;
+use App\Models\Role;
 use App\Models\UserNotification;
 use App\Models\LoanRequest;
 use App\Models\LoanRequestCollection;
@@ -33,6 +35,7 @@ use Illuminate\Support\Arr;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class FinanceController extends Controller
 {
@@ -162,6 +165,11 @@ class FinanceController extends Controller
             return false;
         }
 
+        $configuredAccess = $this->userHasConfiguredFinanceStepAccess($user, $step);
+        if ($configuredAccess !== null) {
+            return $configuredAccess;
+        }
+
         return match ($step) {
             1 => $this->userMatchesRoleKeyword($user, 'cro')
                 || $this->userMatchesRoleKeyword($user, 'loan approver')
@@ -182,6 +190,156 @@ class FinanceController extends Controller
                 || $this->userMatchesRoleKeyword($user, 'finance manager'),
             default => false,
         };
+    }
+
+    private function normalizeStepRoleIds(array $roleIds): array
+    {
+        return array_values(array_unique(array_filter(array_map('intval', $roleIds), fn ($id) => $id > 0)));
+    }
+
+    private function resolveUserRoleIds(?User $user): array
+    {
+        if (!$user || !method_exists($user, 'roles')) {
+            return [];
+        }
+
+        return $this->normalizeStepRoleIds(
+            $user->roles()->pluck('roles.id')->map(fn ($id) => (int) $id)->all()
+        );
+    }
+
+    private function resolveRoleIdsByKeywords(array $keywords): array
+    {
+        if (count($keywords) === 0) {
+            return [];
+        }
+
+        $roles = Role::query()->get(['id', 'name']);
+        $ids = [];
+        foreach ($roles as $role) {
+            $name = strtolower(trim((string) $role->name));
+            if ($name === '') {
+                continue;
+            }
+
+            foreach ($keywords as $keyword) {
+                $normalizedKeyword = strtolower(trim((string) $keyword));
+                if ($normalizedKeyword !== '' && str_contains($name, $normalizedKeyword)) {
+                    $ids[] = (int) $role->id;
+                    break;
+                }
+            }
+        }
+
+        return $this->normalizeStepRoleIds($ids);
+    }
+
+    /**
+     * @return array{allow_all_roles: bool, role_ids: array<int>}
+     */
+    private function financeStepRoleFallbackRule(int $step): array
+    {
+        $safeStep = max(1, min(14, $step));
+
+        $map = [
+            1 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['cro', 'loan approver', 'finance manager'])],
+            2 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['cro', 'loan approver', 'finance manager'])],
+            3 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['branch manager'])],
+            4 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['head office', 'finance manager'])],
+            5 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['cash', 'finance manager', 'accountant'])],
+            6 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['cash', 'finance manager', 'accountant'])],
+            7 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['cash', 'finance manager', 'accountant'])],
+            8 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'document'])],
+            9 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'document'])],
+            10 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['loan approver', 'finance manager', 'document'])],
+            11 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['insurance', 'finance manager'])],
+            12 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['insurance', 'finance manager'])],
+            13 => ['allow_all_roles' => false, 'role_ids' => $this->resolveRoleIdsByKeywords(['insurance', 'finance manager'])],
+            14 => ['allow_all_roles' => false, 'role_ids' => []],
+        ];
+
+        return $map[$safeStep] ?? ['allow_all_roles' => false, 'role_ids' => []];
+    }
+
+    private function financeStepRoleRule(int $step): ?array
+    {
+        $safeStep = max(1, min(14, $step));
+
+        if (!Schema::hasTable('mf_action_center_step_roles')) {
+            return null;
+        }
+
+        $row = MicrofinanceActionCenterStepRole::query()
+            ->where('workflow_step', $safeStep)
+            ->first();
+
+        if (!$row) {
+            return $this->financeStepRoleFallbackRule($safeStep);
+        }
+
+        return [
+            'allow_all_roles' => (bool) ($row->allow_all_roles ?? false),
+            'role_ids' => $this->normalizeStepRoleIds((array) ($row->role_ids ?? [])),
+        ];
+    }
+
+    private function userHasConfiguredFinanceStepAccess(?User $user, int $step): ?bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $rule = $this->financeStepRoleRule($step);
+        if ($rule === null) {
+            return null;
+        }
+
+        if (!empty($rule['allow_all_roles'])) {
+            return true;
+        }
+
+        $allowedRoleIds = $this->normalizeStepRoleIds((array) ($rule['role_ids'] ?? []));
+        if (count($allowedRoleIds) === 0) {
+            return false;
+        }
+
+        $userRoleIds = $this->resolveUserRoleIds($user);
+        if (count($userRoleIds) === 0) {
+            return false;
+        }
+
+        return count(array_intersect($allowedRoleIds, $userRoleIds)) > 0;
+    }
+
+    private function allowedConfiguredFinanceSteps(?User $user): ?array
+    {
+        if (!$user) {
+            return [];
+        }
+
+        if ($this->hasPrivilegedFinanceApprovalAccess($user)) {
+            return range(1, 14);
+        }
+
+        $anyConfiguredRule = false;
+        $allowed = [];
+        for ($step = 1; $step <= 14; $step++) {
+            $hasAccess = $this->userHasConfiguredFinanceStepAccess($user, $step);
+            if ($hasAccess === null) {
+                continue;
+            }
+
+            $anyConfiguredRule = true;
+            if ($hasAccess) {
+                $allowed[] = $step;
+            }
+        }
+
+        if (!$anyConfiguredRule) {
+            return null;
+        }
+
+        return $allowed;
     }
 
     private function scopedBranchId(Request $request): ?int
@@ -441,6 +599,18 @@ class FinanceController extends Controller
 
         if ($request->filled('status')) {
             $query->where('status', (string) $request->get('status'));
+        }
+
+        $statusFilter = strtolower(trim((string) $request->get('status', '')));
+        if ($statusFilter === 'pending_approval') {
+            $allowedSteps = $this->allowedConfiguredFinanceSteps($request->user());
+            if (is_array($allowedSteps)) {
+                if (count($allowedSteps) === 0) {
+                    $query->whereRaw('1 = 0');
+                } else {
+                    $query->whereIn(DB::raw("CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(repayment_plan, '$.approval_workflow.current_step')), '1') AS UNSIGNED)"), $allowedSteps);
+                }
+            }
         }
 
         $data = $query->paginate($perPage);

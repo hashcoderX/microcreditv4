@@ -354,6 +354,7 @@ export default function RequestLoanPage() {
   const router = useRouter();
   const [token, setToken] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState<{
@@ -402,6 +403,22 @@ export default function RequestLoanPage() {
       setHiddenWidgetKeys(nextHidden);
     } catch {
       setHiddenWidgetKeys(new Set());
+    }
+  };
+
+  const fetchNotificationPreview = async (authToken: string) => {
+    try {
+      const response = await axios.get(`${API_BASE}/notifications/preview`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: 'application/json',
+        },
+        params: { limit: 4 },
+      });
+
+      setActionCenterTotalCount(Number(response.data?.action_center_total || 0));
+    } catch {
+      setActionCenterTotalCount(0);
     }
   };
 
@@ -1186,6 +1203,7 @@ export default function RequestLoanPage() {
     }
     setToken(storedToken);
     void fetchWidgetPreferences(storedToken);
+    void fetchNotificationPreview(storedToken);
 
     const storedUser = localStorage.getItem('auth_user');
     if (storedUser) {
@@ -1198,6 +1216,15 @@ export default function RequestLoanPage() {
       setAuthUser(null);
     }
   }, [router]);
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('auth_user');
+    router.push('/');
+  };
+
+  const displayName = String(authUser?.name || authUser?.email || 'User').trim();
+  const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
 
   useEffect(() => {
     if (!isCollectionOfficer) return;
@@ -3034,6 +3061,64 @@ export default function RequestLoanPage() {
         <div className="absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-teal-200 blur-3xl"></div>
       </div>
       <div className="max-w-7xl mx-auto">
+        <nav className="relative z-10 mb-6 bg-white/80 backdrop-blur-lg shadow-lg border border-white/20 rounded-2xl">
+          <div className="px-4 sm:px-6 lg:px-8">
+            <div className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center">
+                <div className="flex-shrink-0 flex items-center space-x-3">
+                  <div className="w-8 h-8 bg-gradient-to-r from-emerald-500 to-cyan-500 rounded-lg flex items-center justify-center">
+                    <span className="text-white font-bold text-sm">DOF</span>
+                  </div>
+                  <h1 className="text-gray-900 text-base sm:text-xl font-bold bg-gradient-to-r from-emerald-600 to-cyan-600 bg-clip-text text-transparent truncate max-w-[220px] sm:max-w-none">
+                    Desk of Finance
+                  </h1>
+                </div>
+              </div>
+
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
+                <button
+                  type="button"
+                  onClick={() => router.push('/dashboard/microfinance/loans')}
+                  className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50"
+                >
+                  Back to Loans
+                </button>
+
+                <div className="hidden sm:flex items-center space-x-2 text-xs sm:text-sm text-gray-600">
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                  <span>System Online</span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => router.push('/dashboard/action-center')}
+                  className="flex w-full items-center gap-2 rounded-full border border-amber-200 bg-amber-50/90 px-3 py-1.5 text-left transition hover:bg-amber-100 sm:w-auto"
+                >
+                  <span className="text-base">🔔</span>
+                  <span className="text-xs font-semibold text-amber-800">Action Center</span>
+                  <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-300 px-1.5 text-[11px] font-bold text-amber-900">
+                    {actionCenterTotalCount}
+                  </span>
+                </button>
+
+                <div className="hidden sm:flex items-center rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-left">
+                  <div className="leading-tight">
+                    <p className="text-xs font-semibold text-slate-900 max-w-[220px] truncate">{displayName}</p>
+                    <p className="text-[11px] text-slate-500 truncate">{roleName}</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleLogout}
+                  className="w-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-xs font-medium text-white shadow-lg transition-all duration-300 hover:from-emerald-600 hover:to-cyan-600 hover:shadow-xl sm:w-auto sm:px-6 sm:text-sm"
+                >
+                  Logout
+                </button>
+              </div>
+            </div>
+          </div>
+        </nav>
+
         <form onSubmit={handleSubmit} className="bg-white/80 backdrop-blur-xl rounded-3xl border border-white/80 shadow-[0_20px_60px_-25px_rgba(13,148,136,0.5)] p-6 md:p-8 space-y-8 relative z-10">
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div>

@@ -2,7 +2,7 @@
 
 import axios from 'axios';
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { getApiBaseUrl, getBackendOrigin } from '@/lib/api';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
 
@@ -26,6 +26,8 @@ type LoanGuarantor = {
 type LoanRequest = {
   id: number;
   customer_no: string;
+  reference_no?: string | null;
+  loan_code?: string | null;
   customer_name: string;
   nick_name?: string | null;
   address?: string | null;
@@ -241,8 +243,10 @@ const EyeIcon = ({ className = 'h-4 w-4' }: { className?: string }) => (
 
 export default function ReleasedLoansPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [token, setToken] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [widgetNotice, setWidgetNotice] = useState('');
   const [loading, setLoading] = useState(true);
@@ -1067,6 +1071,37 @@ export default function ReleasedLoansPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
+  const fetchNotificationPreview = async (authToken: string) => {
+    try {
+      const response = await axios.get(`${getApiBaseUrl()}/notifications/preview`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: 'application/json',
+        },
+        params: { limit: 4 },
+      });
+
+      setActionCenterTotalCount(Number(response.data?.action_center_total || 0));
+    } catch {
+      setActionCenterTotalCount(0);
+    }
+  };
+
+  useEffect(() => {
+    const targetLoanId = Number(searchParams.get('loan_id') || 0);
+    const targetCustomerNo = String(searchParams.get('customer_no') || '').trim();
+    const targetLoanCode = String(searchParams.get('loan_code') || '').trim();
+    const targetReferenceNo = String(searchParams.get('reference_no') || '').trim();
+
+    const nextQuery = targetCustomerNo || targetLoanCode || targetReferenceNo || (targetLoanId > 0 ? String(targetLoanId) : '');
+    if (!nextQuery) {
+      return;
+    }
+
+    setQuery(nextQuery);
+    setCurrentPage(1);
+  }, [searchParams]);
+
   const headers = useMemo(
     () => ({
       Authorization: `Bearer ${token}`,
@@ -1177,6 +1212,7 @@ export default function ReleasedLoansPage() {
     }
     setToken(storedToken);
     void fetchWidgetPreferences(storedToken);
+    void fetchNotificationPreview(storedToken);
 
     const storedUser = localStorage.getItem('auth_user');
     if (storedUser) {
@@ -1189,6 +1225,15 @@ export default function ReleasedLoansPage() {
       setAuthUser(null);
     }
   }, [router]);
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('auth_user');
+    router.push('/');
+  };
+
+  const displayName = String(authUser?.name || authUser?.email || 'User').trim();
+  const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
 
   useEffect(() => {
     if (!token) return;
@@ -1416,8 +1461,11 @@ export default function ReleasedLoansPage() {
 
       if (keyword) {
         const haystack = [
+          String(loan.id || ''),
           loan.customer_no,
           loan.customer_name,
+          loan.reference_no || '',
+          loan.loan_code || '',
           loan.route?.name || '',
           loan.center?.name || '',
           loan.group?.name || '',
@@ -1680,6 +1728,62 @@ export default function ReleasedLoansPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-100 p-6">
       <div className="max-w-7xl mx-auto space-y-6">
+        <nav className="relative z-10 bg-white/80 backdrop-blur-lg shadow-lg border border-white/20 rounded-2xl p-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center">
+              <div className="flex-shrink-0 flex items-center space-x-3">
+                <div className="w-8 h-8 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-lg flex items-center justify-center">
+                  <span className="text-white font-bold text-sm">DOF</span>
+                </div>
+                <h1 className="text-gray-900 text-base sm:text-xl font-bold bg-gradient-to-r from-cyan-600 to-blue-600 bg-clip-text text-transparent truncate max-w-[220px] sm:max-w-none">
+                  Desk of Finance
+                </h1>
+              </div>
+            </div>
+
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/microfinance/loans')}
+                className="rounded-full border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-50"
+              >
+                Back to Loans
+              </button>
+
+              <div className="hidden sm:flex items-center space-x-2 text-xs sm:text-sm text-gray-600">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                <span>System Online</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/action-center')}
+                className="flex w-full items-center gap-2 rounded-full border border-amber-200 bg-amber-50/90 px-3 py-1.5 text-left transition hover:bg-amber-100 sm:w-auto"
+              >
+                <span className="text-base">🔔</span>
+                <span className="text-xs font-semibold text-amber-800">Action Center</span>
+                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-300 px-1.5 text-[11px] font-bold text-amber-900">
+                  {actionCenterTotalCount}
+                </span>
+              </button>
+
+              <div className="hidden sm:flex items-center rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-left">
+                <div className="leading-tight">
+                  <p className="text-xs font-semibold text-slate-900 max-w-[220px] truncate">{displayName}</p>
+                  <p className="text-[11px] text-slate-500 truncate">{roleName}</p>
+                </div>
+              </div>
+
+              <button
+                onClick={handleLogout}
+                className="w-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 px-4 py-2 text-xs font-medium text-white shadow-lg transition-all duration-300 hover:from-cyan-600 hover:to-blue-600 hover:shadow-xl sm:w-auto sm:px-6 sm:text-sm"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </nav>
+
         {widgetNotice && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             {widgetNotice}

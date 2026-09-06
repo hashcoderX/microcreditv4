@@ -5,8 +5,29 @@ import { useRouter } from 'next/navigation';
 import axios from 'axios';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
 
+type AuthRole = {
+    id?: number;
+    name?: string;
+};
+
+type AuthUser = {
+    id?: number;
+    name?: string;
+    email?: string;
+    designation?: { id?: number; name?: string } | null;
+    roles?: AuthRole[];
+};
+
 export default function LoanManagementPage() {
-    const [token, setToken] = useState('');
+    const [token] = useState(() => {
+        if (typeof window === 'undefined') {
+            return '';
+        }
+
+        return localStorage.getItem('token') || '';
+    });
+    const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+    const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
     const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
     const [widgetNotice, setWidgetNotice] = useState<{ open: boolean; title: string; message: string }>({
         open: false,
@@ -15,6 +36,22 @@ export default function LoanManagementPage() {
     });
     const router = useRouter();
     const widgetPrefix = 'mf_loans_widget_';
+
+    const fetchNotificationPreview = async (authToken: string) => {
+        try {
+            const response = await axios.get('/api/notifications/preview', {
+                headers: {
+                    Authorization: `Bearer ${authToken}`,
+                    Accept: 'application/json',
+                },
+                params: { limit: 4 },
+            });
+
+            setActionCenterTotalCount(Number(response.data?.action_center_total || 0));
+        } catch {
+            setActionCenterTotalCount(0);
+        }
+    };
 
     const fetchWidgetPreferences = async (authToken: string) => {
         try {
@@ -66,14 +103,32 @@ export default function LoanManagementPage() {
     };
 
     useEffect(() => {
-        const storedToken = localStorage.getItem('token');
-        if (!storedToken) {
+        if (!token) {
             router.push('/');
         } else {
-            setToken(storedToken);
-            void fetchWidgetPreferences(storedToken);
+            queueMicrotask(() => {
+                void fetchWidgetPreferences(token);
+                void fetchNotificationPreview(token);
+                const storedUser = localStorage.getItem('auth_user');
+                if (storedUser) {
+                    try {
+                        setAuthUser(JSON.parse(storedUser));
+                    } catch {
+                        setAuthUser(null);
+                    }
+                }
+            });
         }
-    }, [router]);
+    }, [router, token]);
+
+    const handleLogout = () => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('auth_user');
+        router.push('/');
+    };
+
+    const displayName = String(authUser?.name || authUser?.email || 'User').trim();
+    const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
 
     const options = [
         {
@@ -127,6 +182,64 @@ export default function LoanManagementPage() {
                 <div className="absolute top-24 right-8 h-80 w-80 rounded-full bg-emerald-300/70 blur-3xl"></div>
                 <div className="absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-sky-300/70 blur-3xl"></div>
             </div>
+
+            <nav className="max-w-7xl mx-auto relative z-10 mb-6 bg-white/80 backdrop-blur-lg shadow-lg border border-white/20 rounded-2xl">
+                <div className="px-4 sm:px-6 lg:px-8">
+                    <div className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex items-center">
+                            <div className="flex-shrink-0 flex items-center space-x-3">
+                                <div className="w-8 h-8 bg-gradient-to-r from-cyan-500 to-emerald-500 rounded-lg flex items-center justify-center">
+                                    <span className="text-white font-bold text-sm">DOF</span>
+                                </div>
+                                <h1 className="text-gray-900 text-base sm:text-xl font-bold bg-gradient-to-r from-cyan-600 to-emerald-600 bg-clip-text text-transparent truncate max-w-[180px] sm:max-w-none">
+                                    Desk of Finance
+                                </h1>
+                            </div>
+                        </div>
+
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
+                            <button
+                                type="button"
+                                onClick={() => router.push('/dashboard/microfinance')}
+                                className="rounded-full border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-50"
+                            >
+                                Back to Microfinance
+                            </button>
+
+                            <div className="hidden sm:flex items-center space-x-2 text-xs sm:text-sm text-gray-600">
+                                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                                <span>System Online</span>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() => router.push('/dashboard/action-center')}
+                                className="flex w-full items-center gap-2 rounded-full border border-amber-200 bg-amber-50/90 px-3 py-1.5 text-left transition hover:bg-amber-100 sm:w-auto"
+                            >
+                                <span className="text-base">🔔</span>
+                                <span className="text-xs font-semibold text-amber-800">Action Center</span>
+                                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-300 px-1.5 text-[11px] font-bold text-amber-900">
+                                    {actionCenterTotalCount}
+                                </span>
+                            </button>
+
+                            <div className="hidden sm:flex items-center rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-left">
+                                <div className="leading-tight">
+                                    <p className="text-xs font-semibold text-slate-900 max-w-[220px] truncate">{displayName}</p>
+                                    <p className="text-[11px] text-slate-500 truncate">{roleName}</p>
+                                </div>
+                            </div>
+
+                            <button
+                                onClick={handleLogout}
+                                className="w-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-500 px-4 py-2 text-xs font-medium text-white shadow-lg transition-all duration-300 hover:from-cyan-600 hover:to-emerald-600 hover:shadow-xl sm:w-auto sm:px-6 sm:text-sm"
+                            >
+                                Logout
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </nav>
 
             <div className="max-w-7xl mx-auto space-y-8 relative z-10">
                 <div className="bg-white/80 backdrop-blur-xl rounded-3xl shadow-[0_24px_60px_-28px_rgba(8,47,73,0.65)] border border-white/50 p-6 md:p-8">
@@ -225,7 +338,7 @@ export default function LoanManagementPage() {
                 </div>
                 {visibleOptions.length === 0 && (
                     <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-                        All loan workspace widgets are hidden. Use "Restore Hidden Widgets" on dashboard to show them again.
+                        All loan workspace widgets are hidden. Use &quot;Restore Hidden Widgets&quot; on dashboard to show them again.
                     </div>
                 )}
             </div>

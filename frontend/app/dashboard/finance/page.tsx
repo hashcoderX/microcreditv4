@@ -41,6 +41,19 @@ type GuarantorInput = {
   address: string;
 };
 
+type AuthRole = {
+  id?: number;
+  name?: string;
+};
+
+type AuthUser = {
+  id?: number;
+  name?: string;
+  email?: string;
+  designation?: { id?: number; name?: string } | null;
+  roles?: AuthRole[];
+};
+
 function toNumber(v: unknown): number {
   if (typeof v === 'number') return v;
   const n = Number(v);
@@ -68,6 +81,8 @@ export default function FinanceManagementPage() {
   const router = useRouter();
   const widgetPrefix = 'finance_dashboard_widget_';
   const [token, setToken] = useState('');
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<FinanceRow[]>([]);
   const [productTypes, setProductTypes] = useState<ProductTypeRow[]>([]);
@@ -116,7 +131,42 @@ export default function FinanceManagementPage() {
       return;
     }
     setToken(t);
+
+    const storedUser = localStorage.getItem('auth_user');
+    if (storedUser) {
+      try {
+        setAuthUser(JSON.parse(storedUser));
+      } catch {
+        setAuthUser(null);
+      }
+    }
+
+    void fetchNotificationPreview(t);
   }, [router]);
+
+  const fetchNotificationPreview = async (authToken: string) => {
+    try {
+      const response = await axios.get(`${getApiBaseUrl()}/notifications/preview`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: 'application/json',
+        },
+        params: { limit: 4 },
+      });
+
+      setActionCenterTotalCount(Number(response.data?.action_center_total || 0));
+    } catch {
+      setActionCenterTotalCount(0);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    router.push('/');
+  };
+
+  const displayName = String(authUser?.name || authUser?.email || 'User').trim();
+  const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
 
   const fetchData = async (authToken: string) => {
     setLoading(true);
@@ -573,6 +623,56 @@ export default function FinanceManagementPage() {
         <div className="absolute top-20 right-8 h-80 w-80 rounded-full bg-cyan-300 blur-3xl"></div>
         <div className="absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-teal-300 blur-3xl"></div>
       </div>
+
+      <nav className="relative z-10 mb-6 bg-white/80 backdrop-blur-lg shadow-lg border border-white/20 rounded-2xl">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center">
+              <div className="flex-shrink-0 flex items-center space-x-3">
+                <div className="w-8 h-8 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-lg flex items-center justify-center">
+                  <span className="text-white font-bold text-sm">DOF</span>
+                </div>
+                <h1 className="text-gray-900 text-base sm:text-xl font-bold bg-gradient-to-r from-cyan-600 to-blue-600 bg-clip-text text-transparent truncate max-w-[180px] sm:max-w-none">
+                  Desk of Finance
+                </h1>
+              </div>
+            </div>
+
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
+              <div className="hidden sm:flex items-center space-x-2 text-xs sm:text-sm text-gray-600">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                <span>System Online</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/action-center')}
+                className="flex w-full items-center gap-2 rounded-full border border-amber-200 bg-amber-50/90 px-3 py-1.5 text-left transition hover:bg-amber-100 sm:w-auto"
+              >
+                <span className="text-base">🔔</span>
+                <span className="text-xs font-semibold text-amber-800">Action Center</span>
+                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-300 px-1.5 text-[11px] font-bold text-amber-900">
+                  {actionCenterTotalCount}
+                </span>
+              </button>
+
+              <div className="hidden sm:flex items-center rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-left">
+                <div className="leading-tight">
+                  <p className="text-xs font-semibold text-slate-900 max-w-[220px] truncate">{displayName}</p>
+                  <p className="text-[11px] text-slate-500 truncate">{roleName}</p>
+                </div>
+              </div>
+
+              <button
+                onClick={handleLogout}
+                className="w-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 px-4 py-2 text-xs font-medium text-white shadow-lg transition-all duration-300 hover:from-cyan-600 hover:to-blue-600 hover:shadow-xl sm:w-auto sm:px-6 sm:text-sm"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      </nav>
 
       <div className="relative z-10 max-w-7xl mx-auto space-y-6">
         {widgetNotice ? (

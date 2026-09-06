@@ -88,6 +88,7 @@ export default function MicrofinanceDashboard() {
     monthProfit: 0,
   });
   const [statsLoading, setStatsLoading] = useState(false);
+  const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
   const [chargesByOfficer, setChargesByOfficer] = useState<ChargeByOfficerRow[]>([]);
   const [selectedChargeOfficer, setSelectedChargeOfficer] = useState('all');
   const router = useRouter();
@@ -248,6 +249,22 @@ export default function MicrofinanceDashboard() {
     }
   };
 
+  const fetchNotificationPreview = async (authToken: string) => {
+    try {
+      const response = await axios.get(`${apiBase}/notifications/preview`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: 'application/json',
+        },
+        params: { limit: 4 },
+      });
+
+      setActionCenterTotalCount(Number(response.data?.action_center_total || 0));
+    } catch {
+      setActionCenterTotalCount(0);
+    }
+  };
+
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
     if (!storedToken) {
@@ -255,6 +272,7 @@ export default function MicrofinanceDashboard() {
     } else {
       setToken(storedToken);
       void fetchWidgetPreferences(storedToken);
+      void fetchNotificationPreview(storedToken);
       const storedUser = localStorage.getItem('auth_user');
       if (storedUser) {
         try {
@@ -290,6 +308,9 @@ export default function MicrofinanceDashboard() {
     localStorage.removeItem('auth_user');
     router.push('/');
   };
+
+  const displayName = String(authUser?.name || authUser?.email || 'User').trim();
+  const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
 
   const microfinanceModules = [
     { key: 'mf_widget_module_loans', name: 'Loan Management', icon: '💰', color: 'from-green-500 to-emerald-500', bgColor: 'from-green-50 to-emerald-50', description: 'Manage micro loans and applications' },
@@ -920,7 +941,7 @@ export default function MicrofinanceDashboard() {
                 </h1>
               </div>
             </div>
-            <div className="hidden md:flex items-center space-x-4">
+            <div className="hidden md:flex items-center space-x-3">
               <button
                 onClick={() => router.push('/dashboard')}
                 className="text-gray-600 hover:text-gray-900 px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-300"
@@ -930,6 +951,23 @@ export default function MicrofinanceDashboard() {
               <div className="hidden md:flex items-center space-x-2 text-sm text-gray-600">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
                 <span>System Online</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/action-center')}
+                className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50/90 px-3 py-1.5 text-left transition hover:bg-amber-100"
+              >
+                <span className="text-base">🔔</span>
+                <span className="text-xs font-semibold text-amber-800">Action Center</span>
+                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-300 px-1.5 text-[11px] font-bold text-amber-900">
+                  {actionCenterTotalCount}
+                </span>
+              </button>
+              <div className="hidden lg:flex items-center rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-left">
+                <div className="leading-tight">
+                  <p className="text-xs font-semibold text-slate-900 max-w-[220px] truncate">{displayName}</p>
+                  <p className="text-[11px] text-slate-500 truncate">{roleName}</p>
+                </div>
               </div>
               <button
                 onClick={handleLogout}
@@ -961,6 +999,23 @@ export default function MicrofinanceDashboard() {
               <div className="flex items-center space-x-2 text-sm text-gray-600 px-3 py-2 rounded-lg bg-white/70 border border-cyan-100">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
                 <span>System Online</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileNavOpen(false);
+                  router.push('/dashboard/action-center');
+                }}
+                className="w-full flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50/90 px-3 py-2 text-sm font-medium text-amber-900"
+              >
+                <span>Action Center</span>
+                <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-300 px-1.5 text-[11px] font-bold text-amber-900">
+                  {actionCenterTotalCount}
+                </span>
+              </button>
+              <div className="rounded-lg border border-slate-200 bg-white/80 px-3 py-2">
+                <p className="text-xs font-semibold text-slate-900 truncate">{displayName}</p>
+                <p className="text-[11px] text-slate-500 truncate">{roleName}</p>
               </div>
               <button
                 onClick={() => {
