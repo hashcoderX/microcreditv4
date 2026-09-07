@@ -354,6 +354,38 @@ class FinanceController extends Controller
         return $branchId > 0 ? $branchId : null;
     }
 
+    private function appendFinanceWorkflowPermissions(Finance $finance, ?User $viewer): Finance
+    {
+        $repaymentPlan = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
+        $workflow = $this->normalizeFinanceApprovalWorkflowState($repaymentPlan['approval_workflow'] ?? null);
+        $maxSteps = count(self::FINANCE_APPROVAL_WORKFLOW_STEPS);
+        $currentStep = (int) ($workflow['current_step'] ?? 1);
+        $isPrivileged = $this->hasPrivilegedFinanceApprovalAccess($viewer);
+
+        $bmComments = trim((string) (($repaymentPlan['bm_approval_payload']['bm_comments'] ?? '')));
+        $isBmLockedForCurrentUser = $currentStep === 3 && $bmComments !== '' && !$isPrivileged;
+
+        $canHandleCurrentStep = $this->canUserHandleFinanceStep($viewer, $currentStep, 'advance');
+        $canAdvanceCurrentStep = $canHandleCurrentStep && $currentStep < $maxSteps && !$isBmLockedForCurrentUser;
+        $canSendBackCurrentStep = $this->canUserHandleFinanceStep($viewer, $currentStep, 'send_back') && $currentStep > 1;
+        $canRejectCurrentStep = $this->canUserHandleFinanceStep($viewer, $currentStep, 'reject');
+        $canFinalApprove = $currentStep >= $maxSteps && $isPrivileged;
+
+        $finance->setAttribute('workflow_permissions', [
+            'current_step' => $currentStep,
+            'is_final_step' => $currentStep >= $maxSteps,
+            'is_bm_locked_for_current_user' => $isBmLockedForCurrentUser,
+            'can_handle_current_step' => $canHandleCurrentStep,
+            'can_advance_current_step' => $canAdvanceCurrentStep,
+            'can_send_back_current_step' => $canSendBackCurrentStep,
+            'can_reject_current_step' => $canRejectCurrentStep,
+            'can_final_approve' => $canFinalApprove,
+            'allowed_configured_steps' => $this->allowedConfiguredFinanceSteps($viewer),
+        ]);
+
+        return $finance;
+    }
+
     private function resolveBranchManagerUserId(int $branchId): ?int
     {
         if ($branchId <= 0) {
@@ -613,11 +645,16 @@ class FinanceController extends Controller
             }
         }
 
+        $viewer = $request->user();
+        $viewerUser = $viewer instanceof User ? $viewer : null;
+
         $data = $query->paginate($perPage);
-        $data->getCollection()->transform(function (Finance $finance) {
+        $data->getCollection()->transform(function (Finance $finance) use ($viewerUser) {
             if ($finance->relationLoaded('customer') && $finance->customer) {
                 $finance->setRelation('customer', $this->normalizeFinanceCustomer($finance->customer));
             }
+
+            $this->appendFinanceWorkflowPermissions($finance, $viewerUser);
 
             return $finance;
         });
@@ -636,6 +673,10 @@ class FinanceController extends Controller
         if ($finance->relationLoaded('customer') && $finance->customer) {
             $finance->setRelation('customer', $this->normalizeFinanceCustomer($finance->customer));
         }
+
+        $viewer = $request->user();
+        $viewerUser = $viewer instanceof User ? $viewer : null;
+        $this->appendFinanceWorkflowPermissions($finance, $viewerUser);
 
         return response()->json($finance);
     }

@@ -115,6 +115,17 @@ type FinanceApprovalRow = {
     customer_photo_url?: string | null;
     photo_path?: string | null;
   } | null;
+  workflow_permissions?: {
+    current_step?: number | string | null;
+    is_final_step?: boolean | null;
+    is_bm_locked_for_current_user?: boolean | null;
+    can_handle_current_step?: boolean | null;
+    can_advance_current_step?: boolean | null;
+    can_send_back_current_step?: boolean | null;
+    can_reject_current_step?: boolean | null;
+    can_final_approve?: boolean | null;
+    allowed_configured_steps?: number[] | null;
+  } | null;
 };
 
 type DeductionInstallmentRule = {
@@ -860,6 +871,16 @@ export default function FinanceApprovalsPage() {
     router.push('/');
   };
 
+  const reloadPageAfterApproval = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.setTimeout(() => {
+      window.location.reload();
+    }, 250);
+  }, []);
+
   const displayName = String(authUser?.name || 'User').trim();
   const roleName = String(authUser?.designation?.name || authUser?.employee?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
 
@@ -1062,7 +1083,36 @@ export default function FinanceApprovalsPage() {
   }, [userHasKeyword]);
   const isSuperAdmin = useMemo(() => userHasKeyword('super admin'), [userHasKeyword]);
 
+  const backendCanHandleCurrentStep =
+    typeof selectedFinance?.workflow_permissions?.can_handle_current_step === 'boolean'
+      ? selectedFinance.workflow_permissions.can_handle_current_step
+      : null;
+  const backendCanAdvanceCurrentStep =
+    typeof selectedFinance?.workflow_permissions?.can_advance_current_step === 'boolean'
+      ? selectedFinance.workflow_permissions.can_advance_current_step
+      : null;
+  const backendCanSendBackCurrentStep =
+    typeof selectedFinance?.workflow_permissions?.can_send_back_current_step === 'boolean'
+      ? selectedFinance.workflow_permissions.can_send_back_current_step
+      : null;
+  const backendCanRejectCurrentStep =
+    typeof selectedFinance?.workflow_permissions?.can_reject_current_step === 'boolean'
+      ? selectedFinance.workflow_permissions.can_reject_current_step
+      : null;
+  const backendCanFinalApprove =
+    typeof selectedFinance?.workflow_permissions?.can_final_approve === 'boolean'
+      ? selectedFinance.workflow_permissions.can_final_approve
+      : null;
+  const backendBmLocked =
+    typeof selectedFinance?.workflow_permissions?.is_bm_locked_for_current_user === 'boolean'
+      ? selectedFinance.workflow_permissions.is_bm_locked_for_current_user
+      : null;
+
   const canHandleCurrentStep = useMemo(() => {
+    if (typeof backendCanHandleCurrentStep === 'boolean') {
+      return backendCanHandleCurrentStep;
+    }
+
     if (isPrivilegedApprover) return true;
 
     if (currentWorkflowStep === 1) {
@@ -1088,18 +1138,33 @@ export default function FinanceApprovalsPage() {
     }
 
     return false;
-  }, [currentWorkflowStep, isPrivilegedApprover, userHasKeyword]);
+  }, [backendCanHandleCurrentStep, currentWorkflowStep, isPrivilegedApprover, userHasKeyword]);
 
   const bmAlreadySubmitted = useMemo(() => {
     const comments = String(selectedFinance?.repayment_plan?.bm_approval_payload?.bm_comments || '').trim();
     return comments !== '';
   }, [selectedFinance]);
 
-  const isBmLockedForCurrentUser = currentWorkflowStep === 3 && bmAlreadySubmitted && !isPrivilegedApprover;
-  const canAdvanceCurrentStep = canHandleCurrentStep && !isFinalWorkflowStep && !isBmLockedForCurrentUser;
-  const canSendBackCurrentStep = canHandleCurrentStep && currentWorkflowStep > 1;
-  const canRejectCurrentStep = canHandleCurrentStep;
-  const canFinalApprove = isFinalWorkflowStep && isPrivilegedApprover;
+  const isBmLockedForCurrentUser =
+    typeof backendBmLocked === 'boolean'
+      ? backendBmLocked
+      : (currentWorkflowStep === 3 && bmAlreadySubmitted && !isPrivilegedApprover);
+  const canAdvanceCurrentStep =
+    typeof backendCanAdvanceCurrentStep === 'boolean'
+      ? backendCanAdvanceCurrentStep
+      : (canHandleCurrentStep && !isFinalWorkflowStep && !isBmLockedForCurrentUser);
+  const canSendBackCurrentStep =
+    typeof backendCanSendBackCurrentStep === 'boolean'
+      ? backendCanSendBackCurrentStep
+      : (canHandleCurrentStep && currentWorkflowStep > 1);
+  const canRejectCurrentStep =
+    typeof backendCanRejectCurrentStep === 'boolean'
+      ? backendCanRejectCurrentStep
+      : canHandleCurrentStep;
+  const canFinalApprove =
+    typeof backendCanFinalApprove === 'boolean'
+      ? backendCanFinalApprove
+      : (isFinalWorkflowStep && isPrivilegedApprover);
 
   const openAlertModal = (message: string, title = 'Notice') => {
     setAlertModal({
@@ -1258,13 +1323,10 @@ export default function FinanceApprovalsPage() {
           : rows.find((row) => row.id === id) || null;
         const deductionOrder = sourceFinance?.repayment_plan?.deduction_order;
 
-        if (!deductionOrder || typeof deductionOrder !== 'object') {
-          setDeductionError('No deduction order found in loan request. Please update the request before final approval.');
-          openAlertModal('No deduction order found in loan request. Please update the request before final approval.', 'Validation');
-          setProcessingId(null);
-          return false;
+        // Send deduction_order only when available; backend will enforce any final validation.
+        if (deductionOrder && typeof deductionOrder === 'object') {
+          payload.deduction_order = deductionOrder;
         }
-        payload.deduction_order = deductionOrder;
       }
 
       if (action === 'send_back') {
@@ -1317,6 +1379,7 @@ export default function FinanceApprovalsPage() {
         }
         setDeductionError('');
         openAlertModal(String(response.data?.message || 'Finance workflow sent back successfully.'), 'Send Back Complete');
+        reloadPageAfterApproval();
         return true;
       }
 
@@ -1331,6 +1394,7 @@ export default function FinanceApprovalsPage() {
       } else if (action === 'reject') {
         openAlertModal(String(response.data?.message || 'Finance rejected successfully.'), 'Rejected');
       }
+      reloadPageAfterApproval();
       return true;
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {
@@ -1548,6 +1612,7 @@ export default function FinanceApprovalsPage() {
         setDocumentFilingModalOpen(false);
       }
       openAlertModal(String(response.data?.message || 'Finance workflow moved to the next step.'), 'Step Completed');
+      reloadPageAfterApproval();
       return true;
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {

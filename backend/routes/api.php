@@ -198,6 +198,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
         Route::post('wallet/my/cash-handover', [EmployeeController::class, 'handoverCash']);
         Route::get('wallet/pending-transactions', [EmployeeController::class, 'pendingWalletTransactions']);
         Route::post('wallet/pending-transactions/{type}/{id}/approve', [EmployeeController::class, 'approvePendingWalletTransaction']);
+        Route::post('wallet/pending-transactions/{type}/{id}/reject', [EmployeeController::class, 'rejectPendingWalletTransaction']);
         Route::post('wallet/accepted-handovers/{id}/transfer-cash', [EmployeeController::class, 'transferAcceptedHandoverToBranchCash']);
 
         Route::apiResource('departments', DepartmentController::class);

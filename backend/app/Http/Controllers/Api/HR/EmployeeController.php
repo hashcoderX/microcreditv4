@@ -22,6 +22,140 @@ use Illuminate\Support\Facades\Schema;
 
 class EmployeeController extends Controller
 {
+    private function walletManagerRoleKeywords(): array
+    {
+        return ['branch manager', 'bank manager', 'regional manager', 'head office'];
+    }
+
+    private function resolveWalletManagersForBranch(int $branchCompanyId): array
+    {
+        if ($branchCompanyId <= 0) {
+            return [];
+        }
+
+        $rows = [];
+
+        $branch = Company::query()->with('manager:id,name,employee_id')->find($branchCompanyId);
+        $managerUser = $branch?->manager;
+        if ($managerUser && (int) ($managerUser->employee_id ?? 0) > 0) {
+            $managerEmployee = Employee::query()->find((int) $managerUser->employee_id);
+            if ($managerEmployee) {
+                $rows[] = [
+                    'employee_id' => (int) $managerEmployee->id,
+                    'user_id' => (int) $managerUser->id,
+                    'branch_id' => (int) ($managerEmployee->branch_id ?? $branchCompanyId),
+                    'name' => (string) ($managerUser->name ?: trim(($managerEmployee->first_name ?? '') . ' ' . ($managerEmployee->last_name ?? ''))),
+                    'employee_code' => (string) ($managerEmployee->employee_code ?? ''),
+                ];
+            }
+        }
+
+        $roleBasedManagers = User::query()
+            ->with(['employee:id,first_name,last_name,employee_code,branch_id,status', 'designation:id,name', 'employee.designation:id,name'])
+            ->where(function ($scope) use ($branchCompanyId) {
+                $scope
+                    ->where('branch_id', $branchCompanyId)
+                    ->orWhereHas('employee', function ($employeeScope) use ($branchCompanyId) {
+                        $employeeScope->where('branch_id', $branchCompanyId);
+                    });
+            })
+            ->where(function ($query) {
+                $keywords = $this->walletManagerRoleKeywords();
+                $query
+                    ->whereHas('designation', function ($designationQuery) use ($keywords) {
+                        $designationQuery->where(function ($designationScope) use ($keywords) {
+                            foreach ($keywords as $keyword) {
+                                $designationScope->orWhereRaw('LOWER(name) LIKE ?', ['%' . $keyword . '%']);
+                            }
+                        });
+                    })
+                    ->orWhereHas('employee.designation', function ($designationQuery) use ($keywords) {
+                        $designationQuery->where(function ($designationScope) use ($keywords) {
+                            foreach ($keywords as $keyword) {
+                                $designationScope->orWhereRaw('LOWER(name) LIKE ?', ['%' . $keyword . '%']);
+                            }
+                        });
+                    })
+                    ->orWhereHas('roles', function ($roleQuery) use ($keywords) {
+                        $roleQuery->where(function ($roleScope) use ($keywords) {
+                            foreach ($keywords as $keyword) {
+                                $roleScope->orWhereRaw('LOWER(name) LIKE ?', ['%' . $keyword . '%']);
+                            }
+                        });
+                    });
+            })
+            ->orderBy('id')
+            ->get();
+
+        foreach ($roleBasedManagers as $candidateUser) {
+            $employee = $candidateUser->employee;
+            if (!$employee || (int) ($employee->id ?? 0) <= 0) {
+                continue;
+            }
+
+            $rows[] = [
+                'employee_id' => (int) $employee->id,
+                'user_id' => (int) ($candidateUser->id ?? 0),
+                'branch_id' => (int) ($employee->branch_id ?? $branchCompanyId),
+                'name' => (string) (
+                    trim((string) ($employee->first_name ?? '') . ' ' . (string) ($employee->last_name ?? ''))
+                    ?: (string) ($candidateUser->name ?? 'Branch Manager')
+                ),
+                'employee_code' => (string) ($employee->employee_code ?? ''),
+            ];
+        }
+
+        $uniqueByEmployee = [];
+        foreach ($rows as $row) {
+            $employeeId = (int) ($row['employee_id'] ?? 0);
+            if ($employeeId <= 0) {
+                continue;
+            }
+
+            $uniqueByEmployee[$employeeId] = $row;
+        }
+
+        return array_values($uniqueByEmployee);
+    }
+
+    private function resolveHeadOfficeHandoverOptions(?int $excludeBranchId = null): array
+    {
+        $headOfficeBranches = Company::query()
+            ->where('is_main_branch', true)
+            ->orderBy('id')
+            ->get(['id', 'name', 'is_main_branch']);
+
+        if ($headOfficeBranches->isEmpty()) {
+            $headOfficeBranches = Company::query()
+                ->whereRaw('LOWER(name) LIKE ?', ['%head office%'])
+                ->orWhereRaw('LOWER(name) LIKE ?', ['%head-office%'])
+                ->orWhereRaw('LOWER(name) LIKE ?', ['%hq%'])
+                ->orderBy('id')
+                ->get(['id', 'name', 'is_main_branch']);
+        }
+
+        $rows = [];
+        foreach ($headOfficeBranches as $branch) {
+            $branchId = (int) ($branch->id ?? 0);
+            if ($branchId <= 0) {
+                continue;
+            }
+            if ($excludeBranchId !== null && $excludeBranchId > 0 && $branchId === $excludeBranchId) {
+                continue;
+            }
+
+            $managers = $this->resolveWalletManagersForBranch($branchId);
+            $rows[] = [
+                'branch_id' => $branchId,
+                'branch_name' => (string) ($branch->name ?? ('Branch #' . $branchId)),
+                'is_main_branch' => (bool) ($branch->is_main_branch ?? false),
+                'managers' => $managers,
+            ];
+        }
+
+        return $rows;
+    }
+
     private function canOverrideWalletApprovals(?User $user): bool
     {
         if (!$user) {
@@ -29,6 +163,116 @@ class EmployeeController extends Controller
         }
 
         return $user->isSystemAdmin();
+    }
+
+    private function hasWalletApprovalManagerAccess(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $keywords = ['branch manager', 'bank manager', 'regional manager'];
+
+        $designationName = strtolower(trim((string) optional($user->designation)->name));
+        foreach ($keywords as $keyword) {
+            if ($designationName !== '' && str_contains($designationName, $keyword)) {
+                return true;
+            }
+        }
+
+        $employeeDesignationName = strtolower(trim((string) optional(optional($user->employee)->designation)->name));
+        foreach ($keywords as $keyword) {
+            if ($employeeDesignationName !== '' && str_contains($employeeDesignationName, $keyword)) {
+                return true;
+            }
+        }
+
+        foreach ($user->roles()->pluck('name') as $roleName) {
+            $normalized = strtolower(trim((string) $roleName));
+            if ($normalized === '') {
+                continue;
+            }
+
+            foreach ($keywords as $keyword) {
+                if (str_contains($normalized, $keyword)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<int>
+     */
+    private function resolveWalletApprovalBranchIds(?User $user): array
+    {
+        if (!$user) {
+            return [];
+        }
+
+        if ($this->canOverrideWalletApprovals($user)) {
+            return Company::query()
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->filter(fn ($id) => $id > 0)
+                ->unique()
+                ->values()
+                ->all();
+        }
+
+        $branchIds = Company::query()
+            ->where('manager_user_id', (int) $user->id)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->values()
+            ->all();
+
+        $userEmployeeBranchId = (int) ($user->employee()->value('branch_id') ?? 0);
+        $directBranchCandidates = [
+            (int) ($user->branch_id ?? 0),
+            $userEmployeeBranchId,
+        ];
+
+        if ($this->hasWalletApprovalManagerAccess($user)) {
+            foreach ($directBranchCandidates as $candidateBranchId) {
+                if ($candidateBranchId > 0) {
+                    $branchIds[] = $candidateBranchId;
+                }
+            }
+        }
+
+        $employeeId = (int) ($user->employee_id ?? 0);
+        if ($employeeId > 0) {
+            $assignedBranchIds = EmployeeWalletCashHandover::query()
+                ->where('manager_employee_id', $employeeId)
+                ->pluck('branch_id')
+                ->map(fn ($id) => (int) $id)
+                ->filter(fn ($id) => $id > 0)
+                ->values()
+                ->all();
+
+            foreach ($assignedBranchIds as $assignedBranchId) {
+                $branchIds[] = $assignedBranchId;
+            }
+        }
+
+        return array_values(array_unique(array_filter($branchIds, fn ($id) => (int) $id > 0)));
+    }
+
+    private function canApproveWalletBranch(?User $user, int $branchId): bool
+    {
+        if (!$user || $branchId <= 0) {
+            return false;
+        }
+
+        if ($this->canOverrideWalletApprovals($user)) {
+            return true;
+        }
+
+        return in_array($branchId, $this->resolveWalletApprovalBranchIds($user), true);
     }
 
     private function buildBaseWalletNo(int $employeeId): string
@@ -372,21 +616,8 @@ class EmployeeController extends Controller
                 'current_balance',
             ]);
 
-        $branch = Company::query()->with('manager:id,name,employee_id')->find($branchCompanyId);
-        $managerUser = $branch?->manager;
-        $managers = [];
-
-        if ($managerUser && (int) ($managerUser->employee_id ?? 0) > 0) {
-            $managerEmployee = Employee::query()->find((int) $managerUser->employee_id);
-            if ($managerEmployee) {
-                $managers[] = [
-                    'employee_id' => (int) $managerEmployee->id,
-                    'user_id' => (int) $managerUser->id,
-                    'name' => (string) ($managerUser->name ?: trim(($managerEmployee->first_name ?? '') . ' ' . ($managerEmployee->last_name ?? ''))),
-                    'employee_code' => (string) ($managerEmployee->employee_code ?? ''),
-                ];
-            }
-        }
+        $managers = $this->resolveWalletManagersForBranch($branchCompanyId);
+        $headOfficeOptions = $this->resolveHeadOfficeHandoverOptions();
 
         $totalDeposited = (float) EmployeeWalletBankDeposit::query()
             ->where('employee_wallet_id', $wallet->id)
@@ -430,6 +661,7 @@ class EmployeeController extends Controller
             'bank_accounts' => $bankAccounts,
             'cash_accounts' => $cashAccounts,
             'managers' => $managers,
+            'head_office_options' => $headOfficeOptions,
             'recent_deposits' => $recentDeposits,
             'recent_handovers' => $recentHandovers,
             'pending' => [
@@ -556,6 +788,8 @@ class EmployeeController extends Controller
         $validated = $request->validate([
             'amount' => 'required|numeric|min:0.01',
             'manager_employee_id' => 'required|exists:employees,id',
+            'handover_target' => 'nullable|in:branch,head_office',
+            'target_branch_id' => 'nullable|integer|exists:companies,id',
             'handover_date' => 'nullable|date',
             'received_by' => 'nullable|string|max:255',
             'note' => 'nullable|string|max:500',
@@ -595,13 +829,57 @@ class EmployeeController extends Controller
                 ], 422));
             }
 
+            $handoverTarget = (string) ($validated['handover_target'] ?? 'branch');
+            $requestedTargetBranchId = (int) ($validated['target_branch_id'] ?? 0);
+            $destinationBranchId = $branchCompanyId;
+
+            if ($handoverTarget === 'head_office') {
+                $headOfficeBranchIds = Company::query()
+                    ->where('is_main_branch', true)
+                    ->pluck('id')
+                    ->map(fn ($id) => (int) $id)
+                    ->filter(fn ($id) => $id > 0)
+                    ->values()
+                    ->all();
+
+                if (empty($headOfficeBranchIds)) {
+                    $headOfficeBranchIds = Company::query()
+                        ->whereRaw('LOWER(name) LIKE ?', ['%head office%'])
+                        ->orWhereRaw('LOWER(name) LIKE ?', ['%head-office%'])
+                        ->orWhereRaw('LOWER(name) LIKE ?', ['%hq%'])
+                        ->pluck('id')
+                        ->map(fn ($id) => (int) $id)
+                        ->filter(fn ($id) => $id > 0)
+                        ->values()
+                        ->all();
+                }
+
+                if (empty($headOfficeBranchIds)) {
+                    throw new HttpResponseException(response()->json([
+                        'message' => 'Head office is not configured yet.',
+                    ], 422));
+                }
+
+                if ($requestedTargetBranchId > 0) {
+                    if (!in_array($requestedTargetBranchId, $headOfficeBranchIds, true)) {
+                        throw new HttpResponseException(response()->json([
+                            'message' => 'Selected head office branch is not valid.',
+                        ], 422));
+                    }
+
+                    $destinationBranchId = $requestedTargetBranchId;
+                } else {
+                    $destinationBranchId = (int) ($headOfficeBranchIds[0] ?? 0);
+                }
+            }
+
             $cashInHand = round((float) ($wallet->current_balance ?? 0), 2);
             if ($amount > $cashInHand) {
                 throw new HttpResponseException(response()->json(['message' => 'Handover amount exceeds cash in hand.'], 422));
             }
 
             $cashAccount = CompanyAccount::query()
-                ->where('company_id', $branchCompanyId)
+                ->where('company_id', $destinationBranchId)
                 ->whereIn('account_type', [CompanyAccount::TYPE_CASH, CompanyAccount::TYPE_MAIN])
                 ->where('is_active', true)
                 ->orderByRaw("CASE WHEN account_type = 'cash' THEN 0 ELSE 1 END")
@@ -611,25 +889,25 @@ class EmployeeController extends Controller
 
             if (!$cashAccount) {
                 throw new HttpResponseException(response()->json([
-                    'message' => 'Branch cash/main account is not available for this branch.',
+                    'message' => 'Cash/main account is not available for the selected destination office.',
                 ], 422));
             }
 
             $managerEmployee = Employee::query()
                 ->where('id', (int) $validated['manager_employee_id'])
-                ->where('branch_id', $branchCompanyId)
+                ->where('branch_id', $destinationBranchId)
                 ->first();
 
             if (!$managerEmployee) {
                 throw new HttpResponseException(response()->json([
-                    'message' => 'Selected manager is not valid for this branch.',
+                    'message' => 'Selected manager is not valid for the selected destination office.',
                 ], 422));
             }
 
             $handoverRow = EmployeeWalletCashHandover::create([
                 'employee_wallet_id' => (int) $wallet->id,
                 'employee_id' => (int) $wallet->employee_id,
-                'branch_id' => (int) $wallet->branch_id,
+                'branch_id' => $destinationBranchId,
                 'cash_account_id' => (int) $cashAccount->id,
                 'manager_employee_id' => (int) $managerEmployee->id,
                 'amount' => $amount,
@@ -659,6 +937,9 @@ class EmployeeController extends Controller
                     ->where('employee_wallet_id', $wallet->id)
                     ->where('status', 'pending')
                     ->count(),
+                'handover_target' => $handoverTarget,
+                'target_branch_id' => $destinationBranchId,
+                'target_cash_account_id' => (int) ($cashAccount->id ?? 0),
                 'manager_employee_id' => (int) $managerEmployee->id,
                 'manager_name' => trim((string) (($managerEmployee->first_name ?? '') . ' ' . ($managerEmployee->last_name ?? ''))),
                 'manager_wallet_balance' => null,
@@ -666,7 +947,9 @@ class EmployeeController extends Controller
         });
 
         return response()->json([
-            'message' => 'Cash handover request submitted. Awaiting branch manager approval.',
+            'message' => ((string) ($summary['handover_target'] ?? 'branch') === 'head_office')
+                ? 'Cash handover request submitted. Awaiting head office approval.'
+                : 'Cash handover request submitted. Awaiting branch manager approval.',
             'summary' => $summary,
             'handover' => $handoverRow,
         ]);
@@ -682,16 +965,7 @@ class EmployeeController extends Controller
             return response()->json(['message' => 'Unauthorized.'], 401);
         }
 
-        $branchIds = $this->canOverrideWalletApprovals($user)
-            ? Company::query()
-                ->pluck('id')
-                ->map(fn ($id) => (int) $id)
-                ->all()
-            : Company::query()
-                ->where('manager_user_id', (int) $user->id)
-                ->pluck('id')
-                ->map(fn ($id) => (int) $id)
-                ->all();
+        $branchIds = $this->resolveWalletApprovalBranchIds($user);
 
         if (empty($branchIds)) {
             return response()->json([
@@ -803,7 +1077,7 @@ class EmployeeController extends Controller
                     throw new HttpResponseException(response()->json(['message' => 'Branch not found for this transaction.'], 404));
                 }
 
-                if (!$this->canOverrideWalletApprovals($user) && (int) ($branch->manager_user_id ?? 0) !== (int) $user->id) {
+                if (!$this->canApproveWalletBranch($user, (int) $branch->id)) {
                     throw new HttpResponseException(response()->json(['message' => 'You are not allowed to approve this transaction.'], 403));
                 }
 
@@ -876,7 +1150,7 @@ class EmployeeController extends Controller
                     throw new HttpResponseException(response()->json(['message' => 'Branch not found for this transaction.'], 404));
                 }
 
-                if (!$this->canOverrideWalletApprovals($user) && (int) ($branch->manager_user_id ?? 0) !== (int) $user->id) {
+                if (!$this->canApproveWalletBranch($user, (int) $branch->id)) {
                     throw new HttpResponseException(response()->json(['message' => 'You are not allowed to approve this transaction.'], 403));
                 }
 
@@ -941,6 +1215,115 @@ class EmployeeController extends Controller
     }
 
     /**
+     * Reject pending wallet deposit or handover transactions.
+     */
+    public function rejectPendingWalletTransaction(Request $request, string $type, int $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'rejection_reason' => 'required|string|max:500',
+        ]);
+
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized.'], 401);
+        }
+
+        $rejectionReason = trim((string) ($validated['rejection_reason'] ?? ''));
+        if ($rejectionReason === '') {
+            throw new HttpResponseException(response()->json(['message' => 'Rejection reason is required.'], 422));
+        }
+
+        $summary = null;
+
+        DB::transaction(function () use ($type, $id, $user, $rejectionReason, &$summary): void {
+            if ($type === 'deposit') {
+                $row = EmployeeWalletBankDeposit::query()
+                    ->where('id', $id)
+                    ->where('status', 'pending')
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$row) {
+                    throw new HttpResponseException(response()->json(['message' => 'Pending deposit request not found.'], 404));
+                }
+
+                $branch = Company::query()
+                    ->where('id', (int) $row->branch_id)
+                    ->first();
+
+                if (!$branch) {
+                    throw new HttpResponseException(response()->json(['message' => 'Branch not found for this transaction.'], 404));
+                }
+
+                if (!$this->canApproveWalletBranch($user, (int) $branch->id)) {
+                    throw new HttpResponseException(response()->json(['message' => 'You are not allowed to reject this transaction.'], 403));
+                }
+
+                $row->status = 'rejected';
+                $row->approved_by = (int) $user->id;
+                $row->approved_at = now();
+                $row->approval_note = $rejectionReason;
+                $row->save();
+
+                $summary = [
+                    'type' => 'deposit',
+                    'id' => (int) $row->id,
+                    'amount' => round((float) ($row->amount ?? 0), 2),
+                    'rejection_reason' => $rejectionReason,
+                ];
+
+                return;
+            }
+
+            if ($type === 'handover') {
+                $row = EmployeeWalletCashHandover::query()
+                    ->where('id', $id)
+                    ->where('status', 'pending')
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$row) {
+                    throw new HttpResponseException(response()->json(['message' => 'Pending handover request not found.'], 404));
+                }
+
+                $branch = Company::query()
+                    ->where('id', (int) $row->branch_id)
+                    ->first();
+
+                if (!$branch) {
+                    throw new HttpResponseException(response()->json(['message' => 'Branch not found for this transaction.'], 404));
+                }
+
+                if (!$this->canApproveWalletBranch($user, (int) $branch->id)) {
+                    throw new HttpResponseException(response()->json(['message' => 'You are not allowed to reject this transaction.'], 403));
+                }
+
+                $row->status = 'rejected';
+                $row->approved_by = (int) $user->id;
+                $row->approved_at = now();
+                $row->approval_note = $rejectionReason;
+                $row->save();
+
+                $summary = [
+                    'type' => 'handover',
+                    'id' => (int) $row->id,
+                    'amount' => round((float) ($row->amount ?? 0), 2),
+                    'rejection_reason' => $rejectionReason,
+                ];
+
+                return;
+            }
+
+            throw new HttpResponseException(response()->json(['message' => 'Unsupported transaction type.'], 422));
+        });
+
+        return response()->json([
+            'message' => 'Transaction rejected successfully.',
+            'summary' => $summary,
+        ]);
+    }
+
+    /**
      * Transfer an accepted handover amount into branch cash/main account.
      */
     public function transferAcceptedHandoverToBranchCash(Request $request, int $id): JsonResponse
@@ -987,7 +1370,7 @@ class EmployeeController extends Controller
                 throw new HttpResponseException(response()->json(['message' => 'Branch not found for this handover.'], 404));
             }
 
-            if (!$this->canOverrideWalletApprovals($user) && (int) ($branch->manager_user_id ?? 0) !== (int) $user->id) {
+            if (!$this->canApproveWalletBranch($user, (int) $branch->id)) {
                 throw new HttpResponseException(response()->json(['message' => 'You are not allowed to transfer this handover.'], 403));
             }
 
@@ -1000,7 +1383,7 @@ class EmployeeController extends Controller
                 throw new HttpResponseException(response()->json(['message' => 'Destination branch not found.'], 404));
             }
 
-            if (!$this->canOverrideWalletApprovals($user) && (int) ($destinationBranch->manager_user_id ?? 0) !== (int) $user->id) {
+            if (!$this->canApproveWalletBranch($user, (int) $destinationBranch->id)) {
                 throw new HttpResponseException(response()->json(['message' => 'You are not allowed to transfer funds to the selected branch.'], 403));
             }
 

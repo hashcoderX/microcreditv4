@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Employee;
 use App\Models\Finance;
+use App\Models\LoanRequest;
 use App\Models\MicrofinanceActionCenterStepRole;
 use App\Models\MicrofinanceLoanRequest;
 use App\Models\Role;
@@ -425,6 +426,151 @@ class UserNotificationController extends Controller
         return $query;
     }
 
+    private function scopedLoanActionCenterWorkflowQuery(Request $request): Builder
+    {
+        $user = $request->user();
+        $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
+
+        $query = LoanRequest::query()
+            ->where('status', 'pending_approval')
+            ->whereBetween('approval_level', [1, 14]);
+
+        if (!$this->hasAdministrativeNotificationAccess($user)) {
+            $viewerUserId = (int) ($user?->id ?? 0);
+            $viewerBranchId = $this->resolveViewerBranchId($user);
+            $hasBranchWorkflowScope = $viewerBranchId > 0 && count($allowedBranchSteps) > 0;
+
+            if ($viewerUserId <= 0) {
+                if (!$hasBranchWorkflowScope) {
+                    $query->whereRaw('1 = 0');
+                }
+            } else {
+                $query->where(function ($scope) use ($viewerUserId, $viewerBranchId, $hasBranchWorkflowScope, $allowedBranchSteps) {
+                    $scope->orWhere('created_by', $viewerUserId);
+
+                    if ($hasBranchWorkflowScope) {
+                        $scope->orWhere(function ($branchScope) use ($viewerBranchId, $allowedBranchSteps) {
+                            $branchScope
+                                ->where('branch_id', $viewerBranchId)
+                                ->whereIn('approval_level', $allowedBranchSteps);
+                        });
+                    }
+                });
+            }
+        }
+
+        return $query;
+    }
+
+    private function scopedMicrofinanceGrantWorkflowQuery(Request $request): Builder
+    {
+        $user = $request->user();
+        $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
+
+        $query = MicrofinanceLoanRequest::query()
+            ->where('status', 'released');
+
+        if (!$this->hasAdministrativeNotificationAccess($user)) {
+            $viewerUserId = (int) ($user?->id ?? 0);
+            $viewerEmployeeId = $this->resolveViewerEmployeeId($user);
+            $viewerBranchId = $this->resolveViewerBranchId($user);
+            $hasGrantBranchScope = $viewerBranchId > 0 && in_array(14, $allowedBranchSteps, true);
+
+            if ($viewerUserId <= 0 && $viewerEmployeeId <= 0) {
+                if (!$hasGrantBranchScope) {
+                    $query->whereRaw('1 = 0');
+                }
+            } else {
+                $query->where(function ($scope) use ($viewerUserId, $viewerEmployeeId, $viewerBranchId, $hasGrantBranchScope) {
+                    if ($viewerUserId > 0) {
+                        $scope->orWhere('created_by', $viewerUserId);
+                    }
+
+                    if ($viewerEmployeeId > 0) {
+                        $scope->orWhere('approval_employee_id', $viewerEmployeeId);
+                    }
+
+                    if ($hasGrantBranchScope) {
+                        $scope->orWhere('branch_id', $viewerBranchId);
+                    }
+                });
+            }
+        }
+
+        return $query;
+    }
+
+    private function scopedFinanceGrantWorkflowQuery(Request $request): Builder
+    {
+        $user = $request->user();
+        $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
+        $stepSql = $this->financeWorkflowStepSql();
+
+        $query = Finance::query()
+            ->whereIn('status', ['active'])
+            ->whereRaw("{$stepSql} = 14");
+
+        if (!$this->hasAdministrativeNotificationAccess($user)) {
+            $viewerUserId = (int) ($user?->id ?? 0);
+            $viewerEmployeeId = $this->resolveViewerEmployeeId($user);
+            $viewerBranchId = $this->resolveViewerBranchId($user);
+            $hasGrantBranchScope = $viewerBranchId > 0 && in_array(14, $allowedBranchSteps, true);
+
+            if ($viewerUserId <= 0 && $viewerEmployeeId <= 0) {
+                if (!$hasGrantBranchScope) {
+                    $query->whereRaw('1 = 0');
+                }
+            } else {
+                $query->where(function ($scope) use ($viewerUserId, $viewerEmployeeId, $viewerBranchId, $hasGrantBranchScope) {
+                    if ($viewerUserId > 0) {
+                        $scope->orWhere('created_by', $viewerUserId);
+                    }
+
+                    if ($viewerEmployeeId > 0) {
+                        $scope->orWhere('responsible_officer_employee_id', $viewerEmployeeId);
+                    }
+
+                    if ($hasGrantBranchScope) {
+                        $scope->orWhere('branch_id', $viewerBranchId);
+                    }
+                });
+            }
+        }
+
+        return $query;
+    }
+
+    private function scopedLoanGrantWorkflowQuery(Request $request): Builder
+    {
+        $user = $request->user();
+        $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
+
+        $query = LoanRequest::query()
+            ->whereIn('status', ['approved', 'closed']);
+
+        if (!$this->hasAdministrativeNotificationAccess($user)) {
+            $viewerUserId = (int) ($user?->id ?? 0);
+            $viewerBranchId = $this->resolveViewerBranchId($user);
+            $hasGrantBranchScope = $viewerBranchId > 0 && in_array(14, $allowedBranchSteps, true);
+
+            if ($viewerUserId <= 0) {
+                if (!$hasGrantBranchScope) {
+                    $query->whereRaw('1 = 0');
+                }
+            } else {
+                $query->where(function ($scope) use ($viewerUserId, $viewerBranchId, $hasGrantBranchScope) {
+                    $scope->orWhere('created_by', $viewerUserId);
+
+                    if ($hasGrantBranchScope) {
+                        $scope->orWhere('branch_id', $viewerBranchId);
+                    }
+                });
+            }
+        }
+
+        return $query;
+    }
+
     /**
      * @return array<string, int>
      */
@@ -447,12 +593,27 @@ class UserNotificationController extends Controller
         }
 
         $stepSql = $this->financeWorkflowStepSql();
-        $financeRows = $this->scopedFinanceActionCenterWorkflowQuery($request)
-            ->selectRaw("{$stepSql} as workflow_step, COUNT(*) as aggregate_count")
-            ->groupBy(DB::raw($stepSql))
+        $financeSteps = $this->scopedFinanceActionCenterWorkflowQuery($request)
+            ->selectRaw("{$stepSql} as workflow_step")
+            ->pluck('workflow_step')
+            ->all();
+
+        foreach ($financeSteps as $financeStep) {
+            $step = (int) $financeStep;
+            if ($step < 1 || $step > 14) {
+                continue;
+            }
+
+            $key = 'step_' . $step;
+            $counts[$key] = (int) ($counts[$key] ?? 0) + 1;
+        }
+
+        $loanRows = $this->scopedLoanActionCenterWorkflowQuery($request)
+            ->selectRaw('approval_level as workflow_step, COUNT(*) as aggregate_count')
+            ->groupBy('approval_level')
             ->get();
 
-        foreach ($financeRows as $row) {
+        foreach ($loanRows as $row) {
             $step = (int) ($row->workflow_step ?? 0);
             if ($step < 1 || $step > 14) {
                 continue;
@@ -461,6 +622,11 @@ class UserNotificationController extends Controller
             $key = 'step_' . $step;
             $counts[$key] = (int) ($counts[$key] ?? 0) + (int) ($row->aggregate_count ?? 0);
         }
+
+        $counts['step_14'] = (int) ($counts['step_14'] ?? 0)
+            + $this->scopedMicrofinanceGrantWorkflowQuery($request)->count()
+            + $this->scopedFinanceGrantWorkflowQuery($request)->count()
+            + $this->scopedLoanGrantWorkflowQuery($request)->count();
 
         return $counts;
     }
@@ -536,7 +702,37 @@ class UserNotificationController extends Controller
             ];
         })->values()->all();
 
-        $merged = array_merge($mfItems, $financeItems);
+        $loanRows = $this->scopedLoanActionCenterWorkflowQuery($request)
+            ->select([
+                'id',
+                'request_no',
+                'customer_full_name',
+                'customer_no',
+                'status',
+                'approval_level',
+                'last_action_at',
+                'created_at',
+            ])
+            ->orderByDesc('last_action_at')
+            ->orderByDesc('id')
+            ->limit(max(1, min($limit * 3, 20)))
+            ->get();
+
+        $loanItems = $loanRows->map(function (LoanRequest $loan) {
+            return [
+                'loan_request_id' => 2000000000 + (int) $loan->id,
+                'customer_name' => (string) ($loan->customer_full_name ?? ''),
+                'customer_no' => (string) ($loan->customer_no ?? ''),
+                'reference_no' => (string) ($loan->request_no ?? ('LRQ-' . str_pad((string) $loan->id, 6, '0', STR_PAD_LEFT))),
+                'loan_code' => '',
+                'status' => (string) ($loan->status ?? ''),
+                'workflow_step' => (int) ($loan->approval_level ?? 1),
+                'workflow_step_updated_at' => optional($loan->last_action_at ?? $loan->created_at)->toIso8601String(),
+                'created_at' => optional($loan->created_at)->toIso8601String(),
+            ];
+        })->values()->all();
+
+        $merged = array_merge($mfItems, $financeItems, $loanItems);
 
         usort($merged, function (array $a, array $b): int {
             $aTs = strtotime((string) ($a['workflow_step_updated_at'] ?? $a['created_at'] ?? '')) ?: 0;

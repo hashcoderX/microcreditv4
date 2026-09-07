@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
+import { resolveStorageAssetUrl } from '@/lib/api';
 import { ArrowLeft, Eye, Phone, Search, ShieldCheck, UserCog } from 'lucide-react';
 
 type FinanceRow = {
@@ -36,11 +38,55 @@ type FinanceRow = {
     phone?: string | null;
     address?: string | null;
   }> | null;
+  repayment_plan?: {
+    approval_workflow?: {
+      current_step?: number | string | null;
+      max_steps?: number | string | null;
+      step_title?: string | null;
+      updated_at?: string | null;
+      history?: Array<{
+        from_step?: number | string | null;
+        to_step?: number | string | null;
+        from_title?: string | null;
+        to_title?: string | null;
+        changed_at?: string | null;
+        changed_by?: number | string | null;
+        note?: string | null;
+        direction?: string | null;
+      }> | null;
+    } | null;
+    review_data?: Array<{
+      action?: string | null;
+      from_step?: number | string | null;
+      to_step?: number | string | null;
+      from_step_title?: string | null;
+      to_step_title?: string | null;
+      review_note?: string | null;
+      reviewed_at?: string | null;
+      reviewed_by?: number | string | null;
+    }> | null;
+    loan_signature_check_payload?: {
+      customer_photo_url?: string | null;
+      customer_signature_url?: string | null;
+    } | null;
+  } | null;
   documents?: Array<{
     id: number;
     document_type?: string | null;
     original_name?: string | null;
     file_path?: string | null;
+    file_url?: string | null;
+  }> | null;
+  workflowEvents?: Array<{
+    id: number;
+    event_type?: string | null;
+    from_step?: number | string | null;
+    to_step?: number | string | null;
+    step_title?: string | null;
+    status?: string | null;
+    note?: string | null;
+    actor_user_id?: number | string | null;
+    created_at?: string | null;
   }> | null;
   status?: string | null;
   created_at?: string | null;
@@ -53,6 +99,8 @@ type FinanceRow = {
     phone?: string | null;
     email?: string | null;
     address?: string | null;
+    customer_photo_url?: string | null;
+    photo_path?: string | null;
   } | null;
 };
 
@@ -95,6 +143,78 @@ function formatDate(v: unknown): string {
   const d = new Date(String(v));
   if (Number.isNaN(d.getTime())) return '-';
   return d.toLocaleDateString();
+}
+
+function formatDateTime(v: unknown): string {
+  if (!v) return '-';
+  const d = new Date(String(v));
+  if (Number.isNaN(d.getTime())) return '-';
+  return d.toLocaleString();
+}
+
+function formatWorkflowActionLabel(action: unknown): string {
+  const normalized = String(action || '')
+    .replace(/[_\-]+/g, ' ')
+    .trim();
+  if (!normalized) return 'Workflow Update';
+
+  return normalized
+    .split(' ')
+    .filter(Boolean)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function resolveFinanceCustomerPhotoUrl(finance: FinanceRow): string {
+  const direct = String(finance.customer?.customer_photo_url || '').trim();
+  if (direct) {
+    return resolveStorageAssetUrl(direct);
+  }
+
+  const customerPath = String(finance.customer?.photo_path || '').trim();
+  if (customerPath) {
+    return resolveStorageAssetUrl(customerPath);
+  }
+
+  const payloadPhoto = String(finance.repayment_plan?.loan_signature_check_payload?.customer_photo_url || '').trim();
+  if (payloadPhoto) {
+    return resolveStorageAssetUrl(payloadPhoto);
+  }
+
+  const doc = (finance.documents || []).find((item) =>
+    String(item.document_type || '').toLowerCase().includes('customer photo')
+  );
+  if (!doc) return '';
+
+  const byUrl = String(doc.file_url || '').trim();
+  if (byUrl) return resolveStorageAssetUrl(byUrl);
+
+  const byPath = String(doc.file_path || '').trim();
+  if (byPath) return resolveStorageAssetUrl(byPath);
+
+  return '';
+}
+
+function resolveFinanceCustomerSignatureUrl(finance: FinanceRow): string {
+  const payloadSignature = String(finance.repayment_plan?.loan_signature_check_payload?.customer_signature_url || '').trim();
+  if (payloadSignature) {
+    return resolveStorageAssetUrl(payloadSignature);
+  }
+
+  const doc = (finance.documents || []).find((item) => {
+    const type = String(item.document_type || '').toLowerCase();
+    return type.includes('customer signature') || type === 'signature' || type.includes('signature');
+  });
+
+  if (!doc) return '';
+
+  const byUrl = String(doc.file_url || '').trim();
+  if (byUrl) return resolveStorageAssetUrl(byUrl);
+
+  const byPath = String(doc.file_path || '').trim();
+  if (byPath) return resolveStorageAssetUrl(byPath);
+
+  return '';
 }
 
 export default function FinanceCustomersPage() {
@@ -574,6 +694,154 @@ export default function FinanceCustomersPage() {
 
               {!detailLoading && !detailError && selectedRecord && (
                 <>
+                  {(() => {
+                    const customerPhotoUrl = resolveFinanceCustomerPhotoUrl(selectedRecord);
+                    const customerSignatureUrl = resolveFinanceCustomerSignatureUrl(selectedRecord);
+
+                    return (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="rounded-xl border border-cyan-100 bg-white p-4">
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700 mb-3">Customer Photo</p>
+                          {customerPhotoUrl ? (
+                            <div className="overflow-hidden rounded-xl border border-cyan-100 bg-cyan-50/40">
+                              <Image
+                                src={customerPhotoUrl}
+                                alt="Customer photo"
+                                width={640}
+                                height={360}
+                                className="h-52 w-full object-contain"
+                                unoptimized
+                              />
+                            </div>
+                          ) : (
+                            <p className="text-sm text-slate-500">Customer photo not available.</p>
+                          )}
+                        </div>
+
+                        <div className="rounded-xl border border-cyan-100 bg-white p-4">
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700 mb-3">Customer Signature</p>
+                          {customerSignatureUrl ? (
+                            <div className="overflow-hidden rounded-xl border border-cyan-100 bg-cyan-50/40">
+                              <Image
+                                src={customerSignatureUrl}
+                                alt="Customer signature"
+                                width={640}
+                                height={360}
+                                className="h-52 w-full object-contain"
+                                unoptimized
+                              />
+                            </div>
+                          ) : (
+                            <p className="text-sm text-slate-500">Customer signature not available.</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {(() => {
+                    const workflow = selectedRecord.repayment_plan?.approval_workflow;
+                    const currentStep = Number(workflow?.current_step || 1);
+                    const maxSteps = Number(workflow?.max_steps || 14);
+                    const historyRows = Array.isArray(workflow?.history) ? workflow.history : [];
+                    const reviewRows = Array.isArray(selectedRecord.repayment_plan?.review_data)
+                      ? selectedRecord.repayment_plan?.review_data || []
+                      : [];
+                    const eventRows = Array.isArray(selectedRecord.workflowEvents) ? selectedRecord.workflowEvents : [];
+
+                    return (
+                      <div className="rounded-xl border border-cyan-100 bg-white p-4">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700 mb-3">Approval Workflow</p>
+
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm mb-4">
+                          <div><span className="text-slate-500">Current Step: </span><span className="font-semibold text-slate-900">{Number.isFinite(currentStep) ? currentStep : '-'}</span></div>
+                          <div><span className="text-slate-500">Max Steps: </span><span className="font-semibold text-slate-900">{Number.isFinite(maxSteps) ? maxSteps : '-'}</span></div>
+                          <div><span className="text-slate-500">Step Title: </span><span className="font-semibold text-slate-900">{workflow?.step_title || '-'}</span></div>
+                          <div><span className="text-slate-500">Updated: </span><span className="font-semibold text-slate-900">{formatDateTime(workflow?.updated_at)}</span></div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                          <div className="rounded-lg border border-cyan-100 bg-cyan-50/35 p-3">
+                            <p className="text-xs font-bold text-cyan-800 mb-2">Step History</p>
+                            {historyRows.length > 0 ? (
+                              <div className="space-y-2 max-h-56 overflow-auto pr-1">
+                                {historyRows
+                                  .slice()
+                                  .reverse()
+                                  .map((row, idx) => (
+                                    <div key={`history-${idx}`} className="rounded-md border border-cyan-100 bg-white px-2.5 py-2 text-xs text-slate-700">
+                                      <p className="font-semibold text-slate-900">
+                                        Step {String(row?.from_step ?? '-')} {'->'} Step {String(row?.to_step ?? '-')}
+                                      </p>
+                                      <p className="text-slate-600">
+                                        {String(row?.from_title || '-')} {'->'} {String(row?.to_title || '-')}
+                                      </p>
+                                      <p className="text-slate-500 mt-0.5">{formatDateTime(row?.changed_at)}</p>
+                                      {String(row?.note || '').trim() !== '' && (
+                                        <p className="mt-1 text-slate-700"><span className="font-semibold">Comment: </span>{String(row?.note || '')}</p>
+                                      )}
+                                    </div>
+                                  ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-500">No workflow step history available.</p>
+                            )}
+                          </div>
+
+                          <div className="rounded-lg border border-emerald-100 bg-emerald-50/35 p-3">
+                            <p className="text-xs font-bold text-emerald-800 mb-2">Approval Comments</p>
+                            {reviewRows.length > 0 ? (
+                              <div className="space-y-2 max-h-56 overflow-auto pr-1">
+                                {reviewRows
+                                  .slice()
+                                  .reverse()
+                                  .map((row, idx) => (
+                                    <div key={`review-${idx}`} className="rounded-md border border-emerald-100 bg-white px-2.5 py-2 text-xs text-slate-700">
+                                      <p className="font-semibold text-slate-900">{formatWorkflowActionLabel(row?.action)}</p>
+                                      <p className="text-slate-600">
+                                        {String(row?.from_step_title || `Step ${String(row?.from_step ?? '-')}`)} {'->'} {String(row?.to_step_title || `Step ${String(row?.to_step ?? '-')}`)}
+                                      </p>
+                                      <p className="text-slate-500 mt-0.5">{formatDateTime(row?.reviewed_at)}</p>
+                                      <p className="text-slate-500">By User ID: {String(row?.reviewed_by ?? '-')}</p>
+                                      {String(row?.review_note || '').trim() !== '' ? (
+                                        <p className="mt-1 text-slate-700"><span className="font-semibold">Comment: </span>{String(row?.review_note || '')}</p>
+                                      ) : (
+                                        <p className="mt-1 text-slate-500">No comment provided.</p>
+                                      )}
+                                    </div>
+                                  ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-500">No approval comments recorded.</p>
+                            )}
+                          </div>
+
+                          <div className="rounded-lg border border-indigo-100 bg-indigo-50/35 p-3">
+                            <p className="text-xs font-bold text-indigo-800 mb-2">Workflow Events</p>
+                            {eventRows.length > 0 ? (
+                              <div className="space-y-2 max-h-56 overflow-auto pr-1">
+                                {eventRows.map((event) => (
+                                  <div key={`event-${event.id}`} className="rounded-md border border-indigo-100 bg-white px-2.5 py-2 text-xs text-slate-700">
+                                    <p className="font-semibold text-slate-900">{formatWorkflowActionLabel(event.event_type)}</p>
+                                    <p className="text-slate-600">
+                                      Step {String(event.from_step ?? '-')} {'->'} Step {String(event.to_step ?? '-')} ({event.step_title || '-'})
+                                    </p>
+                                    <p className="text-slate-500 mt-0.5">{formatDateTime(event.created_at)}</p>
+                                    {String(event.note || '').trim() !== '' && (
+                                      <p className="mt-1 text-slate-700"><span className="font-semibold">Comment: </span>{String(event.note || '')}</p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-500">No workflow events found.</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="rounded-xl border border-cyan-100 bg-white p-4">
                       <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700">Customer</p>

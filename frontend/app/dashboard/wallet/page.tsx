@@ -27,6 +27,14 @@ type WalletManager = {
   employee_id: number;
   name: string;
   employee_code?: string;
+  branch_id?: number;
+};
+
+type HeadOfficeOption = {
+  branch_id: number;
+  branch_name?: string;
+  is_main_branch?: boolean;
+  managers?: WalletManager[];
 };
 
 type WalletDepositHistory = {
@@ -49,6 +57,25 @@ type WalletCashHandoverHistory = {
   status?: string;
   approved_at?: string | null;
   branch_cash_transferred_at?: string | null;
+  manager_employee?: {
+    first_name?: string;
+    last_name?: string;
+    employee_code?: string;
+  } | null;
+};
+
+type PendingWalletHandover = {
+  id: number;
+  amount?: number;
+  handover_date?: string;
+  received_by?: string | null;
+  note?: string | null;
+  status?: string;
+  employee?: {
+    first_name?: string;
+    last_name?: string;
+    employee_code?: string;
+  } | null;
   manager_employee?: {
     first_name?: string;
     last_name?: string;
@@ -92,8 +119,24 @@ export default function WalletPage() {
   const [walletSummary, setWalletSummary] = useState<WalletSummary | null>(null);
   const [walletBankAccounts, setWalletBankAccounts] = useState<WalletBankAccount[]>([]);
   const [walletManagers, setWalletManagers] = useState<WalletManager[]>([]);
+  const [headOfficeOptions, setHeadOfficeOptions] = useState<HeadOfficeOption[]>([]);
   const [walletRecentDeposits, setWalletRecentDeposits] = useState<WalletDepositHistory[]>([]);
   const [walletRecentHandovers, setWalletRecentHandovers] = useState<WalletCashHandoverHistory[]>([]);
+  const [handoverPage, setHandoverPage] = useState(1);
+  const [pendingHandovers, setPendingHandovers] = useState<PendingWalletHandover[]>([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [pendingBusyKey, setPendingBusyKey] = useState<string | null>(null);
+  const [rejectModal, setRejectModal] = useState<{
+    open: boolean;
+    handoverId: number | null;
+    reason: string;
+    saving: boolean;
+  }>({
+    open: false,
+    handoverId: null,
+    reason: '',
+    saving: false,
+  });
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [walletNotice, setWalletNotice] = useState<{ open: boolean; title: string; message: string }>({
@@ -118,6 +161,8 @@ export default function WalletPage() {
   });
   const [handoverModal, setHandoverModal] = useState<{
     open: boolean;
+    handoverTarget: 'branch' | 'head_office';
+    targetBranchId: string;
     amount: string;
     managerEmployeeId: string;
     handoverDate: string;
@@ -126,6 +171,8 @@ export default function WalletPage() {
     saving: boolean;
   }>({
     open: false,
+    handoverTarget: 'branch',
+    targetBranchId: '',
     amount: '',
     managerEmployeeId: '',
     handoverDate: new Date().toISOString().slice(0, 10),
@@ -150,6 +197,23 @@ export default function WalletPage() {
     const directRoleName = normalizeText(String(user.role || ''));
     const sources = [directRoleName, designationName, ...roleNames].filter(Boolean);
     return sources.some((value) => value.includes('admin'));
+  };
+
+  const canReviewPendingWalletTransactions = (user: AuthUser | null): boolean => {
+    if (!user) return false;
+
+    const roleNames = (user.roles || []).map((role) => normalizeText(String(role?.name || '')));
+    const designationName = normalizeText(String(user.designation?.name || ''));
+    const directRoleName = normalizeText(String(user.role || ''));
+    const sources = [directRoleName, designationName, ...roleNames].filter(Boolean);
+
+    return sources.some((value) =>
+      value.includes('admin') ||
+      value.includes('manager') ||
+      value.includes('branch manager') ||
+      value.includes('bank manager') ||
+      value.includes('regional manager')
+    );
   };
 
   const formatLkr = (value: number) =>
@@ -220,6 +284,11 @@ export default function WalletPage() {
           ? (walletResponse.data.managers as WalletManager[])
           : []
       );
+      setHeadOfficeOptions(
+        Array.isArray(walletResponse.data?.head_office_options)
+          ? (walletResponse.data.head_office_options as HeadOfficeOption[])
+          : []
+      );
       setWalletRecentDeposits(
         Array.isArray(walletResponse.data?.recent_deposits)
           ? (walletResponse.data.recent_deposits as WalletDepositHistory[])
@@ -230,6 +299,8 @@ export default function WalletPage() {
           ? (walletResponse.data.recent_handovers as WalletCashHandoverHistory[])
           : []
       );
+
+      void fetchPendingHandovers(authToken, true);
     } catch (error: unknown) {
       try {
         const userResponse = await axios.get(`${apiBaseUrl}/user`, {
@@ -250,12 +321,13 @@ export default function WalletPage() {
 
         const summary = accountResponse.data?.summary || {};
         const main = summary?.main || null;
+        const totalCurrentBalance = Number(summary?.total_current_balance || 0);
 
         setWalletMode('company');
         setWalletSummary({
           id: Number(main?.id || 0) || undefined,
           wallet_no: `CW${String(branchId).padStart(6, '0')}`,
-          cash_in_hand: Number(main?.current_balance || 0),
+          cash_in_hand: totalCurrentBalance > 0 ? totalCurrentBalance : Number(main?.current_balance || 0),
           total_deposited: 0,
           total_handed_over: 0,
           opening_balance: Number(main?.opening_balance || 0),
@@ -263,8 +335,14 @@ export default function WalletPage() {
         });
         setWalletBankAccounts(Array.isArray(summary?.banks) ? (summary.banks as WalletBankAccount[]) : []);
         setWalletManagers([]);
+        setHeadOfficeOptions([]);
         setWalletRecentDeposits([]);
         setWalletRecentHandovers([]);
+        if (canReviewPendingWalletTransactions(user)) {
+          void fetchPendingHandovers(authToken, true);
+        } else {
+          setPendingHandovers([]);
+        }
       } catch {
         const message =
           axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
@@ -274,12 +352,149 @@ export default function WalletPage() {
         setWalletSummary(null);
         setWalletBankAccounts([]);
         setWalletManagers([]);
+        setHeadOfficeOptions([]);
         setWalletRecentDeposits([]);
         setWalletRecentHandovers([]);
+        setPendingHandovers([]);
         setWalletNotice({ open: true, title: 'Wallet', message });
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchPendingHandovers = async (authToken: string, silent = false) => {
+    if (!silent) {
+      setPendingLoading(true);
+    }
+
+    try {
+      const response = await axios.get(`${apiBaseUrl}/hr/wallet/pending-transactions`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+
+      setPendingHandovers(
+        Array.isArray(response.data?.handovers) ? (response.data.handovers as PendingWalletHandover[]) : []
+      );
+    } catch {
+      setPendingHandovers([]);
+    } finally {
+      setPendingLoading(false);
+    }
+  };
+
+  const approvePendingHandover = async (id: number) => {
+    if (!token) return;
+
+    const key = `handover-${id}`;
+    try {
+      setPendingBusyKey(key);
+      const approveResponse = await axios.post(
+        `${apiBaseUrl}/hr/wallet/pending-transactions/handover/${id}/approve`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const approvedId = Number(approveResponse.data?.summary?.id || id);
+      let transferMessage = '';
+      try {
+        const transferResponse = await axios.post(
+          `${apiBaseUrl}/hr/wallet/accepted-handovers/${approvedId}/transfer-cash`,
+          {},
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        transferMessage = String(transferResponse.data?.message || '').trim();
+      } catch (transferError: unknown) {
+        const transferErrorMessage =
+          axios.isAxiosError(transferError) && typeof transferError.response?.data?.message === 'string'
+            ? transferError.response?.data?.message
+            : 'Accepted, but auto-transfer to office cash failed. Please transfer manually from accounting approvals.';
+
+        setWalletNotice({
+          open: true,
+          title: 'Partial Success',
+          message: transferErrorMessage,
+        });
+      }
+
+      setWalletNotice({
+        open: true,
+        title: 'Success',
+        message:
+          transferMessage ||
+          approveResponse.data?.message ||
+          'Handover approved successfully.',
+      });
+      await fetchWalletData(token);
+      await fetchPendingHandovers(token, true);
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
+          ? error.response?.data?.message
+          : 'Failed to approve handover request.';
+      setWalletNotice({ open: true, title: 'Approval Error', message });
+    } finally {
+      setPendingBusyKey(null);
+    }
+  };
+
+  const openRejectModal = (handoverId: number) => {
+    setRejectModal({
+      open: true,
+      handoverId,
+      reason: '',
+      saving: false,
+    });
+  };
+
+  const closeRejectModal = () => {
+    if (rejectModal.saving) return;
+    setRejectModal({
+      open: false,
+      handoverId: null,
+      reason: '',
+      saving: false,
+    });
+  };
+
+  const rejectPendingHandover = async () => {
+    if (!token || !rejectModal.handoverId) return;
+
+    const reason = rejectModal.reason.trim();
+    if (!reason) {
+      setWalletNotice({ open: true, title: 'Validation', message: 'Please enter a reason for rejection.' });
+      return;
+    }
+
+    const key = `handover-reject-${rejectModal.handoverId}`;
+    try {
+      setRejectModal((prev) => ({ ...prev, saving: true }));
+      setPendingBusyKey(key);
+
+      const response = await axios.post(
+        `${apiBaseUrl}/hr/wallet/pending-transactions/handover/${rejectModal.handoverId}/reject`,
+        { rejection_reason: reason },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      setWalletNotice({
+        open: true,
+        title: 'Rejected',
+        message: response.data?.message || 'Handover request rejected successfully.',
+      });
+
+      closeRejectModal();
+      await fetchWalletData(token);
+      await fetchPendingHandovers(token, true);
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
+          ? error.response?.data?.message
+          : 'Failed to reject handover request.';
+      setWalletNotice({ open: true, title: 'Reject Error', message });
+      setRejectModal((prev) => ({ ...prev, saving: false }));
+    } finally {
+      setPendingBusyKey(null);
     }
   };
 
@@ -310,6 +525,14 @@ export default function WalletPage() {
   const walletPreviewBalance = Number(walletSummary?.cash_in_hand ?? 0);
   const walletPreviewHasWallet = Boolean(walletSummary?.wallet_no);
   const walletPreviewNo = String(walletSummary?.wallet_no || '-');
+  const canReviewPending = canReviewPendingWalletTransactions(authUser);
+  const selectedHeadOffice = headOfficeOptions.find(
+    (row) => String(row.branch_id) === String(handoverModal.targetBranchId)
+  );
+  const availableHandoverManagers =
+    handoverModal.handoverTarget === 'head_office'
+      ? (selectedHeadOffice?.managers || [])
+      : walletManagers;
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -336,6 +559,17 @@ export default function WalletPage() {
     1,
     ...recentHandoverBars.map((row) => Number(row.amount || 0))
   );
+  const handoversPerPage = 5;
+  const totalHandoverPages = Math.max(1, Math.ceil(walletRecentHandovers.length / handoversPerPage));
+  const pagedHandoverStart = (handoverPage - 1) * handoversPerPage;
+  const pagedHandoverEnd = pagedHandoverStart + handoversPerPage;
+  const pagedRecentHandovers = walletRecentHandovers.slice(pagedHandoverStart, pagedHandoverEnd);
+
+  useEffect(() => {
+    if (handoverPage > totalHandoverPages) {
+      setHandoverPage(totalHandoverPages);
+    }
+  }, [handoverPage, totalHandoverPages]);
 
   const openDepositModal = () => {
     const defaultBankId = walletBankAccounts[0]?.id ? String(walletBankAccounts[0].id) : '';
@@ -355,13 +589,29 @@ export default function WalletPage() {
   };
 
   const openHandoverModal = () => {
+    const defaultHeadOfficeBranchId = headOfficeOptions[0]?.branch_id ? String(headOfficeOptions[0].branch_id) : '';
+    const defaultHeadOfficeManagers = headOfficeOptions[0]?.managers || [];
     const defaultManagerId = walletManagers[0]?.employee_id ? String(walletManagers[0].employee_id) : '';
+    const fallbackHeadOfficeManagerId = defaultHeadOfficeManagers[0]?.employee_id
+      ? String(defaultHeadOfficeManagers[0].employee_id)
+      : '';
+    const roleSource = normalizeText(
+      `${authUser?.role || ''} ${authUser?.designation?.name || ''} ${(authUser?.roles || []).map((r) => r.name || '').join(' ')}`
+    );
+    const shouldDefaultToHeadOffice =
+      headOfficeOptions.length > 0 &&
+      (roleSource.includes('branch manager') || roleSource.includes('bank manager') || roleSource.includes('manager'));
+
     setHandoverModal({
       open: true,
+      handoverTarget: shouldDefaultToHeadOffice ? 'head_office' : 'branch',
+      targetBranchId: defaultHeadOfficeBranchId,
       amount: '',
-      managerEmployeeId: defaultManagerId,
+      managerEmployeeId: shouldDefaultToHeadOffice
+        ? fallbackHeadOfficeManagerId
+        : (defaultManagerId || fallbackHeadOfficeManagerId),
       handoverDate: new Date().toISOString().slice(0, 10),
-      receivedBy: '',
+      receivedBy: shouldDefaultToHeadOffice ? (defaultHeadOfficeManagers[0]?.name || '') : '',
       note: '',
       saving: false,
     });
@@ -422,6 +672,7 @@ export default function WalletPage() {
   const submitWalletHandover = async () => {
     const amount = Number(handoverModal.amount || 0);
     const managerEmployeeId = Number(handoverModal.managerEmployeeId || 0);
+    const targetBranchId = Number(handoverModal.targetBranchId || 0);
 
     if (amount <= 0) {
       setWalletNotice({ open: true, title: 'Validation', message: 'Please enter a valid handover amount.' });
@@ -435,6 +686,10 @@ export default function WalletPage() {
       setWalletNotice({ open: true, title: 'Validation', message: 'Please select a manager.' });
       return;
     }
+    if (handoverModal.handoverTarget === 'head_office' && targetBranchId <= 0) {
+      setWalletNotice({ open: true, title: 'Validation', message: 'Please select a head office destination.' });
+      return;
+    }
 
     try {
       setHandoverModal((prev) => ({ ...prev, saving: true }));
@@ -443,6 +698,8 @@ export default function WalletPage() {
         {
           amount,
           manager_employee_id: managerEmployeeId,
+          handover_target: handoverModal.handoverTarget,
+          target_branch_id: handoverModal.handoverTarget === 'head_office' ? targetBranchId : undefined,
           handover_date: handoverModal.handoverDate,
           received_by: handoverModal.receivedBy.trim() || undefined,
           note: handoverModal.note.trim() || undefined,
@@ -778,6 +1035,87 @@ export default function WalletPage() {
               </div>
             )}
 
+            {walletMode !== 'none' && canReviewPending && (
+              <div className="overflow-hidden rounded-2xl border border-amber-100 bg-white/95 shadow-lg backdrop-blur">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-100 bg-amber-50/70 px-5 py-4">
+                  <div>
+                    <h4 className="text-sm font-semibold text-slate-900">Requests Waiting for Your Acceptance</h4>
+                    <p className="mt-1 text-xs text-slate-600">Pending cash handover requests routed to your office.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void fetchPendingHandovers(token)}
+                    disabled={pendingLoading}
+                    className="rounded-lg border border-amber-200 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-60"
+                  >
+                    {pendingLoading ? 'Refreshing...' : 'Refresh'}
+                  </button>
+                </div>
+
+                {pendingLoading ? (
+                  <p className="px-5 py-6 text-sm text-slate-500">Loading pending requests...</p>
+                ) : pendingHandovers.length === 0 ? (
+                  <p className="px-5 py-6 text-sm text-slate-500">No pending handover requests right now.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm text-left text-slate-700">
+                      <thead className="bg-slate-50/80 text-xs uppercase tracking-wide text-slate-600">
+                        <tr>
+                          <th className="px-5 py-3 font-semibold">Date</th>
+                          <th className="px-5 py-3 font-semibold">Requested By</th>
+                          <th className="px-5 py-3 font-semibold">Received By</th>
+                          <th className="px-5 py-3 text-right font-semibold">Amount</th>
+                          <th className="px-5 py-3 font-semibold">Note</th>
+                          <th className="px-5 py-3 text-right font-semibold">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pendingHandovers.map((row) => {
+                          const requesterName = row.employee
+                            ? `${row.employee.first_name || ''} ${row.employee.last_name || ''}`.trim() || '-'
+                            : '-';
+                          const busy = pendingBusyKey === `handover-${row.id}`;
+
+                          return (
+                            <tr key={`pending-handover-${row.id}`} className="border-t border-slate-100 hover:bg-slate-50/70">
+                              <td className="px-5 py-3">{formatDate(row.handover_date)}</td>
+                              <td className="px-5 py-3">
+                                <div className="font-medium text-slate-900">{requesterName}</div>
+                                <div className="text-xs text-slate-500">{row.employee?.employee_code || ''}</div>
+                              </td>
+                              <td className="px-5 py-3 text-slate-700">{row.received_by || '-'}</td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-900">{formatLkr(Number(row.amount || 0))}</td>
+                              <td className="px-5 py-3 text-slate-600">{row.note || '-'}</td>
+                              <td className="px-5 py-3 text-right">
+                                <div className="flex justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => openRejectModal(row.id)}
+                                    disabled={busy || rejectModal.saving}
+                                    className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
+                                  >
+                                    Reject
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void approvePendingHandover(row.id)}
+                                    disabled={busy || rejectModal.saving}
+                                    className="rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-3 py-1.5 text-xs font-semibold text-white shadow hover:from-amber-600 hover:to-orange-600 disabled:opacity-60"
+                                  >
+                                    {busy ? 'Approving...' : 'Approve'}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
             {walletMode === 'employee' && (
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
               <div className="overflow-hidden rounded-2xl border border-white/80 bg-white/90 shadow-lg backdrop-blur">
@@ -815,16 +1153,22 @@ export default function WalletPage() {
                 )}
               </div>
 
-              <div className="overflow-hidden rounded-2xl border border-white/80 bg-white/90 shadow-lg backdrop-blur">
-                <div className="border-b border-slate-100 bg-slate-50/90 px-5 py-4">
-                  <h4 className="text-sm font-semibold text-slate-900">Recent Cash Handovers</h4>
+              <div className="overflow-hidden rounded-3xl border border-amber-100 bg-white/95 shadow-xl backdrop-blur">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-100 bg-gradient-to-r from-amber-50 via-orange-50 to-white px-5 py-4">
+                  <div>
+                    <h4 className="text-sm font-semibold text-slate-900">Recent Cash Handovers</h4>
+                    <p className="mt-1 text-xs text-slate-500">Latest handover activity timeline with status and amounts.</p>
+                  </div>
+                  <div className="rounded-full border border-amber-200 bg-white px-3 py-1 text-xs font-semibold text-amber-700">
+                    Total {walletRecentHandovers.length}
+                  </div>
                 </div>
                 {walletRecentHandovers.length === 0 ? (
                   <p className="px-5 py-6 text-sm text-slate-500">No cash handovers yet.</p>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="min-w-full text-sm text-left text-slate-700">
-                      <thead className="bg-slate-50/80 text-xs uppercase tracking-wide text-slate-600">
+                      <thead className="bg-slate-50/90 text-xs uppercase tracking-wide text-slate-600">
                         <tr>
                           <th className="px-5 py-3 font-semibold">Date</th>
                           <th className="px-5 py-3 font-semibold">Manager</th>
@@ -835,10 +1179,10 @@ export default function WalletPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {walletRecentHandovers.map((row) => {
+                        {pagedRecentHandovers.map((row) => {
                           const badge = getHandoverBadge(row);
                           return (
-                            <tr key={row.id} className="border-t border-slate-100 hover:bg-slate-50/70">
+                            <tr key={row.id} className="border-t border-slate-100 transition hover:bg-amber-50/40">
                               <td className="px-5 py-3">{formatDate(row.handover_date)}</td>
                               <td className="px-5 py-3">
                                 <div className="font-medium text-slate-900">
@@ -861,6 +1205,34 @@ export default function WalletPage() {
                         })}
                       </tbody>
                     </table>
+                  </div>
+                )}
+                {walletRecentHandovers.length > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-white px-5 py-3">
+                    <p className="text-xs text-slate-500">
+                      Showing {pagedHandoverStart + 1}-{Math.min(pagedHandoverEnd, walletRecentHandovers.length)} of {walletRecentHandovers.length}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setHandoverPage((prev) => Math.max(1, prev - 1))}
+                        disabled={handoverPage <= 1}
+                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Prev
+                      </button>
+                      <span className="rounded-md bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                        Page {handoverPage} / {totalHandoverPages}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setHandoverPage((prev) => Math.min(totalHandoverPages, prev + 1))}
+                        disabled={handoverPage >= totalHandoverPages}
+                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        Next
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -993,11 +1365,80 @@ export default function WalletPage() {
               </div>
 
               <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">Handover Destination</label>
+                <select
+                  value={handoverModal.handoverTarget}
+                  onChange={(e) => {
+                    const value = e.target.value === 'head_office' ? 'head_office' : 'branch';
+                    if (value === 'head_office') {
+                      const firstOffice = headOfficeOptions[0];
+                      const firstOfficeManagers = firstOffice?.managers || [];
+                      const firstManager = firstOfficeManagers[0];
+                      setHandoverModal((prev) => ({
+                        ...prev,
+                        handoverTarget: 'head_office',
+                        targetBranchId: firstOffice?.branch_id ? String(firstOffice.branch_id) : prev.targetBranchId,
+                        managerEmployeeId: firstManager?.employee_id ? String(firstManager.employee_id) : '',
+                        receivedBy: firstManager?.name || '',
+                      }));
+                      return;
+                    }
+
+                    const firstBranchManager = walletManagers[0];
+                    setHandoverModal((prev) => ({
+                      ...prev,
+                      handoverTarget: 'branch',
+                      managerEmployeeId: firstBranchManager?.employee_id ? String(firstBranchManager.employee_id) : '',
+                      receivedBy: firstBranchManager?.name || '',
+                    }));
+                  }}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-black focus:outline-none focus:ring-2 focus:ring-amber-300"
+                >
+                  <option value="branch">Branch Office Manager</option>
+                  <option value="head_office">Head Office Manager</option>
+                </select>
+              </div>
+
+              {handoverModal.handoverTarget === 'head_office' && (
+                <div>
+                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">Head Office</label>
+                  <select
+                    value={handoverModal.targetBranchId}
+                    onChange={(e) => {
+                      const nextBranchId = e.target.value;
+                      const office = headOfficeOptions.find((row) => String(row.branch_id) === nextBranchId);
+                      const officeManagers = office?.managers || [];
+                      const firstManager = officeManagers[0];
+                      setHandoverModal((prev) => ({
+                        ...prev,
+                        targetBranchId: nextBranchId,
+                        managerEmployeeId: firstManager?.employee_id ? String(firstManager.employee_id) : '',
+                        receivedBy: firstManager?.name || '',
+                      }));
+                    }}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-black focus:outline-none focus:ring-2 focus:ring-amber-300"
+                  >
+                    <option value="">Select head office</option>
+                    {headOfficeOptions.map((office) => (
+                      <option key={office.branch_id} value={String(office.branch_id)}>
+                        {office.branch_name || `Branch #${office.branch_id}`}
+                      </option>
+                    ))}
+                  </select>
+                  {headOfficeOptions.length === 0 && (
+                    <p className="mt-2 text-xs text-rose-600">
+                      No head office destination is configured yet.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div>
                 <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">Manager</label>
                 <select
                   value={handoverModal.managerEmployeeId}
                   onChange={(e) => {
-                    const selectedManager = walletManagers.find((manager) => String(manager.employee_id) === e.target.value);
+                    const selectedManager = availableHandoverManagers.find((manager) => String(manager.employee_id) === e.target.value);
                     setHandoverModal((prev) => ({
                       ...prev,
                       managerEmployeeId: e.target.value,
@@ -1007,16 +1448,18 @@ export default function WalletPage() {
                   className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-black focus:outline-none focus:ring-2 focus:ring-amber-300"
                 >
                   <option value="">Select manager</option>
-                  {walletManagers.map((manager) => (
+                  {availableHandoverManagers.map((manager) => (
                     <option key={manager.employee_id} value={String(manager.employee_id)}>
                       {manager.name}
                       {manager.employee_code ? ` (${manager.employee_code})` : ''}
                     </option>
                   ))}
                 </select>
-                {walletManagers.length === 0 && (
+                {availableHandoverManagers.length === 0 && (
                   <p className="mt-2 text-xs text-rose-600">
-                    No managers found for this branch. Please assign a branch manager in branch settings.
+                    {handoverModal.handoverTarget === 'head_office'
+                      ? 'No managers found for selected head office.'
+                      : 'No managers found for this branch. Please assign a branch manager in branch settings.'}
                   </p>
                 )}
               </div>
@@ -1064,10 +1507,57 @@ export default function WalletPage() {
               </button>
               <button
                 onClick={submitWalletHandover}
-                disabled={handoverModal.saving || walletManagers.length === 0}
+                disabled={handoverModal.saving || availableHandoverManagers.length === 0}
                 className="rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2 text-sm font-semibold text-white shadow hover:from-amber-600 hover:to-orange-600 disabled:opacity-60"
               >
                 {handoverModal.saving ? 'Posting...' : 'Cash Handover'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {walletMode === 'employee' && rejectModal.open && (
+        <div className="fixed inset-0 z-[94] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/45 backdrop-blur-sm" onClick={closeRejectModal} />
+          <div className="relative w-full max-w-lg rounded-2xl border border-rose-100 bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-rose-100 px-6 py-4">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Reject Handover Request</h3>
+                <p className="mt-1 text-sm text-slate-600">Please provide a reason. This reason will be stored in the database.</p>
+              </div>
+              <button onClick={closeRejectModal} className="text-slate-500 hover:text-slate-800" disabled={rejectModal.saving}>✕</button>
+            </div>
+
+            <div className="space-y-4 px-6 py-5">
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">Reason for Rejection</label>
+                <textarea
+                  rows={4}
+                  value={rejectModal.reason}
+                  onChange={(e) => setRejectModal((prev) => ({ ...prev, reason: e.target.value }))}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-black focus:outline-none focus:ring-2 focus:ring-rose-300"
+                  placeholder="Type rejection reason"
+                  maxLength={500}
+                />
+                <p className="mt-1 text-[11px] text-slate-500">{rejectModal.reason.length}/500</p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-6 py-4">
+              <button
+                onClick={closeRejectModal}
+                disabled={rejectModal.saving}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void rejectPendingHandover()}
+                disabled={rejectModal.saving}
+                className="rounded-xl bg-gradient-to-r from-rose-500 to-red-500 px-4 py-2 text-sm font-semibold text-white shadow hover:from-rose-600 hover:to-red-600 disabled:opacity-60"
+              >
+                {rejectModal.saving ? 'Rejecting...' : 'Reject Request'}
               </button>
             </div>
           </div>
