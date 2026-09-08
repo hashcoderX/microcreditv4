@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import CompanyAccountingPanel from '@/app/components/accounting/CompanyAccountingPanel';
 import { resolveStorageAssetUrl } from '@/lib/api';
+import { useWidgetsFixed } from '@/lib/useWidgetsFixed';
 
 type SettingsSection = 'profile' | 'accounting' | 'templates' | 'holidays' | 'system' | 'sms' | 'whatsapp';
 
@@ -546,6 +547,31 @@ export default function CompanySettingsPage() {
   const [holidayForm, setHolidayForm] = useState({ id: 0, holiday_date: '', name: '', note: '', is_active: true });
   const [holidaySaving, setHolidaySaving] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSection>('profile');
+  const [restoreWidgetsModal, setRestoreWidgetsModal] = useState<{
+    open: boolean;
+    adminEmail: string;
+    adminPassword: string;
+    verifying: boolean;
+  }>({
+    open: false,
+    adminEmail: '',
+    adminPassword: '',
+    verifying: false,
+  });
+  const [fixWidgetsModal, setFixWidgetsModal] = useState<{
+    open: boolean;
+    action: 'fix' | 'unfix';
+    adminEmail: string;
+    adminPassword: string;
+    verifying: boolean;
+  }>({
+    open: false,
+    action: 'fix',
+    adminEmail: '',
+    adminPassword: '',
+    verifying: false,
+  });
+  const { widgetsFixed, toggleWidgetsFixed } = useWidgetsFixed();
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
     if (!storedToken) {
@@ -1177,6 +1203,133 @@ export default function CompanySettingsPage() {
       setNotice({ type: 'error', text: message });
     } finally {
       setUpdatingSystemStatus(false);
+    }
+  };
+
+  const openWidgetsRestoreModal = () => {
+    setRestoreWidgetsModal({
+      open: true,
+      adminEmail: '',
+      adminPassword: '',
+      verifying: false,
+    });
+  };
+
+  const resetHiddenWidgets = async () => {
+    if (!token) {
+      setNotice({ type: 'error', text: 'Session is missing. Please login again.' });
+      return;
+    }
+
+    const adminEmail = restoreWidgetsModal.adminEmail.trim();
+    const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail);
+    if (!adminEmail || !emailLooksValid || !restoreWidgetsModal.adminPassword) {
+      setNotice({ type: 'error', text: 'Valid admin email and password are required.' });
+      return;
+    }
+
+    try {
+      setRestoreWidgetsModal((prev) => ({ ...prev, verifying: true }));
+      await axios.delete('/api/dashboard/widgets', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+        data: {
+          admin_email: adminEmail,
+          admin_password: restoreWidgetsModal.adminPassword,
+        },
+      });
+
+      setRestoreWidgetsModal({
+        open: false,
+        adminEmail: '',
+        adminPassword: '',
+        verifying: false,
+      });
+      setNotice({ type: 'success', text: 'Hidden dashboard widgets restored successfully.' });
+    } catch (error: any) {
+      setNotice({
+        type: 'error',
+        text: error?.response?.data?.message || 'Failed to restore hidden widgets. Please verify credentials and try again.',
+      });
+    } finally {
+      setRestoreWidgetsModal((prev) => ({ ...prev, verifying: false }));
+    }
+  };
+
+  const openFixWidgetsApprovalModal = () => {
+    setFixWidgetsModal({
+      open: true,
+      action: widgetsFixed ? 'unfix' : 'fix',
+      adminEmail: '',
+      adminPassword: '',
+      verifying: false,
+    });
+  };
+
+  const approveAndToggleWidgetsFixed = async () => {
+    if (!token) {
+      setNotice({ type: 'error', text: 'Session is missing. Please login again.' });
+      return;
+    }
+
+    const adminEmail = fixWidgetsModal.adminEmail.trim();
+    const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail);
+    if (!adminEmail || !emailLooksValid || !fixWidgetsModal.adminPassword) {
+      setNotice({ type: 'error', text: 'Valid admin email and password are required.' });
+      return;
+    }
+
+    try {
+      setFixWidgetsModal((prev) => ({ ...prev, verifying: true }));
+
+      const approvalResponse = await axios.post(
+        '/api/dashboard/widgets/authorize-admin',
+        {
+          admin_email: adminEmail,
+          admin_password: fixWidgetsModal.adminPassword,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+        }
+      );
+
+      if (approvalResponse?.data?.approved !== true) {
+        setNotice({
+          type: 'error',
+          text:
+            typeof approvalResponse?.data?.message === 'string'
+              ? approvalResponse.data.message
+              : 'Admin approval failed. Please verify credentials and try again.',
+        });
+        return;
+      }
+
+      const isFixing = fixWidgetsModal.action === 'fix';
+      toggleWidgetsFixed();
+      setFixWidgetsModal({
+        open: false,
+        action: isFixing ? 'fix' : 'unfix',
+        adminEmail: '',
+        adminPassword: '',
+        verifying: false,
+      });
+
+      setNotice({
+        type: 'success',
+        text: isFixing ? 'Widgets fixed mode enabled.' : 'Widgets fixed mode disabled.',
+      });
+    } catch (error: any) {
+      setNotice({
+        type: 'error',
+        text: error?.response?.data?.message || 'Admin approval failed. Please verify credentials and try again.',
+      });
+    } finally {
+      setFixWidgetsModal((prev) => ({ ...prev, verifying: false }));
     }
   };
 
@@ -2045,6 +2198,41 @@ export default function CompanySettingsPage() {
                       </p>
                     </div>
 
+                    <div className="rounded-2xl border border-cyan-100 bg-white p-5 shadow-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-slate-900">Dashboard widget controls</p>
+                          <p className="text-xs text-slate-600 mt-0.5">Restore hidden widgets for users and manage fixed widget mode.</p>
+                        </div>
+                        <span className={`rounded-full px-3 py-1 text-[11px] font-bold ${widgetsFixed ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700'}`}>
+                          {widgetsFixed ? 'Fixed mode ON' : 'Fixed mode OFF'}
+                        </span>
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <button
+                          type="button"
+                          onClick={openWidgetsRestoreModal}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-bold text-rose-800 hover:bg-rose-100"
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          Restore hidden widgets
+                        </button>
+                        <button
+                          type="button"
+                          onClick={openFixWidgetsApprovalModal}
+                          className={`inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-bold ${
+                            widgetsFixed
+                              ? 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          <Settings className="h-4 w-4" />
+                          {widgetsFixed ? 'Unfix widgets' : 'Fix widgets'}
+                        </button>
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="rounded-2xl border border-cyan-100 bg-white p-5 shadow-sm">
                         <div className="flex items-center gap-2 mb-3">
@@ -2567,6 +2755,130 @@ export default function CompanySettingsPage() {
           </div>
         </div>
       </div>
+
+      {restoreWidgetsModal.open && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/35 backdrop-blur-sm"
+            onClick={() => {
+              if (restoreWidgetsModal.verifying) return;
+              setRestoreWidgetsModal((prev) => ({ ...prev, open: false }));
+            }}
+          />
+          <div className="relative w-full max-w-md rounded-2xl border border-rose-200 bg-white px-6 py-5 shadow-xl">
+            <h3 className="text-lg font-bold text-slate-900">Admin approval required</h3>
+            <p className="mt-1 text-sm text-slate-600">
+              Enter admin credentials to restore hidden dashboard widgets.
+            </p>
+
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">Admin Email</label>
+                <input
+                  type="email"
+                  value={restoreWidgetsModal.adminEmail}
+                  onChange={(e) => setRestoreWidgetsModal((prev) => ({ ...prev, adminEmail: e.target.value }))}
+                  className={inputClass}
+                  placeholder="admin@example.com"
+                  disabled={restoreWidgetsModal.verifying}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">Admin Password</label>
+                <input
+                  type="password"
+                  value={restoreWidgetsModal.adminPassword}
+                  onChange={(e) => setRestoreWidgetsModal((prev) => ({ ...prev, adminPassword: e.target.value }))}
+                  className={inputClass}
+                  placeholder="Enter password"
+                  disabled={restoreWidgetsModal.verifying}
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRestoreWidgetsModal((prev) => ({ ...prev, open: false }))}
+                disabled={restoreWidgetsModal.verifying}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={resetHiddenWidgets}
+                disabled={restoreWidgetsModal.verifying}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
+              >
+                {restoreWidgetsModal.verifying ? 'Verifying...' : 'Verify & Restore'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {fixWidgetsModal.open && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/35 backdrop-blur-sm"
+            onClick={() => {
+              if (fixWidgetsModal.verifying) return;
+              setFixWidgetsModal((prev) => ({ ...prev, open: false }));
+            }}
+          />
+          <div className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white px-6 py-5 shadow-xl">
+            <h3 className="text-lg font-bold text-slate-900">Admin approval required</h3>
+            <p className="mt-1 text-sm text-slate-600">
+              Enter admin credentials to {fixWidgetsModal.action === 'fix' ? 'fix' : 'unfix'} widgets.
+            </p>
+
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">Admin Email</label>
+                <input
+                  type="email"
+                  value={fixWidgetsModal.adminEmail}
+                  onChange={(e) => setFixWidgetsModal((prev) => ({ ...prev, adminEmail: e.target.value }))}
+                  className={inputClass}
+                  placeholder="admin@example.com"
+                  disabled={fixWidgetsModal.verifying}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">Admin Password</label>
+                <input
+                  type="password"
+                  value={fixWidgetsModal.adminPassword}
+                  onChange={(e) => setFixWidgetsModal((prev) => ({ ...prev, adminPassword: e.target.value }))}
+                  className={inputClass}
+                  placeholder="Enter password"
+                  disabled={fixWidgetsModal.verifying}
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setFixWidgetsModal((prev) => ({ ...prev, open: false }))}
+                disabled={fixWidgetsModal.verifying}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={approveAndToggleWidgetsFixed}
+                disabled={fixWidgetsModal.verifying}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-60"
+              >
+                {fixWidgetsModal.verifying ? 'Verifying...' : fixWidgetsModal.action === 'fix' ? 'Verify & Fix' : 'Verify & Unfix'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showResetConfirmModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">

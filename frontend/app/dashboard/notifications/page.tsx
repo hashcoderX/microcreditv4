@@ -227,6 +227,7 @@ export default function NotificationsPage() {
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState<'all' | 'unread' | 'important'>('all');
   const [scope, setScope] = useState<NotificationScope>('all');
+  const [currentPage, setCurrentPage] = useState(1);
   const [summary, setSummary] = useState({ total: 0, unread: 0, important: 0 });
   const [barUnreadCount, setBarUnreadCount] = useState(0);
   const [barImportantUnreadCount, setBarImportantUnreadCount] = useState(0);
@@ -585,6 +586,23 @@ export default function NotificationsPage() {
     return notifications.filter((row) => row.type === 'microfinance_approval_request' || row.type === 'microfinance_send_back');
   }, [notifications, scope]);
 
+  const notificationsPerPage = 10;
+  const totalPages = Math.max(1, Math.ceil(scopedNotifications.length / notificationsPerPage));
+  const paginatedNotifications = useMemo(() => {
+    const startIndex = (currentPage - 1) * notificationsPerPage;
+    return scopedNotifications.slice(startIndex, startIndex + notificationsPerPage);
+  }, [scopedNotifications, currentPage]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [tab, scope, query]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
   const notificationBarItems = [
     {
       key: 'all' as NotificationScope,
@@ -802,7 +820,7 @@ export default function NotificationsPage() {
               No notifications found for this filter.
             </div>
           ) : (
-            scopedNotifications.map((row) => (
+            paginatedNotifications.map((row) => (
               <div
                 key={row.id}
                 className={`rounded-2xl border p-4 shadow-sm transition ${
@@ -866,6 +884,39 @@ export default function NotificationsPage() {
                 </div>
               </div>
             ))
+          )}
+
+          {!loading && scopedNotifications.length > 0 && (
+            <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white/90 px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Showing {(currentPage - 1) * notificationsPerPage + 1}
+                {' - '}
+                {Math.min(currentPage * notificationsPerPage, scopedNotifications.length)}
+                {' of '}
+                {scopedNotifications.length}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                  disabled={currentPage === 1}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600">
+                  Page {currentPage} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
+                  disabled={currentPage >= totalPages}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
           )}
         </div>
 

@@ -11,15 +11,16 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (Schema::getConnection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
         if (Schema::hasColumn('candidate_documents', 'branch_id')) {
             Schema::table('candidate_documents', function (Blueprint $table) {
-                // SQLite does not support INFORMATION_SCHEMA lookup.
-                if (Schema::getConnection()->getDriverName() !== 'sqlite') {
-                    try {
-                        $table->dropForeign(['branch_id']);
-                    } catch (\Throwable $e) {
-                        // Ignore when foreign key does not exist.
-                    }
+                try {
+                    $table->dropForeign(['branch_id']);
+                } catch (\Throwable $e) {
+                    // Ignore when foreign key does not exist.
                 }
                 $table->dropColumn('branch_id');
             });

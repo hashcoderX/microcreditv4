@@ -1709,7 +1709,7 @@ export default function Dashboard() {
             })}
             {visibleActionCenterSteps.length === 0 && (
               <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs font-medium text-slate-600">
-                All Action Center actions are hidden. Use Restore Hidden Widgets to show them.
+                All Action Center actions are hidden. Use Company Settings &gt; System admin to restore hidden widgets.
               </div>
             )}
           </div>
@@ -1742,35 +1742,6 @@ export default function Dashboard() {
               <span>Real-time Updates</span>
             </div>
           </div>
-          {canUseWidgetCloseFeature && (
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-              {canRestoreHiddenWidgets && (
-                <button
-                  onClick={() =>
-                    setRestoreWidgetsModal({
-                      open: true,
-                      adminEmail: '',
-                      adminPassword: '',
-                      verifying: false,
-                    })
-                  }
-                  className="rounded-full border border-red-200 bg-white/80 px-4 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50"
-                >
-                  Restore Hidden Widgets
-                </button>
-              )}
-              <button
-                onClick={openFixWidgetsApprovalModal}
-                className={`rounded-full border px-4 py-2 text-xs font-semibold transition ${
-                  widgetsFixed
-                    ? 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
-                    : 'border-slate-200 bg-white/80 text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                {widgetsFixed ? 'Unfix Widgets' : 'Fix Widget'}
-              </button>
-            </div>
-          )}
         </div>
 
         {/* Module Cards */}
@@ -1839,7 +1810,7 @@ export default function Dashboard() {
           <div className="mb-16 rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center">
             <h3 className="text-lg font-semibold text-amber-800">No Widgets Available</h3>
             <p className="text-amber-700 mt-2">
-              All feature widgets are currently hidden for this user. Use &quot;Restore Hidden Widgets&quot; to show them again.
+              All feature widgets are currently hidden for this user. Use Company Settings &gt; System admin to restore hidden widgets.
             </p>
           </div>
         )}

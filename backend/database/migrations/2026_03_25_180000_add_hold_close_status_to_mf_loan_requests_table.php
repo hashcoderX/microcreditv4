@@ -19,7 +19,9 @@ return new class extends Migration
             $table->text('closed_reason')->nullable()->after('closed_at');
         });
 
-        DB::statement("ALTER TABLE mf_loan_requests MODIFY status ENUM('requested','approved','released','rejected','hold','closed') NOT NULL DEFAULT 'requested'");
+        if (DB::getDriverName() === 'mysql') {
+            DB::statement("ALTER TABLE mf_loan_requests MODIFY status ENUM('requested','approved','released','rejected','hold','closed') NOT NULL DEFAULT 'requested'");
+        }
     }
 
     /**
@@ -27,7 +29,9 @@ return new class extends Migration
      */
     public function down(): void
     {
-        DB::statement("ALTER TABLE mf_loan_requests MODIFY status ENUM('requested','approved','released','rejected') NOT NULL DEFAULT 'requested'");
+        if (DB::getDriverName() === 'mysql') {
+            DB::statement("ALTER TABLE mf_loan_requests MODIFY status ENUM('requested','approved','released','rejected') NOT NULL DEFAULT 'requested'");
+        }
 
         Schema::table('mf_loan_requests', function (Blueprint $table) {
             $table->dropColumn(['hold_at', 'hold_reason', 'closed_at', 'closed_reason']);

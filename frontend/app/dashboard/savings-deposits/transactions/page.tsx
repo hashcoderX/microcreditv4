@@ -30,6 +30,7 @@ type SavingsTransactionRow = {
   balance_before?: number | string | null;
   balance_after?: number | string | null;
   transaction_date?: string | null;
+  created_at?: string | null;
   reference_no?: string | null;
 };
 
@@ -47,6 +48,54 @@ function amount(v: unknown): string {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function formatDateTime(value?: string | null, createdAt?: string | null): string {
+  const raw = String(value || '').trim();
+  const created = String(createdAt || '').trim();
+  if (!raw && !created) return '-';
+
+  const dateMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  const createdMatch = created.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?/);
+
+  if (dateMatch) {
+    const year = dateMatch[1];
+    const month = Number(dateMatch[2]);
+    const day = dateMatch[3];
+    let hour = dateMatch[4] ?? '00';
+    let minute = dateMatch[5] ?? '00';
+    let second = dateMatch[6] ?? '00';
+
+    const hasOnlyDate = !dateMatch[4] && !dateMatch[5] && !dateMatch[6];
+    if (hasOnlyDate && createdMatch) {
+      hour = createdMatch[4] ?? '00';
+      minute = createdMatch[5] ?? '00';
+      second = createdMatch[6] ?? '00';
+    }
+
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthName = monthNames[month - 1] || dateMatch[2];
+    return `${day} ${monthName} ${year}, ${hour}:${minute}:${second}`;
+  }
+
+  const parsed = new Date(raw || created);
+  if (Number.isNaN(parsed.getTime())) {
+    return raw || created;
+  }
+
+  return parsed.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+}
+
+function normalizeText(value: string): string {
+  return String(value || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export default function SavingsTransactionsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -61,6 +110,7 @@ export default function SavingsTransactionsPage() {
   const [showAccountSuggestions, setShowAccountSuggestions] = useState(false);
   const [transactions, setTransactions] = useState<SavingsTransactionRow[]>([]);
   const [loadingTransactions, setLoadingTransactions] = useState(false);
+  const [deletingTransactionId, setDeletingTransactionId] = useState<number | null>(null);
   const [postingDeposit, setPostingDeposit] = useState(false);
   const [postingWithdrawal, setPostingWithdrawal] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -154,6 +204,17 @@ export default function SavingsTransactionsPage() {
 
   const displayName = String(authUser?.name || authUser?.email || 'User').trim();
   const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
+  const canDeleteTransactions = useMemo(() => {
+    const designation = normalizeText(String(authUser?.designation?.name || ''));
+    const roleNames = (authUser?.roles || []).map((role) => normalizeText(String(role?.name || '')));
+    const email = String(authUser?.email || '').trim().toLowerCase();
+
+    if (designation.includes('super admin')) return true;
+    if (roleNames.some((name) => name.includes('super admin'))) return true;
+    if (email === 'superadmin@softcodelk.com') return true;
+
+    return false;
+  }, [authUser]);
 
   useEffect(() => {
     const t = localStorage.getItem('token');
@@ -360,6 +421,43 @@ export default function SavingsTransactionsPage() {
     } finally {
       if (type === 'deposit') setPostingDeposit(false);
       if (type === 'withdrawal') setPostingWithdrawal(false);
+    }
+  };
+
+  const deleteTransaction = async (transactionId: number) => {
+    if (!token || !canDeleteTransactions) return;
+
+    const accountId = Number(selectedAccountId);
+    if (!Number.isFinite(accountId) || accountId <= 0) {
+      setErrorMessage('Please select an account first.');
+      return;
+    }
+
+    const confirmed = window.confirm('Delete this transaction? This will recalculate account balances.');
+    if (!confirmed) return;
+
+    try {
+      setDeletingTransactionId(transactionId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await axios.delete(`/api/savings-accounts/${accountId}/transactions/${transactionId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+
+      setSuccessMessage(String(response.data?.message || 'Transaction deleted successfully.'));
+      await Promise.all([loadAccounts(token), loadTransactions(token, accountId)]);
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        setErrorMessage(String(error.response?.data?.message || 'Failed to delete transaction.'));
+      } else {
+        setErrorMessage('Failed to delete transaction.');
+      }
+    } finally {
+      setDeletingTransactionId(null);
     }
   };
 
@@ -684,6 +782,7 @@ export default function SavingsTransactionsPage() {
                         </WidgetCloseGate>
                       </th>
                     ))}
+                    {canDeleteTransactions ? <th className="py-2 pr-3 text-right">Action</th> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -691,7 +790,7 @@ export default function SavingsTransactionsPage() {
                     <tr key={row.id} className="border-b border-orange-50 text-slate-700">
                       {visibleTransactionColumns.map((column) => {
                         if (column.key === 'date') {
-                          return <td key={column.key} className="py-2 pr-3">{row.transaction_date || '-'}</td>;
+                          return <td key={column.key} className="py-2 pr-3">{formatDateTime(row.transaction_date, row.created_at)}</td>;
                         }
                         if (column.key === 'type') {
                           return <td key={column.key} className="py-2 pr-3 capitalize">{String(row.transaction_type || '-').replace('_', ' ')}</td>;
@@ -707,6 +806,18 @@ export default function SavingsTransactionsPage() {
                         }
                         return <td key={column.key} className="py-2 pr-3">{row.reference_no || '-'}</td>;
                       })}
+                      {canDeleteTransactions ? (
+                        <td className="py-2 pr-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => void deleteTransaction(row.id)}
+                            disabled={deletingTransactionId === row.id}
+                            className="rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
+                          >
+                            {deletingTransactionId === row.id ? 'Deleting...' : 'Delete'}
+                          </button>
+                        </td>
+                      ) : null}
                     </tr>
                   ))}
                 </tbody>

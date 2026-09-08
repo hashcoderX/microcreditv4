@@ -209,6 +209,7 @@ export default function Branches() {
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
   const [website, setWebsite] = useState('');
+  const [superAdminPassword, setSuperAdminPassword] = useState('');
   const [managerUserId, setManagerUserId] = useState('');
   const [leadershipRows, setLeadershipRows] = useState<LeadershipFormRow[]>(defaultLeadershipRows());
   const [openingAsset, setOpeningAsset] = useState('0');
@@ -443,6 +444,7 @@ export default function Branches() {
     setAddress('');
     setPhone('');
     setWebsite('');
+    setSuperAdminPassword('');
     setManagerUserId('');
     setLeadershipRows(defaultLeadershipRows());
     setOpeningAsset('0');
@@ -476,11 +478,11 @@ export default function Branches() {
     setNotice(null);
 
     const formData: Record<string, unknown> = {
-      name,
-      email,
-      address,
-      phone,
-      website,
+      name: name.trim(),
+      email: email.trim(),
+      address: address.trim() || null,
+      phone: phone.trim() || null,
+      website: website.trim() || null,
       manager_user_id: managerUserId ? Number(managerUserId) : null,
       opening_asset: openingAsset ? Number(openingAsset) : 0,
     };
@@ -497,6 +499,7 @@ export default function Branches() {
     }
 
     if (!editingCompany) {
+      formData.super_admin_password = superAdminPassword;
       formData.cash_opening_balance = cashOpeningBalance ? Number(cashOpeningBalance) : 0;
 
       const bankAccounts = bankRows
@@ -1032,6 +1035,19 @@ export default function Branches() {
                   <label className={labelClass}>Website</label>
                   <input type="url" value={website} onChange={(e) => setWebsite(e.target.value)} className={inputClass} />
                 </div>
+                {!editingCompany ? (
+                  <div>
+                    <label className={labelClass}>Super admin password *</label>
+                    <input
+                      type="password"
+                      minLength={8}
+                      value={superAdminPassword}
+                      onChange={(e) => setSuperAdminPassword(e.target.value)}
+                      className={inputClass}
+                      required
+                    />
+                  </div>
+                ) : null}
                 <div>
                   <label className={labelClass}>Branch manager</label>
                   <select value={managerUserId} onChange={(e) => setManagerUserId(e.target.value)} className={inputClass}>

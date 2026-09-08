@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\URL;
 class Customer extends Model
 {
     use HasFactory;
@@ -45,7 +46,9 @@ class Customer extends Model
             return null;
         }
 
-        return '/media/customers/' . $this->id . '/photo';
+        return URL::temporarySignedRoute('customer.photo', now()->addMinutes(30), [
+            'customer' => $this->id,
+        ]);
     }
 
     public function documents(): HasMany

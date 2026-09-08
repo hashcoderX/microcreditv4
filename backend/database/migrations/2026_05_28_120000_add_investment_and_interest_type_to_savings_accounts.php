@@ -9,9 +9,11 @@ return new class extends Migration
 {
     public function up(): void
     {
-        DB::statement(
-            "ALTER TABLE savings_accounts MODIFY account_type ENUM('savings', 'current', 'fixed_deposit', 'investment') NOT NULL DEFAULT 'savings'"
-        );
+        if (DB::getDriverName() === 'mysql') {
+            DB::statement(
+                "ALTER TABLE savings_accounts MODIFY account_type ENUM('savings', 'current', 'fixed_deposit', 'investment') NOT NULL DEFAULT 'savings'"
+            );
+        }
 
         Schema::table('savings_accounts', function (Blueprint $table) {
             if (!Schema::hasColumn('savings_accounts', 'interest_type')) {
@@ -31,8 +33,10 @@ return new class extends Migration
         DB::statement(
             "UPDATE savings_accounts SET account_type = 'savings' WHERE account_type = 'investment'"
         );
-        DB::statement(
-            "ALTER TABLE savings_accounts MODIFY account_type ENUM('savings', 'current', 'fixed_deposit') NOT NULL DEFAULT 'savings'"
-        );
+        if (DB::getDriverName() === 'mysql') {
+            DB::statement(
+                "ALTER TABLE savings_accounts MODIFY account_type ENUM('savings', 'current', 'fixed_deposit') NOT NULL DEFAULT 'savings'"
+            );
+        }
     }
 };

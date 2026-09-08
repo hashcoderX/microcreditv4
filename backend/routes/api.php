@@ -53,6 +53,7 @@ use App\Http\Controllers\PermissionController;
 use App\Models\User;
 use App\Models\Role;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/user', function (Request $request) {
@@ -99,43 +100,53 @@ Route::get('/user', function (Request $request) {
     return $user;
 })->middleware('auth:sanctum');
 
-Route::get('/users', function () {
-    return User::all();
-});
+Route::get('/users', function (Request $request) {
+    $user = $request->user();
+    if (!$user || !$user->isSystemAdmin()) {
+        return response()->json(['message' => 'Unauthorized.'], 403);
+    }
 
-Route::get('/reset-password', function () {
-    $defaultEmail = trim((string) env('SYSTEM_SUPER_ADMIN_EMAIL', 'superadmin@softcodelk.com'));
-    $candidates = array_values(array_unique([
-        strtolower($defaultEmail),
-        'superadmin@softcodelk.com',
-        'superadmin@gmail.com',
-    ]));
+    return User::query()
+        ->select(['id', 'name', 'email', 'branch_id', 'designation_id', 'created_at'])
+        ->orderBy('id')
+        ->get();
+})->middleware(['auth:sanctum', 'throttle:30,1']);
 
+Route::post('/reset-password', function (Request $request) {
+    $user = $request->user();
+    if (!$user || !$user->isSystemAdmin()) {
+        return response()->json(['message' => 'Unauthorized.'], 403);
+    }
+
+    $validated = $request->validate([
+        'email' => ['required', 'string', 'email', 'max:255'],
+        'new_password' => ['required', 'string', 'min:12', 'confirmed'],
+    ]);
+
+    $email = strtolower(trim((string) $validated['email']));
     $targetUser = User::query()
-        ->where(function ($query) use ($candidates) {
-            foreach ($candidates as $candidate) {
-                $query->orWhereRaw('LOWER(TRIM(email)) = ?', [$candidate]);
-            }
-        })
+        ->whereRaw('LOWER(TRIM(email)) = ?', [$email])
         ->first();
 
     if (!$targetUser) {
-        return response()->json(['message' => 'No super admin account found to reset.'], 404);
+        return response()->json(['message' => 'User not found.'], 404);
     }
 
-    $targetUser->password = \Illuminate\Support\Facades\Hash::make('password');
+    $targetUser->password = Hash::make((string) $validated['new_password']);
     $targetUser->save();
 
-    return response()->json([
-        'message' => 'Password reset',
-        'email' => $targetUser->email,
-    ]);
-});
+    $targetUser->tokens()->delete();
 
-Route::post('/register', [AuthController::class, 'register']);
-Route::post('/login', [AuthController::class, 'login']);
-Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
-Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth:sanctum');
+    return response()->json([
+        'message' => 'Password reset successful.',
+    ]);
+})->middleware(['auth:sanctum', 'throttle:5,1']);
+
+Route::post('/register', [AuthController::class, 'register'])
+    ->middleware(['auth:sanctum', 'permission:create_users', 'throttle:20,1']);
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
+Route::post('/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:5,1');
+Route::post('/logout', [AuthController::class, 'logout'])->middleware(['auth:sanctum', 'throttle:30,1']);
 
 Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('dashboard/widgets', [UserDashboardWidgetController::class, 'index']);
@@ -237,25 +248,25 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
 
         // Employee nested resources
         Route::get('employees/{employee}/documents', [EmployeeDocumentController::class, 'index']);
-        Route::post('employees/{employee}/documents', [EmployeeDocumentController::class, 'store']);
-        Route::delete('employees/{employee}/documents/{document}', [EmployeeDocumentController::class, 'destroy']);
+        Route::post('employees/{employee}/documents', [EmployeeDocumentController::class, 'store'])->middleware('permission:edit_employees');
+        Route::delete('employees/{employee}/documents/{document}', [EmployeeDocumentController::class, 'destroy'])->middleware('permission:edit_employees');
         Route::get('employees/{employee}/documents/{document}/download', [EmployeeDocumentController::class, 'download']);
 
         Route::get('employees/{employee}/education', [EmployeeEducationController::class, 'index']);
-        Route::post('employees/{employee}/education', [EmployeeEducationController::class, 'store']);
-        Route::put('employees/{employee}/education/{education}', [EmployeeEducationController::class, 'update']);
-        Route::delete('employees/{employee}/education/{education}', [EmployeeEducationController::class, 'destroy']);
+        Route::post('employees/{employee}/education', [EmployeeEducationController::class, 'store'])->middleware('permission:edit_employees');
+        Route::put('employees/{employee}/education/{education}', [EmployeeEducationController::class, 'update'])->middleware('permission:edit_employees');
+        Route::delete('employees/{employee}/education/{education}', [EmployeeEducationController::class, 'destroy'])->middleware('permission:edit_employees');
 
         Route::get('employees/{employee}/experience', [EmployeeExperienceController::class, 'index']);
-        Route::post('employees/{employee}/experience', [EmployeeExperienceController::class, 'store']);
-        Route::put('employees/{employee}/experience/{experience}', [EmployeeExperienceController::class, 'update']);
-        Route::delete('employees/{employee}/experience/{experience}', [EmployeeExperienceController::class, 'destroy']);
+        Route::post('employees/{employee}/experience', [EmployeeExperienceController::class, 'store'])->middleware('permission:edit_employees');
+        Route::put('employees/{employee}/experience/{experience}', [EmployeeExperienceController::class, 'update'])->middleware('permission:edit_employees');
+        Route::delete('employees/{employee}/experience/{experience}', [EmployeeExperienceController::class, 'destroy'])->middleware('permission:edit_employees');
 
         // Employee Allowances and Deductions
         Route::get('employees/{employee}/allowances-deductions', [EmployeeAllowanceDeductionController::class, 'index']);
-        Route::post('employees/{employee}/allowances-deductions', [EmployeeAllowanceDeductionController::class, 'store']);
-        Route::put('employees/{employee}/allowances-deductions/{allowanceDeduction}', [EmployeeAllowanceDeductionController::class, 'update']);
-        Route::delete('employees/{employee}/allowances-deductions/{allowanceDeduction}', [EmployeeAllowanceDeductionController::class, 'destroy']);
+        Route::post('employees/{employee}/allowances-deductions', [EmployeeAllowanceDeductionController::class, 'store'])->middleware('permission:edit_employees');
+        Route::put('employees/{employee}/allowances-deductions/{allowanceDeduction}', [EmployeeAllowanceDeductionController::class, 'update'])->middleware('permission:edit_employees');
+        Route::delete('employees/{employee}/allowances-deductions/{allowanceDeduction}', [EmployeeAllowanceDeductionController::class, 'destroy'])->middleware('permission:edit_employees');
 
         Route::get('attendance/fingerprint-config', [AttendanceController::class, 'fingerprintConfig']);
         Route::put('attendance/fingerprint-config', [AttendanceController::class, 'updateFingerprintConfig']);
@@ -381,9 +392,11 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     // Savings & Deposits
     Route::get('savings-accounts/reports/ledger', [SavingsAccountController::class, 'ledgerReport']);
     Route::get('savings-accounts/reports/deposit-growth', [SavingsAccountController::class, 'depositGrowthReport']);
+    Route::get('savings-accounts/reports/account-type', [SavingsAccountController::class, 'accountTypeReport']);
     Route::get('savings-accounts/reports/maturity', [SavingsAccountController::class, 'maturityReport']);
     Route::apiResource('savings-accounts', SavingsAccountController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
     Route::get('savings-accounts/{account}/transactions', [SavingsAccountController::class, 'transactions']);
+    Route::delete('savings-accounts/{account}/transactions/{transaction}', [SavingsAccountController::class, 'destroyTransaction']);
     Route::post('savings-accounts/{account}/deposit', [SavingsAccountController::class, 'deposit']);
     Route::post('savings-accounts/{account}/withdraw', [SavingsAccountController::class, 'withdraw']);
 

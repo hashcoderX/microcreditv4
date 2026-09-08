@@ -556,6 +556,123 @@ class SavingsAccountController extends Controller
         ]);
     }
 
+    public function accountTypeReport(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'from_date' => ['nullable', 'date'],
+            'to_date' => ['nullable', 'date'],
+            'account_type' => ['nullable', 'in:' . implode(',', self::ACCOUNT_TYPES)],
+            'status' => ['nullable', 'in:active,dormant,closed'],
+            'search' => ['nullable', 'string', 'max:120'],
+        ]);
+
+        $baseQuery = SavingsAccountTransaction::query()
+            ->join('savings_accounts', 'savings_accounts.id', '=', 'savings_account_transactions.savings_account_id')
+            ->leftJoin('customers', 'customers.id', '=', 'savings_accounts.customer_id');
+
+        $branchId = $this->scopedBranchId($request);
+        if ($branchId !== null) {
+            $baseQuery->where('savings_accounts.branch_id', $branchId);
+        }
+
+        if (!empty($validated['from_date'])) {
+            $baseQuery->whereDate('savings_account_transactions.transaction_date', '>=', $validated['from_date']);
+        }
+
+        if (!empty($validated['to_date'])) {
+            $baseQuery->whereDate('savings_account_transactions.transaction_date', '<=', $validated['to_date']);
+        }
+
+        if (!empty($validated['account_type'])) {
+            $baseQuery->whereRaw(
+                'LOWER(savings_accounts.account_type) = ?',
+                [strtolower(trim((string) $validated['account_type']))]
+            );
+        }
+
+        if (!empty($validated['status'])) {
+            $baseQuery->whereRaw(
+                'LOWER(savings_accounts.status) = ?',
+                [strtolower(trim((string) $validated['status']))]
+            );
+        }
+
+        if (!empty($validated['search'])) {
+            $search = trim((string) $validated['search']);
+            $baseQuery->where(function ($query) use ($search) {
+                $query
+                    ->where('savings_accounts.account_number', 'like', "%{$search}%")
+                    ->orWhere('customers.customer_code', 'like', "%{$search}%")
+                    ->orWhere('customers.first_name', 'like', "%{$search}%")
+                    ->orWhere('customers.last_name', 'like', "%{$search}%")
+                    ->orWhere('customers.phone', 'like', "%{$search}%")
+                    ->orWhere('savings_account_transactions.reference_no', 'like', "%{$search}%")
+                    ->orWhere('savings_account_transactions.note', 'like', "%{$search}%");
+            });
+        }
+
+        $summaryQuery = clone $baseQuery;
+
+        $totalDepositAmount = (float) ((clone $summaryQuery)
+            ->whereIn('savings_account_transactions.transaction_type', ['deposit', 'interest_credit'])
+            ->sum('savings_account_transactions.amount') ?: 0);
+
+        $totalWithdrawalAmount = (float) ((clone $summaryQuery)
+            ->where('savings_account_transactions.transaction_type', 'withdrawal')
+            ->sum('savings_account_transactions.amount') ?: 0);
+
+        $rows = (clone $baseQuery)
+            ->selectRaw('LOWER(savings_accounts.account_type) as account_type')
+            ->selectRaw('COUNT(*) as total_transactions')
+            ->selectRaw("SUM(CASE WHEN savings_account_transactions.transaction_type IN ('deposit','interest_credit') THEN 1 ELSE 0 END) as deposit_transactions")
+            ->selectRaw("SUM(CASE WHEN savings_account_transactions.transaction_type = 'withdrawal' THEN 1 ELSE 0 END) as withdrawal_transactions")
+            ->selectRaw("SUM(CASE WHEN savings_account_transactions.transaction_type IN ('deposit','interest_credit') THEN savings_account_transactions.amount ELSE 0 END) as total_deposits")
+            ->selectRaw("SUM(CASE WHEN savings_account_transactions.transaction_type = 'withdrawal' THEN savings_account_transactions.amount ELSE 0 END) as total_withdrawals")
+            ->selectRaw('COUNT(DISTINCT savings_account_transactions.savings_account_id) as accounts_count')
+            ->groupBy('account_type')
+            ->orderBy('account_type')
+            ->get();
+
+        $reportRows = $rows->map(function ($row) {
+            $depositAmount = round((float) ($row->total_deposits ?? 0), 2);
+            $withdrawalAmount = round((float) ($row->total_withdrawals ?? 0), 2);
+
+            return [
+                'account_type' => (string) ($row->account_type ?: 'unknown'),
+                'accounts_count' => (int) ($row->accounts_count ?? 0),
+                'total_transactions' => (int) ($row->total_transactions ?? 0),
+                'deposit_transactions' => (int) ($row->deposit_transactions ?? 0),
+                'withdrawal_transactions' => (int) ($row->withdrawal_transactions ?? 0),
+                'total_deposits' => $depositAmount,
+                'total_withdrawals' => $withdrawalAmount,
+                'net_movement' => round($depositAmount - $withdrawalAmount, 2),
+            ];
+        })->values();
+
+        $summary = [
+            'account_types_count' => (int) $reportRows->count(),
+            'accounts_touched' => (int) ((clone $summaryQuery)
+                ->distinct('savings_account_transactions.savings_account_id')
+                ->count('savings_account_transactions.savings_account_id')),
+            'total_transactions' => (int) ((clone $summaryQuery)->count()),
+            'total_deposits' => round($totalDepositAmount, 2),
+            'total_withdrawals' => round($totalWithdrawalAmount, 2),
+            'net_movement' => round($totalDepositAmount - $totalWithdrawalAmount, 2),
+        ];
+
+        return response()->json([
+            'summary' => $summary,
+            'rows' => $reportRows,
+            'filters' => [
+                'from_date' => $validated['from_date'] ?? null,
+                'to_date' => $validated['to_date'] ?? null,
+                'account_type' => $validated['account_type'] ?? null,
+                'status' => $validated['status'] ?? null,
+                'search' => $validated['search'] ?? null,
+            ],
+        ]);
+    }
+
     public function maturityReport(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -759,6 +876,93 @@ class SavingsAccountController extends Controller
             'account' => $account->fresh('customer:id,customer_code,first_name,last_name,phone'),
             'transaction' => $transaction,
         ], 201);
+    }
+
+    public function destroyTransaction(Request $request, int $id, int $transactionId): JsonResponse
+    {
+        if (!$this->isSuperAdminUser($request->user())) {
+            return response()->json([
+                'message' => 'Only superadmin can delete transactions.',
+            ], 403);
+        }
+
+        $account = $this->resolveAccountOrFail($request, $id);
+
+        $deletedTransaction = null;
+        $updatedAccount = null;
+
+        DB::transaction(function () use ($account, $transactionId, &$deletedTransaction, &$updatedAccount): void {
+            $lockedAccount = SavingsAccount::query()
+                ->where('id', (int) $account->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $target = SavingsAccountTransaction::query()
+                ->where('savings_account_id', (int) $lockedAccount->id)
+                ->where('id', $transactionId)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$target) {
+                abort(response()->json([
+                    'message' => 'Transaction not found for selected account.',
+                ], 404));
+            }
+
+            $orderedRows = SavingsAccountTransaction::query()
+                ->where('savings_account_id', (int) $lockedAccount->id)
+                ->orderBy('transaction_date')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+
+            $runningBalance = round((float) ($lockedAccount->opening_deposit ?? 0), 2);
+
+            foreach ($orderedRows as $row) {
+                if ((int) $row->id === (int) $target->id) {
+                    continue;
+                }
+
+                $before = $runningBalance;
+                $amount = round((float) ($row->amount ?? 0), 2);
+                $type = strtolower(trim((string) ($row->transaction_type ?? '')));
+
+                if (in_array($type, ['deposit', 'interest_credit'], true)) {
+                    $runningBalance = round($runningBalance + $amount, 2);
+                } elseif ($type === 'withdrawal') {
+                    if ($amount > $runningBalance) {
+                        abort(response()->json([
+                            'message' => 'Cannot delete this transaction because later withdrawals would become invalid.',
+                        ], 422));
+                    }
+                    $runningBalance = round($runningBalance - $amount, 2);
+                }
+
+                $row->balance_before = number_format($before, 2, '.', '');
+                $row->balance_after = number_format($runningBalance, 2, '.', '');
+                $row->save();
+            }
+
+            $deletedTransaction = [
+                'id' => (int) $target->id,
+                'transaction_type' => (string) $target->transaction_type,
+                'amount' => round((float) ($target->amount ?? 0), 2),
+                'transaction_date' => $target->transaction_date,
+            ];
+
+            $target->delete();
+
+            $lockedAccount->balance = number_format($runningBalance, 2, '.', '');
+            $lockedAccount->save();
+
+            $updatedAccount = $lockedAccount->fresh('customer:id,customer_code,first_name,last_name,phone');
+        });
+
+        return response()->json([
+            'message' => 'Transaction deleted successfully.',
+            'account' => $updatedAccount,
+            'deleted_transaction' => $deletedTransaction,
+        ]);
     }
 
     private function findCustomerByCodeOrSerial(string $input): ?Customer

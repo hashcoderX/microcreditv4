@@ -12,12 +12,20 @@ return new class extends Migration
             return;
         }
 
+        if (DB::getDriverName() === 'sqlite') {
+            return;
+        }
+
         DB::statement("ALTER TABLE customers MODIFY employment_type VARCHAR(120) NULL");
     }
 
     public function down(): void
     {
         if (!Schema::hasColumn('customers', 'employment_type')) {
+            return;
+        }
+
+        if (DB::getDriverName() === 'sqlite') {
             return;
         }
 

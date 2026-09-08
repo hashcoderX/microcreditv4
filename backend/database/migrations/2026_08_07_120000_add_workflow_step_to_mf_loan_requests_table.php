@@ -9,6 +9,8 @@ return new class extends Migration
 {
     public function up(): void
     {
+        $currentTimestampSql = DB::getDriverName() === 'sqlite' ? 'CURRENT_TIMESTAMP' : 'NOW()';
+
         Schema::table('mf_loan_requests', function (Blueprint $table) {
             if (!Schema::hasColumn('mf_loan_requests', 'workflow_step')) {
                 $table->unsignedTinyInteger('workflow_step')->default(1)->after('status');
@@ -22,14 +24,14 @@ return new class extends Migration
         DB::table('mf_loan_requests')
             ->whereNull('workflow_step_updated_at')
             ->update([
-                'workflow_step_updated_at' => DB::raw('COALESCE(updated_at, created_at, NOW())'),
+                'workflow_step_updated_at' => DB::raw("COALESCE(updated_at, created_at, {$currentTimestampSql})"),
             ]);
 
         DB::table('mf_loan_requests')
             ->whereIn('status', ['approved', 'released', 'closed'])
             ->update([
                 'workflow_step' => 14,
-                'workflow_step_updated_at' => DB::raw('COALESCE(updated_at, created_at, NOW())'),
+                'workflow_step_updated_at' => DB::raw("COALESCE(updated_at, created_at, {$currentTimestampSql})"),
             ]);
 
         DB::table('mf_loan_requests')
@@ -39,7 +41,7 @@ return new class extends Migration
             })
             ->update([
                 'workflow_step' => 1,
-                'workflow_step_updated_at' => DB::raw('COALESCE(updated_at, created_at, NOW())'),
+                'workflow_step_updated_at' => DB::raw("COALESCE(updated_at, created_at, {$currentTimestampSql})"),
             ]);
     }
 

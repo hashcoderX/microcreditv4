@@ -222,10 +222,10 @@ export default function NewLoanRequestPage() {
     tone: "primary",
     action: null,
   });
-  const [principal, setPrincipal] = useState("1000000");
-  const [annualRate, setAnnualRate] = useState("18");
+  const [principal, setPrincipal] = useState("");
+  const [annualRate, setAnnualRate] = useState("");
   const [interestRateType, setInterestRateType] = useState<"fixed" | "reducing">("fixed");
-  const [tenureMonths, setTenureMonths] = useState("36");
+  const [tenureMonths, setTenureMonths] = useState("");
   const [frequency, setFrequency] = useState<"monthly" | "weekly">("monthly");
   const [customerDetails, setCustomerDetails] = useState<CustomerDetails>({
     customerNo: "",
@@ -1112,6 +1112,16 @@ export default function NewLoanRequestPage() {
     if (!Number.isFinite(principalAmount) || !Number.isFinite(totalPayable)) return 0;
     return Number(Math.max(totalPayable - principalAmount, 0).toFixed(2));
   }, [principal, calculation.totalPayable]);
+
+  const principalAmount = Number(principal);
+  const tenureValue = Number(tenureMonths);
+  const annualRateValue = Number(annualRate);
+  const hasPrincipalAmount = Number.isFinite(principalAmount) && principalAmount > 0;
+  const hasTenure = Number.isFinite(tenureValue) && tenureValue > 0;
+  const hasAnnualRate = Number.isFinite(annualRateValue) && annualRateValue > 0;
+  const hasInstallment = Number.isFinite(calculation.installmentAmount) && calculation.installmentAmount > 0;
+  const hasTotalInterest = Number.isFinite(totalInterest) && totalInterest > 0;
+  const hasTotalPayable = Number.isFinite(calculation.totalPayable) && calculation.totalPayable > 0;
 
   const progressStep = useMemo(() => {
     if (isSubmitted) return 5;
@@ -2015,12 +2025,25 @@ export default function NewLoanRequestPage() {
                   ×
                 </button>
               </WidgetCloseGate>
-              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-700">Draft Dashboard</p>
-              <div className="mt-1 flex items-center justify-between gap-3">
-                <h3 className="text-xl font-extrabold text-slate-900">TD Speed Draft Summary</h3>
-                <AvatarChip label={customerDetails.fullName || selectedProduct?.name || "TD"} />
+              <div className="rounded-2xl border border-cyan-100 bg-gradient-to-br from-cyan-50 via-white to-emerald-50 px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-cyan-800">Draft Dashboard</p>
+                    <h3 className="mt-1 text-xl font-extrabold text-slate-900">Loan Request Snapshot</h3>
+                    <p className="mt-1 text-sm text-slate-600">A live summary appears here as you complete loan details.</p>
+                  </div>
+                  <AvatarChip label={customerDetails.fullName || selectedProduct?.name || "TD"} />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {selectedProduct?.name ? (
+                    <Badge className="border-cyan-200 bg-white text-cyan-800">{selectedProduct.name}</Badge>
+                  ) : null}
+                  {customerDetails.customerNo ? (
+                    <Badge className="border-emerald-200 bg-white text-emerald-800">{customerDetails.customerNo}</Badge>
+                  ) : null}
+                  <Badge className="border-slate-200 bg-white text-slate-700">Step {progressStep} / 5</Badge>
+                </div>
               </div>
-              <p className="text-sm text-slate-600 mt-1">Review your draft facility before submitting your application.</p>
 
               {loanProductsLoading ? (
                 <div className="mt-4 space-y-3">
@@ -2031,62 +2054,69 @@ export default function NewLoanRequestPage() {
               ) : (
                 <>
                   <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <Card className="p-3 bg-gradient-to-br from-cyan-50 to-blue-50 border-cyan-200">
-                      <div className="flex items-start justify-between">
-                        <p className="text-xs font-semibold text-cyan-800">Loan Amount</p>
-                        <CircleDollarSign className="h-4 w-4 text-cyan-700" />
-                      </div>
-                      <p className="mt-2 text-2xl font-extrabold text-cyan-900">LKR {formatAmount(Number(principal || 0))}</p>
-                      <Badge className="mt-2 border-cyan-200 bg-cyan-100 text-cyan-800">Primary</Badge>
-                    </Card>
+                    {hasPrincipalAmount ? (
+                      <Card className="p-3 bg-gradient-to-br from-cyan-50 to-blue-50 border-cyan-200">
+                        <div className="flex items-start justify-between">
+                          <p className="text-xs font-semibold text-cyan-800">Loan Amount</p>
+                          <CircleDollarSign className="h-4 w-4 text-cyan-700" />
+                        </div>
+                        <p className="mt-2 text-2xl font-extrabold text-cyan-900">LKR {formatAmount(principalAmount)}</p>
+                      </Card>
+                    ) : null}
 
-                    <Card className="p-3">
-                      <div className="flex items-start justify-between">
-                        <p className="text-xs font-semibold text-slate-700">Loan Period</p>
-                        <CalendarDays className="h-4 w-4 text-slate-500" />
-                      </div>
-                      <p className="mt-2 text-lg font-bold text-slate-900">{tenureMonths || "0"} Months</p>
-                    </Card>
+                    {hasTenure ? (
+                      <Card className="p-3">
+                        <div className="flex items-start justify-between">
+                          <p className="text-xs font-semibold text-slate-700">Loan Period</p>
+                          <CalendarDays className="h-4 w-4 text-slate-500" />
+                        </div>
+                        <p className="mt-2 text-lg font-bold text-slate-900">{tenureMonths} Months</p>
+                      </Card>
+                    ) : null}
 
-                    <Card className="p-3 border-emerald-200 bg-emerald-50">
-                      <div className="flex items-start justify-between">
-                        <p className="text-xs font-semibold text-emerald-800">Monthly Installment</p>
-                        <Wallet className="h-4 w-4 text-emerald-700" />
-                      </div>
-                      <p className="mt-2 text-2xl font-extrabold text-emerald-900">LKR {formatAmount(calculation.installmentAmount)}</p>
-                    </Card>
+                    {hasInstallment ? (
+                      <Card className="p-3 border-emerald-200 bg-emerald-50">
+                        <div className="flex items-start justify-between">
+                          <p className="text-xs font-semibold text-emerald-800">Monthly Installment</p>
+                          <Wallet className="h-4 w-4 text-emerald-700" />
+                        </div>
+                        <p className="mt-2 text-2xl font-extrabold text-emerald-900">LKR {formatAmount(calculation.installmentAmount)}</p>
+                      </Card>
+                    ) : null}
 
-                    <Card className="p-3">
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs font-semibold text-slate-700">Interest Rate</p>
-                        <TooltipText text="Effective rate is shown when provided by product configuration.">
-                          <Info className="h-4 w-4 text-slate-500" />
-                        </TooltipText>
-                      </div>
-                      <p className="mt-2 text-lg font-bold text-slate-900">{annualRate || "0"}% / year</p>
-                      <p className="text-xs text-slate-500">Effective: Not available</p>
-                    </Card>
+                    {hasAnnualRate ? (
+                      <Card className="p-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold text-slate-700">Interest Rate</p>
+                          <TooltipText text="Annual rate configured for this draft.">
+                            <Info className="h-4 w-4 text-slate-500" />
+                          </TooltipText>
+                        </div>
+                        <p className="mt-2 text-lg font-bold text-slate-900">{annualRate}% / year</p>
+                        <p className="text-xs text-slate-500 capitalize">{interestRateType} basis</p>
+                      </Card>
+                    ) : null}
 
-                    <Card className="p-3">
-                      <p className="text-xs font-semibold text-slate-700">Processing Fee</p>
-                      <p className="mt-2 text-lg font-bold text-slate-900">Not available</p>
-                    </Card>
+                    {hasTotalInterest ? (
+                      <Card className="p-3">
+                        <p className="text-xs font-semibold text-slate-700">Total Interest</p>
+                        <p className="mt-2 text-lg font-bold text-slate-900">LKR {formatAmount(totalInterest)}</p>
+                      </Card>
+                    ) : null}
 
-                    <Card className="p-3">
-                      <p className="text-xs font-semibold text-slate-700">Total Interest</p>
-                      <p className="mt-2 text-lg font-bold text-slate-900">LKR {formatAmount(totalInterest)}</p>
-                    </Card>
-
-                    <Card className="p-3">
-                      <p className="text-xs font-semibold text-slate-700">Total Amount Payable</p>
-                      <p className="mt-2 text-lg font-bold text-slate-900">LKR {formatAmount(calculation.totalPayable)}</p>
-                    </Card>
-
-                    <Card className="p-3">
-                      <p className="text-xs font-semibold text-slate-700">Available Credit Limit</p>
-                      <p className="mt-2 text-lg font-bold text-slate-900">Not available</p>
-                    </Card>
+                    {hasTotalPayable ? (
+                      <Card className="p-3">
+                        <p className="text-xs font-semibold text-slate-700">Total Amount Payable</p>
+                        <p className="mt-2 text-lg font-bold text-slate-900">LKR {formatAmount(calculation.totalPayable)}</p>
+                      </Card>
+                    ) : null}
                   </div>
+
+                  {!hasPrincipalAmount && !hasTenure && !hasInstallment && !hasAnnualRate && !hasTotalInterest && !hasTotalPayable ? (
+                    <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-600">
+                      Start filling Loan Details to generate your live draft summary.
+                    </div>
+                  ) : null}
 
                   <Separator className="my-4" />
 

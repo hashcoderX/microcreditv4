@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Http\Request;
 use App\Models\Candidate;
 use App\Models\Company;
 use App\Models\Customer;
@@ -24,7 +25,11 @@ Route::get('/media/candidates/{candidate}/photo', function (Candidate $candidate
     return response()->file(Storage::disk('public')->path($candidate->photo_path));
 })->name('candidate.photo');
 
-Route::get('/media/customers/{customer}/photo', function (Customer $customer) {
+Route::get('/media/customers/{customer}/photo', function (Request $request, Customer $customer) {
+    if (!$request->hasValidSignature()) {
+        abort(403);
+    }
+
     if (!$customer->photo_path) {
         abort(404);
     }

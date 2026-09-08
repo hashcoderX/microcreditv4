@@ -13,6 +13,7 @@ type CreditModule = {
   color: string;
   bgColor: string;
   path: string;
+  hidden?: boolean;
 };
 
 type AuthRole = {
@@ -149,6 +150,7 @@ export default function CreditDashboardPage() {
       color: 'from-lime-500 to-emerald-500',
       bgColor: 'from-lime-50 to-emerald-50',
       path: '/dashboard/loan',
+      hidden: true,
     },
     {
       key: 'credit_widget_finance_management',
@@ -160,7 +162,7 @@ export default function CreditDashboardPage() {
     },
     {
       key: 'credit_widget_microfinance',
-      name: 'Microfinance (Micro Loans)',
+      name: 'Loan And Microfinance',
       icon: '🏦',
       color: 'from-blue-500 to-cyan-500',
       bgColor: 'from-blue-50 to-cyan-50',
@@ -176,7 +178,7 @@ export default function CreditDashboardPage() {
     },
   ];
 
-  const visibleModules = modules.filter((module) => !hiddenWidgetKeys.has(module.key));
+  const visibleModules = modules.filter((module) => !module.hidden && !hiddenWidgetKeys.has(module.key));
   const showOfficeCollectionCard = !hiddenWidgetKeys.has(officeCollectionWidgetKey);
 
   if (!token || loadingWidgets) {

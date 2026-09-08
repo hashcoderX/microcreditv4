@@ -17,7 +17,9 @@ return new class extends Migration
             }
         });
 
-        DB::statement('ALTER TABLE employee_wallet_cash_handovers MODIFY cash_account_id BIGINT UNSIGNED NULL');
+        if (DB::getDriverName() === 'mysql') {
+            DB::statement('ALTER TABLE employee_wallet_cash_handovers MODIFY cash_account_id BIGINT UNSIGNED NULL');
+        }
     }
 
     public function down(): void
@@ -31,6 +33,8 @@ return new class extends Migration
 
         });
 
-        DB::statement('ALTER TABLE employee_wallet_cash_handovers MODIFY cash_account_id BIGINT UNSIGNED NOT NULL');
+        if (DB::getDriverName() === 'mysql') {
+            DB::statement('ALTER TABLE employee_wallet_cash_handovers MODIFY cash_account_id BIGINT UNSIGNED NOT NULL');
+        }
     }
 };

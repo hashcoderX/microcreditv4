@@ -558,6 +558,11 @@ export default function BranchDashboardPage() {
             description: 'Upcoming and completed deposit maturities.',
             path: withBranch('/dashboard/savings-deposits/reports/maturity'),
           },
+          {
+            title: 'Account Type Report',
+            description: 'Account-type-wise transactions with date range filtering.',
+            path: withBranch('/dashboard/savings-deposits/reports/account-type'),
+          },
         ],
       },
       {

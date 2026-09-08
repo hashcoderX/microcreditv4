@@ -175,6 +175,7 @@ export default function Employees() {
   const widgetPrefix = 'hrm_employees_widget_';
   const [token, setToken] = useState('');
   const [isAdminUser, setIsAdminUser] = useState(false);
+  const [isSuperAdminUser, setIsSuperAdminUser] = useState(false);
   const [canRestoreEmployeeWidgets, setCanRestoreEmployeeWidgets] = useState(false);
   const [isRestoringWidgets, setIsRestoringWidgets] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -685,12 +686,31 @@ export default function Employees() {
         .map((row) => row.trim().toLowerCase())
         .filter(Boolean);
 
+      const normalizedRoleNames = roleNames.map((roleName) =>
+        roleName.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+      );
+
+      const isSystemAdminFlag =
+        user?.is_system_admin === true ||
+        user?.is_system_admin === 1 ||
+        user?.is_system_admin === '1';
+
+      const userEmail = String(user?.email || '').trim().toLowerCase();
+
       const isAdmin = roleNames.some((roleName) =>
         roleName.includes('admin') || roleName.includes('super admin') || roleName.includes('md')
       );
 
-      const isSuperAdminOrAdmin = roleNames.some((roleName) => {
-        const normalizedRole = roleName.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+      const isSuperAdmin =
+        isSystemAdminFlag ||
+        userEmail === 'superadmin@softcodelk.com' ||
+        normalizedRoleNames.some((normalizedRole) =>
+          normalizedRole === 'super admin' ||
+          normalizedRole === 'superadmin' ||
+          normalizedRole.includes('super admin')
+        );
+
+      const isSuperAdminOrAdmin = normalizedRoleNames.some((normalizedRole) => {
         return (
           normalizedRole === 'admin' ||
           normalizedRole === 'super admin' ||
@@ -700,10 +720,12 @@ export default function Employees() {
       });
 
       setIsAdminUser(isAdmin);
+      setIsSuperAdminUser(isSuperAdmin);
       setCanRestoreEmployeeWidgets(isSuperAdminOrAdmin);
     } catch (error) {
       console.error('Error fetching authenticated user:', error);
       setIsAdminUser(false);
+      setIsSuperAdminUser(false);
       setCanRestoreEmployeeWidgets(false);
     }
   };
@@ -1163,6 +1185,11 @@ export default function Employees() {
   };
 
   const editEmployeeWallet = async (employee: Employee) => {
+    if (!isSuperAdminUser) {
+      showNotice('Permission denied', 'Only super admin can edit employee wallet values.', 'error');
+      return;
+    }
+
     if (!employee.wallet) {
       showNotice('Wallet not found', 'This employee does not have a wallet yet.', 'error');
       return;
@@ -1184,6 +1211,11 @@ export default function Employees() {
 
   const submitEmployeeWallet = async () => {
     if (!token || !walletEmployee) return;
+
+    if (walletModalMode === 'edit' && !isSuperAdminUser) {
+      showNotice('Permission denied', 'Only super admin can edit employee wallet values.', 'error');
+      return;
+    }
 
     const parsed = walletModalValue.trim() === '' ? 0 : Number(walletModalValue);
     if (!Number.isFinite(parsed) || parsed < 0) {
@@ -1900,7 +1932,7 @@ export default function Employees() {
                       </td>
                     )}
                     {showActionsColumn && (
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium relative z-20">
+                      <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium relative ${openMenuFor === employee.id ? 'z-[700]' : 'z-20'}`}>
                       <div className="relative" ref={openMenuFor === employee.id ? menuRef : undefined}>
                         <button
                           aria-haspopup="menu"
@@ -1923,7 +1955,7 @@ export default function Employees() {
                             id={`row-menu-${employee.id}`}
                             role="menu"
                             tabIndex={-1}
-                            className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-[300]"
+                            className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-[800]"
                           >
                             <button role="menuitem" onClick={() => { openProfile(employee); setOpenMenuFor(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-left text-gray-700 hover:bg-gray-50">
                               <span className="w-4 h-4">👁️</span>
@@ -1957,10 +1989,20 @@ export default function Employees() {
                                 <span>Make Wallet</span>
                               </button>
                             )}
-                            {!!employee.wallet && isAdminUser && (
-                              <button role="menuitem" onClick={() => { editEmployeeWallet(employee); setOpenMenuFor(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-left text-gray-700 hover:bg-gray-50">
+                            {!!employee.wallet && (
+                              <button
+                                role="menuitem"
+                                onClick={() => {
+                                  if (!isSuperAdminUser) return;
+                                  editEmployeeWallet(employee);
+                                  setOpenMenuFor(null);
+                                }}
+                                disabled={!isSuperAdminUser}
+                                className={`w-full flex items-center gap-2 px-3 py-2 text-left ${isSuperAdminUser ? 'text-gray-700 hover:bg-gray-50' : 'text-gray-400 cursor-not-allowed'}`}
+                                title={isSuperAdminUser ? 'Edit wallet value' : 'Only super admin can edit wallet value'}
+                              >
                                 <span className="w-4 h-4">💰</span>
-                                <span>Edit Wallet Value</span>
+                                <span>Edit Wallet Value {isSuperAdminUser ? '' : '(Super Admin only)'}</span>
                               </button>
                             )}
                             <button role="menuitem" onClick={() => { handleEdit(employee); setOpenMenuFor(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-left text-gray-700 hover:bg-gray-50">
@@ -2003,7 +2045,7 @@ export default function Employees() {
                                 <svg className={`w-4 h-4 transform transition ${openAttendanceFor === employee.id ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor"><path d="M6 6l6 4-6 4V6z"/></svg>
                               </button>
                               {openAttendanceFor === employee.id && (
-                                <div role="menu" tabIndex={-1} className="absolute right-full top-0 mr-1 w-44 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-[310]">
+                                <div role="menu" tabIndex={-1} className="absolute right-full top-0 mr-1 w-44 bg-white border border-gray-200 rounded-xl shadow-lg py-1 z-[810]">
                                   <button role="menuitem" onClick={() => { markAttendance(employee, 'present'); setOpenMenuFor(null); setOpenAttendanceFor(null); }} className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-50">Mark Present</button>
                                   <button role="menuitem" onClick={() => { markAttendance(employee, 'absent'); setOpenMenuFor(null); setOpenAttendanceFor(null); }} className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-50">Mark Absent</button>
                                 </div>

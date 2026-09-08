@@ -17,6 +17,7 @@ class UpdateCustomerRequest extends FormRequest
         $customerId = (int) ($this->route('customer')?->id ?? 0);
 
         return [
+            'customer_code' => ['nullable', 'string', 'max:60', Rule::unique('customers', 'customer_code')->ignore($customerId)],
             'full_name_with_initials' => ['sometimes', 'string', 'max:255'],
             'first_name' => ['sometimes', 'string', 'max:120'],
             'last_name' => ['sometimes', 'string', 'max:120'],

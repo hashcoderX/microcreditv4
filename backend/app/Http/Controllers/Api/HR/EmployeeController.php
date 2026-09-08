@@ -12,6 +12,7 @@ use App\Models\EmployeeWalletCashHandover;
 use App\Models\User;
 use App\Models\UserDashboardWidget;
 use App\Http\Requests\StoreEmployeeRequest;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -316,6 +317,78 @@ class EmployeeController extends Controller
         ]);
     }
 
+    private function scopedBranchId(Request $request): ?int
+    {
+        $requestedBranchId = (int) ($request->get('branch_id', 0));
+
+        if ($this->canOverrideWalletApprovals($request->user())) {
+            return $requestedBranchId > 0 ? $requestedBranchId : null;
+        }
+
+        $user = $request->user();
+        $branchId = (int) ($user?->branch_id ?? 0);
+        if ($branchId <= 0) {
+            $branchId = (int) (optional($user?->employee)->branch_id ?? 0);
+        }
+
+        return $branchId > 0 ? $branchId : null;
+    }
+
+    private function scopedTenantId(Request $request): ?int
+    {
+        $requestedTenantId = (int) ($request->get('tenant_id', 0));
+
+        if ($this->canOverrideWalletApprovals($request->user())) {
+            return $requestedTenantId > 0 ? $requestedTenantId : null;
+        }
+
+        $user = $request->user();
+        $tenantId = (int) ($user?->tenant_id ?? 0);
+        if ($tenantId <= 0) {
+            $tenantId = (int) (optional($user?->employee)->tenant_id ?? 0);
+        }
+
+        if ($tenantId <= 0) {
+            $tenantId = (int) ($user?->branch_id ?? 0);
+        }
+
+        return $tenantId > 0 ? $tenantId : null;
+    }
+
+    private function applyEmployeeAccessScope(Builder $query, Request $request): Builder
+    {
+        $branchId = $this->scopedBranchId($request);
+        if ($branchId !== null) {
+            $query->where('branch_id', $branchId);
+        }
+
+        $tenantId = $this->scopedTenantId($request);
+        if ($tenantId !== null) {
+            $query->where('tenant_id', $tenantId);
+        }
+
+        return $query;
+    }
+
+    private function canAccessEmployee(Request $request, Employee $employee): bool
+    {
+        if ($this->canOverrideWalletApprovals($request->user())) {
+            return true;
+        }
+
+        $branchId = $this->scopedBranchId($request);
+        if ($branchId !== null && (int) ($employee->branch_id ?? 0) !== $branchId) {
+            return false;
+        }
+
+        $tenantId = $this->scopedTenantId($request);
+        if ($tenantId !== null && (int) ($employee->tenant_id ?? 0) !== $tenantId) {
+            return false;
+        }
+
+        return true;
+    }
+
     private function canManageEmployees(Request $request, string $permission): bool
     {
         $user = $request->user();
@@ -438,18 +511,8 @@ class EmployeeController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $tenantId = $request->input('tenant_id');
-        $branchId = $request->input('branch_id');
-
         $query = Employee::with(['department', 'designation', 'branch', 'wallet', 'user:id,employee_id,email']);
-
-        if ($tenantId) {
-            $query->where('tenant_id', $tenantId);
-        }
-
-        if ($branchId) {
-            $query->where('branch_id', $branchId);
-        }
+        $this->applyEmployeeAccessScope($query, $request);
 
         $employees = $query->paginate(15);
 
@@ -464,12 +527,56 @@ class EmployeeController extends Controller
         if (!$this->canManageEmployees($request, 'create_employees')) {
             return response()->json(['message' => 'You do not have permission to create employees.'], 403);
         }
+
+        $actor = $request->user();
+        if (!$actor) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
         $validated = $request->validated();
+        $actorEmployee = $actor->employee;
+
+        $requestedBranchId = (int) ($validated['branch_id'] ?? 0);
+        $requestedTenantId = (int) ($request->input('tenant_id', 0));
+
+        $resolvedBranchId = (int) ($actor->branch_id ?? optional($actorEmployee)->branch_id ?? 0);
+        $resolvedTenantId = (int) ($actor->tenant_id ?? optional($actorEmployee)->tenant_id ?? 0);
+
+        if ($this->canOverrideWalletApprovals($actor)) {
+            if ($requestedBranchId > 0) {
+                $resolvedBranchId = $requestedBranchId;
+            }
+
+            if ($requestedTenantId > 0) {
+                $resolvedTenantId = $requestedTenantId;
+            }
+        }
+
+        if ($resolvedBranchId <= 0 && $requestedBranchId > 0) {
+            $resolvedBranchId = $requestedBranchId;
+        }
+
+        // Backward compatibility: in this codebase, tenant and branch commonly share company IDs.
+        if ($resolvedTenantId <= 0 && $resolvedBranchId > 0) {
+            $resolvedTenantId = $resolvedBranchId;
+        }
+
+        if ($resolvedTenantId <= 0 || !Company::query()->whereKey($resolvedTenantId)->exists()) {
+            return response()->json([
+                'message' => 'Unable to resolve a valid tenant for this user. Please contact an administrator.',
+            ], 422);
+        }
+
+        if ($resolvedBranchId <= 0 || !Company::query()->whereKey($resolvedBranchId)->exists()) {
+            return response()->json([
+                'message' => 'Unable to resolve a valid branch for this employee. Please choose a valid branch.',
+            ], 422);
+        }
 
         // Set default values for required fields
         $employeeData = [
-            'tenant_id' => 1, // Default tenant
-            'branch_id' => $validated['branch_id'],
+            'tenant_id' => $resolvedTenantId,
+            'branch_id' => $resolvedBranchId,
             'first_name' => $validated['first_name'],
             'last_name' => $validated['last_name'],
             'email' => $validated['email'],
@@ -521,7 +628,7 @@ class EmployeeController extends Controller
 
         $employeeData['employee_code'] = $candidateCode;
 
-        $employee = DB::transaction(function () use ($validated, $employeeData) {
+        $employee = DB::transaction(function () use ($validated, $employeeData, $resolvedBranchId) {
             $employee = Employee::create($employeeData);
 
             // Create user account for the employee.
@@ -530,7 +637,7 @@ class EmployeeController extends Controller
                 'email' => trim((string) $validated['user_id']),
                 'password' => Hash::make($validated['password']),
                 'employee_id' => $employee->id,
-                'branch_id' => $validated['branch_id'],
+                'branch_id' => $resolvedBranchId,
                 'designation_id' => $validated['designation_id'],
             ]);
 
@@ -561,8 +668,12 @@ class EmployeeController extends Controller
     /**
      * Display the specified resource.
      */
-    public function show(Employee $employee): JsonResponse
+    public function show(Request $request, Employee $employee): JsonResponse
     {
+        if (!$this->canAccessEmployee($request, $employee)) {
+            return response()->json(['message' => 'Employee not found.'], 404);
+        }
+
         return response()->json($employee->load(['department', 'designation', 'branch', 'wallet', 'user:id,employee_id,email']));
     }
 
@@ -1486,6 +1597,10 @@ class EmployeeController extends Controller
      */
     public function createWallet(Request $request, Employee $employee): JsonResponse
     {
+        if (!$this->canAccessEmployee($request, $employee)) {
+            return response()->json(['message' => 'Employee not found.'], 404);
+        }
+
         if (!$this->canManageEmployees($request, 'edit_employees') && !$this->canManageEmployees($request, 'create_employees')) {
             return response()->json(['message' => 'You do not have permission to create employee wallets.'], 403);
         }
@@ -1529,6 +1644,10 @@ class EmployeeController extends Controller
      */
     public function updateWallet(Request $request, Employee $employee): JsonResponse
     {
+        if (!$this->canAccessEmployee($request, $employee)) {
+            return response()->json(['message' => 'Employee not found.'], 404);
+        }
+
         $user = $request->user();
         if (!$user || !$user->isSystemAdmin()) {
             return response()->json(['message' => 'Only administrators can edit wallet values.'], 403);
@@ -1583,6 +1702,10 @@ class EmployeeController extends Controller
      */
     public function update(Request $request, Employee $employee): JsonResponse
     {
+        if (!$this->canAccessEmployee($request, $employee)) {
+            return response()->json(['message' => 'Employee not found.'], 404);
+        }
+
         if (!$this->canManageEmployees($request, 'edit_employees')) {
             return response()->json(['message' => 'You do not have permission to edit employees.'], 403);
         }
@@ -1690,9 +1813,12 @@ class EmployeeController extends Controller
     /**
      * Remove the specified resource from storage.
      */
-    public function destroy(Employee $employee): JsonResponse
+    public function destroy(Request $request, Employee $employee): JsonResponse
     {
-        $request = request();
+        if (!$this->canAccessEmployee($request, $employee)) {
+            return response()->json(['message' => 'Employee not found.'], 404);
+        }
+
         if (!$this->canManageEmployees($request, 'delete_employees')) {
             return response()->json(['message' => 'You do not have permission to delete employees.'], 403);
         }

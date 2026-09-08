@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreCustomerRequest;
 use App\Http\Requests\UpdateCustomerRequest;
+use App\Models\Company;
 use App\Models\Customer;
 use App\Models\SavingsAccount;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,6 +17,106 @@ use Illuminate\Support\Facades\Storage;
 
 class CustomerController extends Controller
 {
+    private function isAdminUser(?object $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if (method_exists($user, 'isSystemAdmin') && $user->isSystemAdmin()) {
+            return true;
+        }
+
+        $designationName = strtolower(trim((string) optional($user->designation)->name));
+        if ($designationName !== '' && str_contains($designationName, 'admin')) {
+            return true;
+        }
+
+        if (!method_exists($user, 'roles')) {
+            return false;
+        }
+
+        foreach ($user->roles()->pluck('name') as $roleName) {
+            $normalized = strtolower(trim((string) $roleName));
+            if ($normalized !== '' && str_contains($normalized, 'admin')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function scopedBranchId(Request $request): ?int
+    {
+        $requestedBranchId = (int) ($request->get('branch_id', 0));
+
+        if ($this->isAdminUser($request->user())) {
+            return $requestedBranchId > 0 ? $requestedBranchId : null;
+        }
+
+        $branchId = (int) ($request->user()?->branch_id ?? 0);
+        return $branchId > 0 ? $branchId : null;
+    }
+
+    private function scopedTenantId(Request $request): ?int
+    {
+        $requestedTenantId = (int) ($request->get('tenant_id', 0));
+
+        if ($this->isAdminUser($request->user())) {
+            return $requestedTenantId > 0 ? $requestedTenantId : null;
+        }
+
+        $user = $request->user();
+        $tenantId = (int) ($user?->tenant_id ?? 0);
+
+        if ($tenantId <= 0) {
+            $tenantId = (int) (optional($user?->employee)->tenant_id ?? 0);
+        }
+
+        return $tenantId > 0 ? $tenantId : null;
+    }
+
+    private function applyCustomerAccessScope(Builder $query, Request $request): Builder
+    {
+        $branchId = $this->scopedBranchId($request);
+        if ($branchId !== null) {
+            $query->where('branch_id', $branchId);
+        }
+
+        $tenantId = $this->scopedTenantId($request);
+        if ($tenantId !== null) {
+            $query->where('tenant_id', $tenantId);
+        }
+
+        return $query;
+    }
+
+    private function applySavingsAccountCustomerAccessScope($query, Request $request)
+    {
+        return $query->whereHas('customer', function (Builder $customerQuery) use ($request) {
+            $this->applyCustomerAccessScope($customerQuery, $request);
+        });
+    }
+
+    private function canAccessCustomer(Request $request, Customer $customer): bool
+    {
+        if ($this->isAdminUser($request->user())) {
+            return true;
+        }
+
+        $branchId = $this->scopedBranchId($request);
+        if ($branchId !== null && (int) ($customer->branch_id ?? 0) !== $branchId) {
+            return false;
+        }
+
+        $tenantId = $this->scopedTenantId($request);
+        if ($tenantId !== null && (int) ($customer->tenant_id ?? 0) !== $tenantId) {
+            return false;
+        }
+
+        return true;
+    }
+
     public function generateCode(): JsonResponse
     {
         return response()->json([
@@ -25,12 +127,8 @@ class CustomerController extends Controller
     public function index(Request $request): JsonResponse
     {
         $perPage = (int)($request->get('per_page', 20));
-        $branchId = (int)($request->get('branch_id', 0));
         $query = Customer::query();
-
-        if ($branchId > 0) {
-            $query->where('branch_id', $branchId);
-        }
+        $this->applyCustomerAccessScope($query, $request);
 
         if ($search = $request->get('q')) {
             $query->where(function ($q) use ($search) {
@@ -49,12 +147,54 @@ class CustomerController extends Controller
     public function store(StoreCustomerRequest $request): JsonResponse
     {
         $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'message' => 'Unauthenticated.',
+            ], 401);
+        }
+
+        $employee = $user->employee;
+        $isAdmin = $this->isAdminUser($user);
+        $requestedBranchId = (int) $request->input('branch_id', 0);
+        $requestedTenantId = (int) $request->input('tenant_id', 0);
+
+        $resolvedBranchId = (int) ($user->branch_id ?? optional($employee)->branch_id ?? 0);
+        $resolvedTenantId = (int) ($user->tenant_id ?? optional($employee)->tenant_id ?? 0);
+
+        if ($isAdmin) {
+            if ($requestedBranchId > 0) {
+                $resolvedBranchId = $requestedBranchId;
+            }
+
+            if ($requestedTenantId > 0) {
+                $resolvedTenantId = $requestedTenantId;
+            }
+        }
+
+        // Backward compatibility: many legacy users are branch-scoped without an explicit tenant_id.
+        if ($resolvedTenantId <= 0 && $resolvedBranchId > 0) {
+            $resolvedTenantId = $resolvedBranchId;
+        }
+
+        if ($resolvedTenantId <= 0 || !Company::query()->whereKey($resolvedTenantId)->exists()) {
+            return response()->json([
+                'message' => 'Unable to resolve a valid tenant for this user. Please contact an administrator.',
+            ], 422);
+        }
+
+        if ($resolvedBranchId <= 0 || !Company::query()->whereKey($resolvedBranchId)->exists()) {
+            return response()->json([
+                'message' => 'Unable to resolve a valid branch for this user. Please contact an administrator.',
+            ], 422);
+        }
+
         $payload = $this->normalizeNicPayload($request->validated());
         $payload = $this->applyFullNamePayload($payload);
         $payload = $this->attachOnboardingPayload($payload);
         $payload = $this->applyRiskSummary($payload);
-        $payload['tenant_id'] = $user->tenant_id ?? 1;
-        $payload['branch_id'] = $user->branch_id ?? 1;
+        $payload['tenant_id'] = $resolvedTenantId;
+        $payload['branch_id'] = $resolvedBranchId;
         $payload['created_by'] = $user->id;
 
         $submittedCode = strtoupper(trim((string) ($payload['customer_code'] ?? '')));
@@ -90,22 +230,23 @@ class CustomerController extends Controller
             ]);
             
             return response()->json([
-                'message' => 'Failed to create customer',
-                'error' => $e->getMessage(),
-                'line' => $e->getLine(),
-                'file' => basename($e->getFile())
+                'message' => 'Failed to create customer. Please contact support if the issue persists.',
             ], 500);
         }
     }
 
-    public function show(Customer $customer): JsonResponse
+    public function show(Request $request, Customer $customer): JsonResponse
     {
+        if (!$this->canAccessCustomer($request, $customer)) {
+            return response()->json(['message' => 'Customer not found.'], 404);
+        }
+
         return response()->json($customer);
     }
 
-    public function findByCode(string $customerCode): JsonResponse
+    public function findByCode(Request $request, string $customerCode): JsonResponse
     {
-        $customer = $this->findCustomerByCodeOrSerial($customerCode);
+        $customer = $this->findCustomerByCodeOrSerial($customerCode, $request);
 
         if (!$customer) {
             return response()->json([
@@ -149,7 +290,11 @@ class CustomerController extends Controller
                 ->with(['customer'])
                 ->whereIn('account_type', ['savings', 'investment'])
                 ->whereRaw('UPPER(account_number) = ?', [$normalized])
-                ->orderByRaw("CASE WHEN account_type = 'savings' THEN 0 ELSE 1 END")
+                ->orderByRaw("CASE WHEN account_type = 'savings' THEN 0 ELSE 1 END");
+
+            $this->applySavingsAccountCustomerAccessScope($account, $request);
+
+            $account = $account
                 ->first();
 
             if ($account && $account->customer) {
@@ -157,11 +302,17 @@ class CustomerController extends Controller
                 $matchedSavingsAccountNo = (string) ($account->account_number ?? '');
             }
         } elseif ($searchBy === 'passport') {
-            $customer = Customer::query()
+            $customerQuery = Customer::query();
+            $this->applyCustomerAccessScope($customerQuery, $request);
+
+            $customer = $customerQuery
                 ->whereRaw('UPPER(passport_no) = ?', [$normalized])
                 ->first();
         } else {
-            $customer = Customer::query()
+            $customerQuery = Customer::query();
+            $this->applyCustomerAccessScope($customerQuery, $request);
+
+            $customer = $customerQuery
                 ->where(function ($query) use ($normalized) {
                     $query->whereRaw('UPPER(nic_passport) = ?', [$normalized])
                         ->orWhereRaw('UPPER(old_nic) = ?', [$normalized]);
@@ -224,6 +375,7 @@ class CustomerController extends Controller
         }
 
         $query = Customer::query();
+        $this->applyCustomerAccessScope($query, $request);
 
         if ($nic !== '') {
             $query->where(function ($q) use ($nic) {
@@ -342,7 +494,7 @@ class CustomerController extends Controller
             'photo' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
         ]);
 
-        $customer = $this->findCustomerByCodeOrSerial($customerCode);
+        $customer = $this->findCustomerByCodeOrSerial($customerCode, $request);
         if (!$customer) {
             return response()->json([
                 'message' => 'Customer not found for provided Customer No.',
@@ -359,9 +511,9 @@ class CustomerController extends Controller
         return response()->json($customer->fresh());
     }
 
-    public function photoByCode(string $customerCode)
+    public function photoByCode(Request $request, string $customerCode)
     {
-        $customer = $this->findCustomerByCodeOrSerial($customerCode);
+        $customer = $this->findCustomerByCodeOrSerial($customerCode, $request);
         if (!$customer || empty($customer->photo_path)) {
             return response()->noContent();
         }
@@ -376,12 +528,12 @@ class CustomerController extends Controller
     private function createDefaultSavingsAccountForCustomer(Customer $customer, ?object $user): void
     {
         $accountType = 'savings';
-        $tenantId = (int) ($customer->tenant_id ?? ($user->tenant_id ?? 1));
-        $branchId = $customer->branch_id ?? ($user->branch_id ?? null);
+        $tenantId = (int) ($customer->tenant_id ?? ($user->tenant_id ?? optional($user->employee)->tenant_id ?? 0));
+        $branchId = (int) ($customer->branch_id ?? ($user->branch_id ?? optional($user->employee)->branch_id ?? 0));
         $createdBy = $customer->created_by ?? ($user->id ?? null);
 
         SavingsAccount::create([
-            'tenant_id' => $tenantId > 0 ? $tenantId : 1,
+            'tenant_id' => $tenantId,
             'branch_id' => $branchId,
             'customer_id' => (int) $customer->id,
             'account_number' => $this->generateSavingsAccountNumber($accountType),
@@ -422,41 +574,58 @@ class CustomerController extends Controller
         return $candidate;
     }
 
-    private function findCustomerByCodeOrSerial(string $input): ?Customer
+    private function findCustomerByCodeOrSerial(string $input, ?Request $request = null): ?Customer
     {
         $normalized = strtoupper(trim($input));
         if ($normalized === '') {
             return null;
         }
 
+        $customerQuery = Customer::query();
+        if ($request) {
+            $this->applyCustomerAccessScope($customerQuery, $request);
+        }
+
         if (ctype_digit($normalized) && strlen($normalized) <= 5) {
             $serial = str_pad($normalized, 5, '0', STR_PAD_LEFT);
-            return Customer::where('customer_code', 'like', '%-' . $serial)
+            return (clone $customerQuery)
+                ->where('customer_code', 'like', '%-' . $serial)
                 ->orderByDesc('id')
                 ->first();
         }
 
-        $byCode = Customer::whereRaw('UPPER(customer_code) = ?', [$normalized])->first();
+        $byCode = (clone $customerQuery)
+            ->whereRaw('UPPER(customer_code) = ?', [$normalized])
+            ->first();
         if ($byCode) {
             return $byCode;
         }
 
-        $bySavingsAccount = SavingsAccount::query()
+        $savingsAccountQuery = SavingsAccount::query()
             ->with('customer')
             ->whereIn('account_type', ['savings', 'investment'])
             ->whereRaw('UPPER(account_number) = ?', [$normalized])
-            ->orderByRaw("CASE WHEN account_type = 'savings' THEN 0 ELSE 1 END")
-            ->first();
+            ->orderByRaw("CASE WHEN account_type = 'savings' THEN 0 ELSE 1 END");
+
+        if ($request) {
+            $this->applySavingsAccountCustomerAccessScope($savingsAccountQuery, $request);
+        }
+
+        $bySavingsAccount = $savingsAccountQuery->first();
         if ($bySavingsAccount?->customer) {
             return $bySavingsAccount->customer;
         }
 
-        $byOldNic = Customer::whereRaw('UPPER(old_nic) = ?', [$normalized])->first();
+        $byOldNic = (clone $customerQuery)
+            ->whereRaw('UPPER(old_nic) = ?', [$normalized])
+            ->first();
         if ($byOldNic) {
             return $byOldNic;
         }
 
-        return Customer::whereRaw('UPPER(nic_passport) = ?', [$normalized])->first();
+        return (clone $customerQuery)
+            ->whereRaw('UPPER(nic_passport) = ?', [$normalized])
+            ->first();
     }
 
     private function resolvePrimarySavingsAccountNumber(Customer $customer): ?string
@@ -475,6 +644,10 @@ class CustomerController extends Controller
 
     public function update(UpdateCustomerRequest $request, Customer $customer): JsonResponse
     {
+        if (!$this->canAccessCustomer($request, $customer)) {
+            return response()->json(['message' => 'Customer not found.'], 404);
+        }
+
         $payload = $this->normalizeNicPayload($request->validated());
         $payload = $this->applyFullNamePayload($payload);
         $payload = $this->attachOnboardingPayload($payload);
@@ -686,8 +859,12 @@ class CustomerController extends Controller
         return 'High Risk';
     }
 
-    public function destroy(Customer $customer): JsonResponse
+    public function destroy(Request $request, Customer $customer): JsonResponse
     {
+        if (!$this->canAccessCustomer($request, $customer)) {
+            return response()->json(['message' => 'Customer not found.'], 404);
+        }
+
         $customer->delete();
         return response()->json(null, 204);
     }

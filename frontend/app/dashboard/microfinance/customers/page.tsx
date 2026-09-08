@@ -12,6 +12,8 @@ import { Bell, Download, Eye, Search, SlidersHorizontal, Users, UserPlus, UserRo
 type Customer = {
   id: number;
   branch_id?: number | string;
+  branch_name?: string;
+  branch?: { id?: number | string; name?: string } | null;
   first_name?: string;
   last_name?: string;
   full_name?: string;
@@ -47,6 +49,11 @@ type AuthUser = {
   branch_id?: number | null;
   designation?: { id: number; name: string } | null;
   roles?: Array<{ id?: number; name?: string }>;
+};
+
+type BranchOption = {
+  id: number;
+  name: string;
 };
 
 type RegisterStepId = 1 | 2;
@@ -358,6 +365,7 @@ export default function MicrofinanceCustomersPage() {
     message: '',
   });
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [branches, setBranches] = useState<BranchOption[]>([]);
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [pageSize, setPageSize] = useState(12);
@@ -595,6 +603,17 @@ export default function MicrofinanceCustomersPage() {
   const filteredCustomers = useMemo(() => {
     const keyword = query.trim().toLowerCase();
 
+    const resolveBranchLabel = (customer: Customer): string => {
+      const directName = String(customer.branch?.name || customer.branch_name || '').trim();
+      if (directName) return directName;
+
+      const branchId = Number(customer.branch?.id || customer.branch_id || 0);
+      if (!branchId) return '';
+
+      const matched = branches.find((branch) => Number(branch.id) === branchId);
+      return matched?.name || `Branch #${branchId}`;
+    };
+
     return customers.filter((customer) => {
       if (statusFilter !== 'all' && (customer.status || '').toLowerCase() !== statusFilter) {
         return false;
@@ -610,6 +629,7 @@ export default function MicrofinanceCustomersPage() {
         customer.customer_code || '',
         customer.nic_passport || '',
         customer.phone || customer.contact_number || '',
+        resolveBranchLabel(customer),
         customer.current_address || '',
         customer.permanent_address || '',
       ]
@@ -618,7 +638,7 @@ export default function MicrofinanceCustomersPage() {
 
       return haystack.includes(keyword);
     });
-  }, [customers, query, statusFilter]);
+  }, [customers, branches, query, statusFilter]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -696,10 +716,16 @@ export default function MicrofinanceCustomersPage() {
     () =>
       filteredCustomers.map((customer) => {
         const fullName = `${customer.first_name || ''} ${customer.last_name || ''}`.trim();
+        const branchNameDirect = String(customer.branch?.name || customer.branch_name || '').trim();
+        const branchId = Number(customer.branch?.id || customer.branch_id || 0);
+        const branchNameLookup = branchId > 0
+          ? branches.find((branch) => Number(branch.id) === branchId)?.name || `Branch #${branchId}`
+          : '';
         return {
           id: customer.id,
           name: customer.full_name || customer.name || fullName || `Customer #${customer.id}`,
           customerNo: customer.customer_code || '',
+          branch: branchNameDirect || branchNameLookup || 'N/A',
           nic: customer.nic_passport || '',
           phone: customer.phone || customer.contact_number || '',
           status: customer.status || '',
@@ -708,7 +734,7 @@ export default function MicrofinanceCustomersPage() {
           documentCompletionScore: `${getDocumentCompletionScore(customer)}%`,
         };
       }),
-    [filteredCustomers]
+    [filteredCustomers, branches]
   );
 
   const downloadCsv = () => {
@@ -722,11 +748,12 @@ export default function MicrofinanceCustomersPage() {
       return text;
     };
 
-    const headersRow = ['ID', 'Customer Name', 'Customer No', 'NIC', 'Phone', 'Address', 'Status', 'Completion Score', 'Document Completion'];
+    const headersRow = ['ID', 'Customer Name', 'Customer No', 'Branch', 'NIC', 'Phone', 'Address', 'Status', 'Completion Score', 'Document Completion'];
     const bodyRows = exportRows.map((row) => [
       row.id,
       row.name,
       row.customerNo,
+      row.branch,
       row.nic,
       row.phone,
       row.address,
@@ -765,11 +792,12 @@ export default function MicrofinanceCustomersPage() {
 
     autoTable(doc, {
       startY: 64,
-      head: [['ID', 'Customer Name', 'Customer No', 'NIC', 'Phone', 'Address', 'Status', 'Completion Score', 'Document Completion']],
+      head: [['ID', 'Customer Name', 'Customer No', 'Branch', 'NIC', 'Phone', 'Address', 'Status', 'Completion Score', 'Document Completion']],
       body: exportRows.map((row) => [
         row.id,
         row.name,
         row.customerNo,
+        row.branch,
         row.nic,
         row.phone,
         row.address,
@@ -1124,10 +1152,39 @@ export default function MicrofinanceCustomersPage() {
     }
   }, [headers, isFieldOfficer, authUser?.branch_id]);
 
+  const loadBranches = useCallback(async () => {
+    try {
+      const response = await axios.get(`${API_BASE}/companies`, {
+        headers,
+      });
+
+      const rows = Array.isArray(response.data)
+        ? response.data
+        : Array.isArray(response.data?.data)
+          ? response.data.data
+          : [];
+
+      const mapped = rows
+        .map((row: unknown) => {
+          const item = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+          return {
+            id: Number(item.id || 0),
+            name: String(item.name || '').trim(),
+          };
+        })
+        .filter((branch: BranchOption) => branch.id > 0 && branch.name !== '');
+
+      setBranches(mapped);
+    } catch {
+      setBranches([]);
+    }
+  }, [headers]);
+
   useEffect(() => {
     if (!token) return;
     void loadCustomers();
-  }, [token, loadCustomers]);
+    void loadBranches();
+  }, [token, loadCustomers, loadBranches]);
 
   const openProfileModal = async (customerId: number) => {
     setProfileLoading(true);
@@ -1934,6 +1991,7 @@ export default function MicrofinanceCustomersPage() {
                     <th className="px-4 py-3 font-semibold">ID</th>
                     <th className="px-4 py-3 font-semibold">Customer Name</th>
                     <th className="px-4 py-3 font-semibold">Customer No</th>
+                    <th className="px-4 py-3 font-semibold">Branch</th>
                     <th className="px-4 py-3 font-semibold">NIC</th>
                     <th className="px-4 py-3 font-semibold">Phone</th>
                     <th className="px-4 py-3 font-semibold">Address</th>
@@ -1949,6 +2007,13 @@ export default function MicrofinanceCustomersPage() {
                     const displayName = customer.full_name || customer.name || fullName || `Customer #${customer.id}`;
                     const phone = customer.phone || customer.contact_number || 'N/A';
                     const address = customer.current_address || customer.permanent_address || 'N/A';
+                    const branchId = Number(customer.branch?.id || customer.branch_id || 0);
+                    const branchName = String(customer.branch?.name || customer.branch_name || '').trim();
+                    const resolvedBranch =
+                      branchName ||
+                      (branchId > 0
+                        ? branches.find((branch) => Number(branch.id) === branchId)?.name || `Branch #${branchId}`
+                        : 'N/A');
                     const status = (customer.status || 'unknown').toLowerCase();
                     const completionScore = getProfileCompletionScore(customer);
                     const documentScore = getDocumentCompletionScore(customer);
@@ -1960,6 +2025,7 @@ export default function MicrofinanceCustomersPage() {
                         <td className="px-4 py-3 font-medium text-gray-900">{customer.id}</td>
                         <td className="px-4 py-3 font-semibold text-slate-800">{displayName}</td>
                         <td className="px-4 py-3">{customer.customer_code || 'N/A'}</td>
+                        <td className="px-4 py-3">{resolvedBranch}</td>
                         <td className="px-4 py-3">{customer.nic_passport || 'N/A'}</td>
                         <td className="px-4 py-3">{phone}</td>
                         <td className="px-4 py-3 min-w-[220px]">{address}</td>

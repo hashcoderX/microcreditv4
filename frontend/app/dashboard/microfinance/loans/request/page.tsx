@@ -656,6 +656,11 @@ export default function RequestLoanPage() {
       .replace(/\s+/g, ' ')
       .trim();
 
+  const isRecoveryDesignation = (designation: string) => {
+    const normalized = normalizeText(designation);
+    return normalized.includes('recovery manager') || normalized.includes('recovery officer');
+  };
+
   const incomeGenerationActivityOptions = [
     'Trading',
     'Services',
@@ -962,6 +967,43 @@ export default function RequestLoanPage() {
     [managers, approvalBranchManagers]
   );
 
+  const recoveryTeamOptions = useMemo(() => {
+    const source = approvalEmployees.filter((employee) =>
+      isRecoveryDesignation(String(employee.designation || ''))
+    );
+
+    if (source.length === 0) {
+      return [] as ManagerOption[];
+    }
+
+    if (loggedInBranchId > 0) {
+      const byBranchId = source.filter((employee) => Number(employee.branch_id || 0) === loggedInBranchId);
+      if (byBranchId.length > 0) {
+        return byBranchId;
+      }
+    }
+
+    if (loggedInBranchName) {
+      const branchKey = normalizeText(loggedInBranchName);
+      const byBranchName = source.filter((employee) => normalizeText(employee.branch) === branchKey);
+      if (byBranchName.length > 0) {
+        return byBranchName;
+      }
+    }
+
+    return source;
+  }, [approvalEmployees, loggedInBranchId, loggedInBranchName]);
+
+  const primaryOfficerOptions = useMemo(
+    () => (form.loan_scope === 'direct_loan' ? recoveryTeamOptions : fieldOfficers),
+    [form.loan_scope, recoveryTeamOptions, fieldOfficers]
+  );
+
+  const requestedLoanEditOfficerOptions = useMemo(
+    () => (requestedLoanEditModal.form.loan_scope === 'direct_loan' ? recoveryTeamOptions : fieldOfficers),
+    [requestedLoanEditModal.form.loan_scope, recoveryTeamOptions, fieldOfficers]
+  );
+
   const hasSpecialLoanPermission = useMemo(() => {
     const keywords = ['admin', 'finance manager', 'branch manager', 'loan approver', 'special permission'];
     const designationName = normalizeText(String(authUser?.designation?.name || ''));
@@ -1227,6 +1269,7 @@ export default function RequestLoanPage() {
   const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
 
   useEffect(() => {
+    if (form.loan_scope === 'direct_loan') return;
     if (!isCollectionOfficer) return;
     if (fieldOfficers.length === 0) return;
 
@@ -1252,7 +1295,7 @@ export default function RequestLoanPage() {
             field_officer: matchedOfficer.name,
           }
     );
-  }, [isCollectionOfficer, fieldOfficers, authUser, authUserCandidateNames]);
+  }, [form.loan_scope, isCollectionOfficer, fieldOfficers, authUser, authUserCandidateNames]);
 
   useEffect(() => {
     if (!token) return;
@@ -2520,7 +2563,9 @@ export default function RequestLoanPage() {
       }
 
       if (!form.field_officer.trim()) {
-        return 'Please select a field officer to continue.';
+        return form.loan_scope === 'direct_loan'
+          ? 'Please select a recovery manager/officer to continue.'
+          : 'Please select a field officer to continue.';
       }
     }
 
@@ -2839,7 +2884,11 @@ export default function RequestLoanPage() {
 
     if (stepId === 2) {
       if (!modalForm.manager_name.trim()) return 'Please select a manager.';
-      if (!modalForm.field_officer.trim()) return 'Please select a field officer.';
+      if (!modalForm.field_officer.trim()) {
+        return modalForm.loan_scope === 'direct_loan'
+          ? 'Please select a recovery manager/officer.'
+          : 'Please select a field officer.';
+      }
       if (!modalForm.approval_employee_id) return 'Please select Request Approval To employee.';
     }
 
@@ -3195,6 +3244,8 @@ export default function RequestLoanPage() {
                           mf_route_id: 0,
                           mf_center_id: 0,
                           mf_group_id: 0,
+                          field_officer: '',
+                          group_leader: '',
                           customer_no: '',
                         }))
                       }
@@ -3278,16 +3329,24 @@ export default function RequestLoanPage() {
                     />
                   </div>
                   <div>
-                    <label className="fieldLabel">Field Officer *</label>
+                    <label className="fieldLabel">{form.loan_scope === 'direct_loan' ? 'Recovery Manager / Officer *' : 'Field Officer *'}</label>
                     <select
                       className="input"
                       value={form.field_officer}
                       onChange={(e) => setForm((p) => ({ ...p, field_officer: e.target.value }))}
                       required
-                      disabled={managersLoading || isCollectionOfficer}
+                      disabled={managersLoading || (isCollectionOfficer && form.loan_scope !== 'direct_loan')}
                     >
-                      <option value="">{managersLoading ? 'Loading Field Officers...' : 'Select Field Officer'}</option>
-                      {fieldOfficers.map((officer) => (
+                      <option value="">
+                        {managersLoading
+                          ? form.loan_scope === 'direct_loan'
+                            ? 'Loading Recovery Team...'
+                            : 'Loading Field Officers...'
+                          : form.loan_scope === 'direct_loan'
+                            ? 'Select Recovery Manager / Officer'
+                            : 'Select Field Officer'}
+                      </option>
+                      {primaryOfficerOptions.map((officer) => (
                         <option key={officer.id} value={officer.name}>
                           {officer.name}
                           {officer.designation || officer.branch
@@ -3317,10 +3376,12 @@ export default function RequestLoanPage() {
                       ))}
                     </select>
                   </div>
+                  {form.loan_scope !== 'direct_loan' && (
                   <div>
                     <label className="fieldLabel">Group Leader</label>
                     <input className="input" placeholder="Enter group leader name" value={form.group_leader} onChange={(e) => setForm((p) => ({ ...p, group_leader: e.target.value }))} />
                   </div>
+                  )}
                 </div>
               </div>
               )}
@@ -5035,6 +5096,8 @@ export default function RequestLoanPage() {
                           loan_scope: nextScope,
                           mf_center_id: nextScope === 'center_loan' ? prev.form.mf_center_id : 0,
                           mf_group_id: nextScope === 'center_loan' ? prev.form.mf_group_id : 0,
+                          field_officer: '',
+                          group_leader: nextScope === 'direct_loan' ? '' : prev.form.group_leader,
                         },
                       }));
                     }}>
@@ -5114,10 +5177,10 @@ export default function RequestLoanPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="fieldLabel">Field Officer *</label>
+                    <label className="fieldLabel">{requestedLoanEditModal.form.loan_scope === 'direct_loan' ? 'Recovery Manager / Officer *' : 'Field Officer *'}</label>
                     <select className="input" value={requestedLoanEditModal.form.field_officer} onChange={(e) => setRequestedLoanEditField('field_officer', e.target.value)}>
-                      <option value="">Select Field Officer</option>
-                      {fieldOfficers.map((officer) => (
+                      <option value="">{requestedLoanEditModal.form.loan_scope === 'direct_loan' ? 'Select Recovery Manager / Officer' : 'Select Field Officer'}</option>
+                      {requestedLoanEditOfficerOptions.map((officer) => (
                         <option key={`edit-officer-${officer.id}`} value={officer.name}>{officer.name}</option>
                       ))}
                     </select>
@@ -5131,10 +5194,12 @@ export default function RequestLoanPage() {
                       ))}
                     </select>
                   </div>
+                  {requestedLoanEditModal.form.loan_scope !== 'direct_loan' && (
                   <div>
                     <label className="fieldLabel">Group Leader</label>
                     <input className="input" value={requestedLoanEditModal.form.group_leader} onChange={(e) => setRequestedLoanEditField('group_leader', e.target.value)} />
                   </div>
+                  )}
                 </div>
               </div>
             )}

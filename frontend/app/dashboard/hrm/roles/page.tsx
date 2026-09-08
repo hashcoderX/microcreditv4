@@ -89,7 +89,7 @@ type DefaultRoleGroup = {
 
 const DEFAULT_ROLE_GROUPS: DefaultRoleGroup[] = [
   {
-    level: 'Level 1 - Board / Ownership',
+    level: 'Level 1 - Senior Management (Board / Ownership)',
     roles: [
       'Chairman / Chairperson',
       'Vice Chairman',
@@ -99,7 +99,7 @@ const DEFAULT_ROLE_GROUPS: DefaultRoleGroup[] = [
     ],
   },
   {
-    level: 'Level 2 - Executive Management',
+    level: 'Level 2 - Senior Management (Executive Management)',
     roles: [
       'Managing Director (MD)',
       'Chief Executive Officer (CEO)',

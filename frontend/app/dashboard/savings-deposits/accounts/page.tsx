@@ -36,10 +36,18 @@ import {
 type CustomerSummary = {
   id: number;
   customer_code?: string | null;
+  branch_id?: number | string | null;
+  branch_name?: string | null;
+  branch?: { id?: number | string | null; name?: string | null } | null;
   first_name?: string | null;
   last_name?: string | null;
   phone?: string | null;
   nic_passport?: string | null;
+};
+
+type BranchOption = {
+  id: number;
+  name: string;
 };
 
 type SavingsAccountRow = {
@@ -137,6 +145,7 @@ export default function SavingsOpenAccountPage() {
   const [customerSearchText, setCustomerSearchText] = useState('');
   const [searchingCustomers, setSearchingCustomers] = useState(false);
   const [customerResults, setCustomerResults] = useState<CustomerSummary[]>([]);
+  const [branches, setBranches] = useState<BranchOption[]>([]);
   const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
   const [accountType, setAccountType] = useState<SavingsAccountType>('savings');
   const [interestType, setInterestType] = useState<SavingsInterestType>(DEFAULT_INTEREST_BY_ACCOUNT.savings);
@@ -446,10 +455,49 @@ export default function SavingsOpenAccountPage() {
     }
   };
 
+  const loadBranches = async (authToken: string) => {
+    try {
+      const response = await axios.get('/api/companies', {
+        headers: { Authorization: `Bearer ${authToken}`, Accept: 'application/json' },
+      });
+
+      const rows = Array.isArray(response.data)
+        ? response.data
+        : Array.isArray(response.data?.data)
+          ? response.data.data
+          : [];
+
+      const mapped = rows
+        .map((row: unknown) => {
+          const item = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+          return {
+            id: Number(item.id || 0),
+            name: String(item.name || '').trim(),
+          };
+        })
+        .filter((branch: BranchOption) => branch.id > 0 && branch.name !== '');
+
+      setBranches(mapped);
+    } catch {
+      setBranches([]);
+    }
+  };
+
   useEffect(() => {
     if (!token) return;
     loadAccounts(token);
+    void loadBranches(token);
   }, [token]);
+
+  const resolvedCustomerBranch = useMemo(() => {
+    const directName = String(resolvedCustomer?.branch?.name || resolvedCustomer?.branch_name || '').trim();
+    if (directName) return directName;
+
+    const branchId = Number(resolvedCustomer?.branch?.id || resolvedCustomer?.branch_id || 0);
+    if (branchId <= 0) return 'Branch not assigned';
+
+    return branches.find((row) => Number(row.id) === branchId)?.name || `Branch #${branchId}`;
+  }, [resolvedCustomer, branches]);
 
   const handleAccountTypeChange = (nextType: SavingsAccountType) => {
     setAccountType(nextType);
@@ -959,6 +1007,7 @@ export default function SavingsOpenAccountPage() {
                           <p className="text-base font-bold text-slate-900 mt-0.5">
                             {resolvedCustomer.first_name} {resolvedCustomer.last_name}
                           </p>
+                          <p className="text-xs font-semibold text-emerald-700 mt-0.5">{resolvedCustomerBranch}</p>
                           <p className="text-sm text-slate-600 mt-1">
                             <span className="font-semibold text-slate-800">{resolvedCustomer.customer_code}</span>
                             {resolvedCustomer.nic_passport ? ` · NIC ${resolvedCustomer.nic_passport}` : ''}
@@ -1237,6 +1286,7 @@ export default function SavingsOpenAccountPage() {
                       ? `${resolvedCustomer.first_name} ${resolvedCustomer.last_name}`
                       : 'Not selected'}
                   </p>
+                  <p className="text-xs text-slate-600 mt-0.5">{resolvedCustomer ? resolvedCustomerBranch : 'Branch not assigned'}</p>
                 </div>
                 <div className="rounded-xl bg-slate-50 p-3">
                   <p className="text-[10px] font-bold uppercase text-slate-500">Product</p>

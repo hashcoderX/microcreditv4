@@ -442,6 +442,11 @@ export default function ReportsHubPage() {
             description: 'Upcoming and completed deposit maturities.',
             path: '/dashboard/savings-deposits/reports/maturity',
           },
+          {
+            title: 'Account Type Report',
+            description: 'Account-type-wise transactions with date range filtering.',
+            path: '/dashboard/savings-deposits/reports/account-type',
+          },
         ],
       },
       {
