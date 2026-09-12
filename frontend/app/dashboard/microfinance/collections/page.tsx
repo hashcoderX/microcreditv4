@@ -581,6 +581,30 @@ export default function CollectionManagementPage() {
     return map;
   }, [collections]);
 
+  const normalizeDateKey = (value?: string | null) => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    return raw.includes('T') ? raw.split('T')[0] : raw.slice(0, 10);
+  };
+
+  const todayCollectedByLoan = useMemo(() => {
+    const map = new Map<number, number>();
+    const todayKey = new Date().toISOString().slice(0, 10);
+
+    collections.forEach((row) => {
+      const loanId = Number(row.mf_loan_request_id || 0);
+      if (!loanId) return;
+
+      const collectedOn = normalizeDateKey(row.collection_date || '');
+      if (collectedOn !== todayKey) return;
+
+      const amount = Number(row.collected_amount || 0);
+      map.set(loanId, (map.get(loanId) || 0) + amount);
+    });
+
+    return map;
+  }, [collections]);
+
   const lastPayDateByLoan = useMemo(() => {
     const map = new Map<number, string>();
 
@@ -614,12 +638,6 @@ export default function CollectionManagementPage() {
     const totalPayable = Number(loan.refundable_amount || 0);
     const paidTotal = getPaidTotal(loan.id);
     return Math.max(totalPayable - paidTotal, 0);
-  };
-
-  const normalizeDateKey = (value?: string | null) => {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    return raw.includes('T') ? raw.split('T')[0] : raw.slice(0, 10);
   };
 
   const hasCollectionOnDate = (loanId: number, dateKey: string) => {
@@ -732,6 +750,8 @@ export default function CollectionManagementPage() {
     const projectedBalance = getProjectedArrearsBalance(loan);
     return Math.max(projectedBalance, 0);
   };
+
+  const getTodayCollected = (loanId: number) => todayCollectedByLoan.get(loanId) || 0;
 
   const formatDateDisplay = (value?: string | null) => {
     const raw = String(value || '').trim();
@@ -1190,6 +1210,11 @@ export default function CollectionManagementPage() {
   const highlightedPendingCount = currentLoanRecordRows.filter(
     (loan) => getLoanRecordRowState(loan, loanRecordHighlightDate) === 'pending'
   ).length;
+
+  const currentLoanRecordsCollectedTotal = useMemo(
+    () => currentLoanRecordRows.reduce((sum, loan) => sum + getPaidTotal(loan.id), 0),
+    [currentLoanRecordRows, paidTotalByLoan]
+  );
 
   const officeDebtAmount = useMemo(
     () =>
@@ -2571,6 +2596,7 @@ export default function CollectionManagementPage() {
                   : 'No records found for this collection mode.'}
             </div>
           ) : (
+            <>
             <div className="mt-4 overflow-x-auto rounded-2xl border border-cyan-100">
               <table className="min-w-full text-sm text-left text-slate-700 bg-white">
                 {activeMode === 'center' ? (
@@ -2587,6 +2613,7 @@ export default function CollectionManagementPage() {
                           {isColumnVisible('main_outstanding') && renderColumnHeader('main_outstanding', 'Outstanding')}
                           {isColumnVisible('main_arrears') && renderColumnHeader('main_arrears', 'Arrears')}
                           {isColumnVisible('main_extra_payment') && renderColumnHeader('main_extra_payment', 'Extra Payment')}
+                          {isColumnVisible('main_today_col') && renderColumnHeader('main_today_col', 'Today Col')}
                           {isColumnVisible('main_due_date') && renderColumnHeader('main_due_date', 'Due Date')}
                           {isColumnVisible('main_next_payment') && renderColumnHeader('main_next_payment', 'Next Payment')}
                           {isColumnVisible('main_action') && renderColumnHeader('main_action', 'Action')}
@@ -2640,6 +2667,9 @@ export default function CollectionManagementPage() {
                               )}
                               {isColumnVisible('main_extra_payment') && (
                                 <td className="px-3 py-2 text-violet-700 font-semibold">{getExtraPayment(loan).toFixed(2)}</td>
+                              )}
+                              {isColumnVisible('main_today_col') && (
+                                <td className="px-3 py-2 text-cyan-700 font-semibold">{getTodayCollected(loan.id).toFixed(2)}</td>
                               )}
                               {isColumnVisible('main_due_date') && <td className="px-3 py-2">{formatDateDisplay(loan.due_date)}</td>}
                               {isColumnVisible('main_next_payment') && <td className="px-3 py-2">{formatDateDisplay(loan.next_payment_date)}</td>}
@@ -2733,6 +2763,7 @@ export default function CollectionManagementPage() {
                           {isColumnVisible('route_outstanding') && renderColumnHeader('route_outstanding', 'Outstanding')}
                           {isColumnVisible('route_arrears') && renderColumnHeader('route_arrears', 'Arrears')}
                           {isColumnVisible('route_extra_payment') && renderColumnHeader('route_extra_payment', 'Extra Payment')}
+                          {isColumnVisible('route_today_col') && renderColumnHeader('route_today_col', 'Today Col')}
                           {isColumnVisible('route_due_date') && renderColumnHeader('route_due_date', 'Due Date')}
                           {isColumnVisible('route_next_payment') && renderColumnHeader('route_next_payment', 'Next Payment')}
                           {isColumnVisible('route_action') && renderColumnHeader('route_action', 'Action')}
@@ -2776,6 +2807,9 @@ export default function CollectionManagementPage() {
                               )}
                               {isColumnVisible('route_extra_payment') && (
                                 <td className="px-3 py-2 text-violet-700 font-semibold">{getExtraPayment(loan).toFixed(2)}</td>
+                              )}
+                              {isColumnVisible('route_today_col') && (
+                                <td className="px-3 py-2 text-cyan-700 font-semibold">{getTodayCollected(loan.id).toFixed(2)}</td>
                               )}
                               {isColumnVisible('route_due_date') && <td className="px-3 py-2">{formatDateDisplay(loan.due_date)}</td>}
                               {isColumnVisible('route_next_payment') && <td className="px-3 py-2">{formatDateDisplay(loan.next_payment_date)}</td>}
@@ -2830,6 +2864,7 @@ export default function CollectionManagementPage() {
                         {isColumnVisible('office_outstanding') && renderColumnHeader('office_outstanding', 'Outstanding')}
                         {isColumnVisible('office_arrears') && renderColumnHeader('office_arrears', 'Arrears')}
                         {isColumnVisible('office_extra_payment') && renderColumnHeader('office_extra_payment', 'Extra Payment')}
+                        {isColumnVisible('office_today_col') && renderColumnHeader('office_today_col', 'Today Col')}
                         {isColumnVisible('office_due_date') && renderColumnHeader('office_due_date', 'Due Date')}
                         {isColumnVisible('office_next_payment') && renderColumnHeader('office_next_payment', 'Next Payment')}
                         {isColumnVisible('office_status') && renderColumnHeader('office_status', 'Status')}
@@ -2865,6 +2900,9 @@ export default function CollectionManagementPage() {
                           {isColumnVisible('office_extra_payment') && (
                             <td className="px-3 py-2 text-violet-700 font-semibold">{getExtraPayment(loan).toFixed(2)}</td>
                           )}
+                          {isColumnVisible('office_today_col') && (
+                            <td className="px-3 py-2 text-cyan-700 font-semibold">{getTodayCollected(loan.id).toFixed(2)}</td>
+                          )}
                           {isColumnVisible('office_due_date') && <td className="px-3 py-2">{formatDateDisplay(loan.due_date)}</td>}
                           {isColumnVisible('office_next_payment') && <td className="px-3 py-2">{formatDateDisplay(loan.next_payment_date)}</td>}
                           {isColumnVisible('office_status') && (
@@ -2881,6 +2919,16 @@ export default function CollectionManagementPage() {
                 )}
               </table>
             </div>
+
+            {currentLoanRecordRows.length > 0 && (
+              <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Preview</p>
+                <p className="mt-1 text-sm font-bold text-emerald-900">
+                  Total Collected Amount: {currentLoanRecordsCollectedTotal.toFixed(2)}
+                </p>
+              </div>
+            )}
+            </>
           )}
         </div>
 
