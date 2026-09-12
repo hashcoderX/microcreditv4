@@ -418,6 +418,30 @@ export default function RepaymentReportPage() {
   const visibleSummaryCards = summaryCards.filter((card) => !hiddenWidgetKeys.has(card.key));
   const showRepaymentAccountsSection = !hiddenWidgetKeys.has(`${widgetPrefix}accounts_section`);
   const showCenterRepaymentSection = !hiddenWidgetKeys.has(`${widgetPrefix}center_section`);
+  const summaryCardStyles = [
+    'border-cyan-100 bg-gradient-to-br from-white via-cyan-50/30 to-cyan-100/40',
+    'border-slate-100 bg-gradient-to-br from-white via-slate-50 to-slate-100/70',
+    'border-emerald-100 bg-gradient-to-br from-white via-emerald-50/40 to-emerald-100/50',
+    'border-rose-100 bg-gradient-to-br from-white via-rose-50/35 to-rose-100/45',
+    'border-indigo-100 bg-gradient-to-br from-white via-indigo-50/35 to-indigo-100/45',
+    'border-amber-100 bg-gradient-to-br from-white via-amber-50/35 to-amber-100/45',
+  ];
+
+  const dateColumnMonthYear = useMemo(() => {
+    const normalized = String(reportMonth || '').trim();
+    const matched = normalized.match(/^(\d{4})-(\d{2})$/);
+    if (matched) {
+      return { year: matched[1], month: matched[2] };
+    }
+
+    const now = new Date();
+    return {
+      year: String(now.getFullYear()),
+      month: String(now.getMonth() + 1).padStart(2, '0'),
+    };
+  }, [reportMonth]);
+
+  const dateColumnLabel = `Date - ___/${dateColumnMonthYear.month}/${dateColumnMonthYear.year}`;
 
   const formatDate = (value: string) => {
     if (!value || value === '-') return '-';
@@ -589,43 +613,227 @@ export default function RepaymentReportPage() {
     doc.save(`repayment-report-${getReportFileDate()}.pdf`);
   };
 
+  const handleDownloadCenterCsv = () => {
+    const headers = [
+      'Center',
+      'Group',
+      'Member No',
+      'Member Name',
+      'Loan Amount',
+      'Due Amount',
+      'Total Balance',
+      'Arrears',
+      `Paid Amount (${dateColumnMonthYear.month}/${dateColumnMonthYear.year})`,
+      'Correction',
+    ];
+
+    const escapeCsv = (value: string | number) => {
+      const text = String(value ?? '');
+      if (text.includes(',') || text.includes('"') || text.includes('\n')) {
+        return `"${text.replace(/"/g, '""')}"`;
+      }
+      return text;
+    };
+
+    const body: Array<Array<string | number>> = [];
+
+    centerGroupedRows.forEach((centerBlock) => {
+      body.push([`Center: ${centerBlock.centerName} (${centerBlock.centerCode})`, '', '', '', '', '', '', '', '', '']);
+
+      Array.from(centerBlock.groupMap.entries()).forEach(([groupKey, groupRows]) => {
+        const [groupCode, groupName] = groupKey.split('__');
+
+        body.push([`Group ${groupCode} - ${groupName}`, '', '', '', '', '', '', '', '', '']);
+
+        groupRows.forEach((row) => {
+          body.push([
+            centerBlock.centerName,
+            groupName,
+            row.customerNo,
+            row.customerName,
+            formatMoney(row.loanAmount),
+            formatMoney(row.dueAmount),
+            formatMoney(row.pendingAmount),
+            formatMoney(row.arrearsBalance),
+            formatMoney(monthPaidByLoan.get(row.loanId) || 0),
+            '',
+          ]);
+        });
+      });
+    });
+
+    const csv = [headers, ...body].map((line) => line.map(escapeCsv).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `center-repayment-report-${getReportFileDate()}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const handleDownloadCenterPdf = () => {
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+
+    doc.setFontSize(18);
+    doc.text(`Repayment Report - ${getReportFileDate()}`, 40, 42);
+
+    const head = [
+      [
+        { content: 'Member No', rowSpan: 2 },
+        { content: 'Member Name', rowSpan: 2 },
+        { content: 'Loan\nAmount', rowSpan: 2 },
+        { content: 'Due\nAmount', rowSpan: 2 },
+        { content: 'Total\nBalance', rowSpan: 2 },
+        { content: 'Arrears', rowSpan: 2 },
+        { content: dateColumnLabel },
+        { content: dateColumnLabel },
+        { content: dateColumnLabel },
+        { content: dateColumnLabel },
+      ],
+      [
+        { content: 'Paid Amount |\nCorrec.' },
+        { content: 'Paid Amount |\nCorrec.' },
+        { content: 'Paid Amount |\nCorrec.' },
+        { content: 'Paid Amount |\nCorrec.' },
+      ],
+    ];
+
+    const body: Array<Array<string | number | { content: string; colSpan?: number; styles?: Record<string, unknown> }>> = [];
+
+    centerGroupedRows.forEach((centerBlock) => {
+      Array.from(centerBlock.groupMap.entries()).forEach(([groupKey, groupRows]) => {
+        const [groupCode, groupName] = groupKey.split('__');
+        const groupTotal = groupRows.reduce(
+          (acc, row) => {
+            acc.loan += row.loanAmount;
+            acc.due += row.dueAmount;
+            acc.balance += row.pendingAmount;
+            acc.arrears += row.arrearsBalance;
+            return acc;
+          },
+          { loan: 0, due: 0, balance: 0, arrears: 0 }
+        );
+
+        body.push([
+          {
+            content: `Group No ${groupCode} - ${groupName}`,
+            colSpan: 10,
+            styles: { fontStyle: 'bold', fillColor: [245, 245, 245], textColor: [51, 65, 85] },
+          },
+        ]);
+
+        groupRows.forEach((row) => {
+          body.push([
+            row.customerNo,
+            row.customerName,
+            formatMoney(row.loanAmount),
+            formatMoney(row.dueAmount),
+            formatMoney(row.pendingAmount),
+            formatMoney(row.arrearsBalance),
+            '',
+            '',
+            '',
+            '',
+          ]);
+        });
+
+        body.push([
+          { content: 'Group Total', styles: { fontStyle: 'bold' } },
+          '',
+          { content: formatMoney(groupTotal.loan), styles: { fontStyle: 'bold' } },
+          { content: formatMoney(groupTotal.due), styles: { fontStyle: 'bold' } },
+          { content: formatMoney(groupTotal.balance), styles: { fontStyle: 'bold' } },
+          { content: formatMoney(groupTotal.arrears), styles: { fontStyle: 'bold' } },
+          '',
+          '',
+          '',
+          '',
+        ]);
+      });
+    });
+
+    body.push([{ content: 'Executive', colSpan: 10 }]);
+    body.push([{ content: 'Cashier', colSpan: 10 }]);
+    body.push([{ content: 'Manager', colSpan: 10 }]);
+
+    autoTable(doc, {
+      startY: 70,
+      head,
+      body,
+      styles: {
+        fontSize: 9,
+        cellPadding: 5,
+        lineColor: [226, 232, 240],
+        lineWidth: 0.5,
+        textColor: [55, 65, 81],
+      },
+      headStyles: {
+        fillColor: [17, 167, 145],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        halign: 'left',
+        valign: 'middle',
+      },
+      bodyStyles: {
+        fillColor: [255, 255, 255],
+      },
+      alternateRowStyles: {
+        fillColor: [249, 250, 251],
+      },
+      margin: { left: 20, right: 20, top: 70, bottom: 24 },
+      theme: 'grid',
+    });
+
+    doc.save(`center-repayment-report-${getReportFileDate()}.pdf`);
+  };
+
   if (!token || loading || loadingWidgets) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-600"></div>
+      <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_#e0f2fe_0%,_#eef2ff_38%,_#ecfeff_70%,_#f0fdfa_100%)] flex items-center justify-center">
+        <div className="rounded-2xl border border-cyan-100/80 bg-white/85 px-8 py-6 shadow-[0_22px_55px_-30px_rgba(8,145,178,0.55)] backdrop-blur-xl">
+          <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-cyan-100 border-t-cyan-600"></div>
+          <p className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-cyan-700">Building Repayment Analytics</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50 p-6 relative overflow-hidden">
-      <div className="pointer-events-none absolute inset-0 opacity-45">
-        <div className="absolute -top-20 left-14 h-72 w-72 rounded-full bg-blue-300 blur-3xl"></div>
-        <div className="absolute top-20 right-8 h-80 w-80 rounded-full bg-cyan-300 blur-3xl"></div>
-        <div className="absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-teal-300 blur-3xl"></div>
+    <div className="min-h-screen bg-[radial-gradient(circle_at_15%_0%,_#dbeafe_0,_#ecfeff_40%,_#f8fafc_100%)] p-6 relative overflow-hidden">
+      <div className="pointer-events-none absolute inset-0 opacity-55">
+        <div className="absolute -top-24 left-10 h-80 w-80 rounded-full bg-sky-300/80 blur-3xl"></div>
+        <div className="absolute top-16 right-0 h-96 w-96 rounded-full bg-cyan-300/70 blur-3xl"></div>
+        <div className="absolute bottom-0 left-1/3 h-80 w-80 rounded-full bg-teal-200/80 blur-3xl"></div>
+      </div>
+      <div className="pointer-events-none absolute inset-0 opacity-[0.18]" style={{ backgroundImage: 'linear-gradient(rgba(14,116,144,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(14,116,144,0.15) 1px, transparent 1px)', backgroundSize: '34px 34px' }}>
       </div>
 
       <div className="relative z-10 max-w-7xl mx-auto space-y-6">
-        <div className="bg-white/82 backdrop-blur-xl rounded-3xl border border-white/70 shadow-[0_20px_60px_-30px_rgba(14,116,144,0.45)] p-6 md:p-7">
+        <div className="bg-white/80 backdrop-blur-2xl rounded-[1.7rem] border border-white/80 shadow-[0_30px_85px_-35px_rgba(6,182,212,0.55)] p-6 md:p-7">
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div>
-              <span className="inline-flex rounded-full bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-700 border border-cyan-100">
+              <span className="inline-flex rounded-full bg-gradient-to-r from-cyan-600 to-blue-600 px-3.5 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-white shadow-sm">
                 Reports Desk
               </span>
-              <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 mt-3">Re-Payment Report</h1>
+              <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 mt-3 leading-tight">Re-Payment Report</h1>
               <p className="text-sm text-slate-600 mt-1">Review repayment performance, overdue pressure, and recovery progress by account.</p>
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 font-semibold text-cyan-800">Accounts: {summary.count}</span>
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 font-semibold text-emerald-700">Collected: {new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 0 }).format(summary.collected)}</span>
+                <span className="rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 font-semibold text-rose-700">Pending: {new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 0 }).format(summary.pending)}</span>
+              </div>
             </div>
             <button
               onClick={() => router.back()}
-              className="px-4 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-700 text-sm font-semibold border border-slate-200 shadow-sm"
+              className="px-4 py-2 rounded-xl bg-white/95 hover:bg-white text-slate-700 text-sm font-semibold border border-slate-200 shadow-sm"
             >
               Back
             </button>
           </div>
 
-          <div className="mt-5 grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3">
-            {visibleSummaryCards.map((card) => (
-              <div key={card.key} className="relative rounded-xl bg-white/90 border border-white shadow-sm p-4">
+          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3">
+            {visibleSummaryCards.map((card, cardIndex) => (
+              <div key={card.key} className={`relative min-h-[108px] rounded-2xl border p-4 sm:p-5 shadow-[0_15px_35px_-28px_rgba(14,116,144,0.55)] ${summaryCardStyles[cardIndex % summaryCardStyles.length]}`}>
                 <WidgetCloseGate>
                   <button
                     type="button"
@@ -636,8 +844,8 @@ export default function RepaymentReportPage() {
                     ×
                   </button>
                 </WidgetCloseGate>
-                <p className="text-xs uppercase tracking-wide text-slate-500">{card.label}</p>
-                <p className={`text-2xl font-extrabold mt-1 ${card.valueClass}`}>{card.value}</p>
+                <p className="pr-8 text-[10px] sm:text-[11px] uppercase tracking-[0.12em] text-slate-500">{card.label}</p>
+                <p className={`mt-1 text-xl sm:text-2xl font-extrabold leading-tight break-words ${card.valueClass}`}>{card.value}</p>
               </div>
             ))}
           </div>
@@ -649,7 +857,7 @@ export default function RepaymentReportPage() {
         </div>
 
         {showRepaymentAccountsSection && (
-        <div className="relative bg-white/86 backdrop-blur-xl rounded-3xl border border-cyan-100 shadow-[0_18px_40px_-24px_rgba(14,116,144,0.5)] p-4 md:p-5">
+        <div className="relative bg-white/84 backdrop-blur-2xl rounded-3xl border border-cyan-100/80 shadow-[0_24px_55px_-30px_rgba(14,116,144,0.52)] p-4 md:p-5">
           <WidgetCloseGate>
             <button
               type="button"
@@ -662,7 +870,7 @@ export default function RepaymentReportPage() {
           </WidgetCloseGate>
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <h2 className="text-lg font-bold text-slate-900">Repayment Accounts</h2>
-            <div className="flex items-end gap-2 flex-wrap">
+            <div className="flex items-end gap-2.5 flex-wrap rounded-2xl border border-cyan-100/80 bg-gradient-to-r from-cyan-50/70 to-sky-50/70 p-2.5">
               <button
                 type="button"
                 onClick={handleDownloadCsv}
@@ -682,7 +890,7 @@ export default function RepaymentReportPage() {
                 <select
                   value={officerFilter}
                   onChange={(e) => setOfficerFilter(e.target.value)}
-                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900 shadow-sm"
                 >
                   <option value="all">All Officers</option>
                   {officerOptions.map((officer) => (
@@ -697,7 +905,7 @@ export default function RepaymentReportPage() {
                 <select
                   value={repaymentFilter}
                   onChange={(e) => setRepaymentFilter(e.target.value as 'all' | 'excellent' | 'good' | 'watch' | 'critical')}
-                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900 shadow-sm"
                 >
                   <option value="all">All</option>
                   <option value="excellent">Excellent</option>
@@ -712,7 +920,7 @@ export default function RepaymentReportPage() {
                   setOfficerFilter('all');
                   setRepaymentFilter('all');
                 }}
-                className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold"
+                className="px-3 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 text-sm font-semibold border border-slate-200"
               >
                 Reset
               </button>
@@ -728,12 +936,12 @@ export default function RepaymentReportPage() {
               All table columns are hidden. Restore from dashboard with admin approval.
             </div>
           ) : (
-            <div className="mt-4 overflow-x-auto rounded-2xl border border-cyan-100">
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-cyan-100 bg-white shadow-inner">
               <table className="min-w-full text-sm text-left text-slate-700 bg-white">
-                <thead className="bg-cyan-50/70 text-slate-700">
+                <thead className="bg-gradient-to-r from-cyan-100/70 via-sky-100/60 to-blue-100/60 text-slate-700">
                   <tr>
                     {visibleTableColumns.map((column) => (
-                      <th key={column.key} className="relative px-3 py-2 font-semibold">
+                      <th key={column.key} className="relative px-3 py-2.5 font-semibold whitespace-nowrap">
                         {column.label}
                         <WidgetCloseGate>
                           <button
@@ -751,9 +959,9 @@ export default function RepaymentReportPage() {
                 </thead>
                 <tbody>
                   {filteredRows.map((row) => (
-                    <tr key={row.loanId} className="border-b border-cyan-100 last:border-b-0 hover:bg-cyan-50/40 transition-colors">
+                    <tr key={row.loanId} className="border-b border-cyan-100 last:border-b-0 odd:bg-white even:bg-cyan-50/25 hover:bg-cyan-50/60 transition-colors">
                       {visibleTableColumns.map((column) => (
-                        <td key={`${row.loanId}-${column.key}`} className={`px-3 py-2 ${column.tdClassName || ''}`}>
+                        <td key={`${row.loanId}-${column.key}`} className={`px-3 py-2.5 ${column.tdClassName || ''}`}>
                           {column.render(row)}
                         </td>
                       ))}
@@ -767,7 +975,7 @@ export default function RepaymentReportPage() {
         )}
 
         {showCenterRepaymentSection && (
-        <div className="relative bg-white/86 backdrop-blur-xl rounded-3xl border border-cyan-100 shadow-[0_18px_40px_-24px_rgba(14,116,144,0.5)] p-4 md:p-5">
+        <div className="relative bg-white/84 backdrop-blur-2xl rounded-3xl border border-cyan-100/80 shadow-[0_24px_55px_-30px_rgba(14,116,144,0.52)] p-4 md:p-5">
           <WidgetCloseGate>
             <button
               type="button"
@@ -781,13 +989,27 @@ export default function RepaymentReportPage() {
 
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <h2 className="text-lg font-bold text-slate-900">Center-Based Repayment</h2>
-            <div className="flex items-end gap-2 flex-wrap">
+            <div className="flex items-end gap-2.5 flex-wrap rounded-2xl border border-cyan-100/80 bg-gradient-to-r from-cyan-50/70 to-sky-50/70 p-2.5">
+              <button
+                type="button"
+                onClick={handleDownloadCenterCsv}
+                className="px-3 py-2 rounded-xl bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-sm font-semibold border border-emerald-200"
+              >
+                Download CSV
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadCenterPdf}
+                className="px-3 py-2 rounded-xl bg-cyan-100 hover:bg-cyan-200 text-cyan-800 text-sm font-semibold border border-cyan-200"
+              >
+                Download PDF
+              </button>
               <div>
                 <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Select Center</label>
                 <select
                   value={centerFilter}
                   onChange={(e) => setCenterFilter(e.target.value)}
-                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900 shadow-sm"
                 >
                   <option value="all">All Centers</option>
                   {centerOptions.map((center) => (
@@ -803,34 +1025,34 @@ export default function RepaymentReportPage() {
                   type="month"
                   value={reportMonth}
                   onChange={(e) => setReportMonth(e.target.value)}
-                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900 shadow-sm"
                 />
               </div>
             </div>
           </div>
 
           <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
-            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+            <div className="rounded-2xl bg-gradient-to-br from-cyan-50 to-cyan-100/60 border border-cyan-100 p-3">
               <p className="text-xs uppercase tracking-wide text-cyan-700">Members</p>
               <p className="text-xl font-extrabold text-slate-900">{centerSectionSummary.members}</p>
             </div>
-            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+            <div className="rounded-2xl bg-gradient-to-br from-slate-50 to-slate-100 border border-slate-200 p-3">
               <p className="text-xs uppercase tracking-wide text-cyan-700">Loan Amount</p>
               <p className="text-xl font-extrabold text-slate-900">{formatMoney(centerSectionSummary.loanAmount)}</p>
             </div>
-            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+            <div className="rounded-2xl bg-gradient-to-br from-blue-50 to-blue-100/70 border border-blue-100 p-3">
               <p className="text-xs uppercase tracking-wide text-cyan-700">Due Amount</p>
               <p className="text-xl font-extrabold text-slate-900">{formatMoney(centerSectionSummary.dueAmount)}</p>
             </div>
-            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+            <div className="rounded-2xl bg-gradient-to-br from-rose-50 to-rose-100/70 border border-rose-100 p-3">
               <p className="text-xs uppercase tracking-wide text-cyan-700">Total Balance</p>
               <p className="text-xl font-extrabold text-rose-700">{formatMoney(centerSectionSummary.balance)}</p>
             </div>
-            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+            <div className="rounded-2xl bg-gradient-to-br from-amber-50 to-amber-100/70 border border-amber-100 p-3">
               <p className="text-xs uppercase tracking-wide text-cyan-700">Arrears</p>
               <p className="text-xl font-extrabold text-amber-700">{formatMoney(centerSectionSummary.arrears)}</p>
             </div>
-            <div className="rounded-xl bg-cyan-50 border border-cyan-100 p-3">
+            <div className="rounded-2xl bg-gradient-to-br from-emerald-50 to-emerald-100/70 border border-emerald-100 p-3">
               <p className="text-xs uppercase tracking-wide text-cyan-700">Paid ({reportMonth || 'All'})</p>
               <p className="text-xl font-extrabold text-emerald-700">{formatMoney(centerSectionSummary.monthPaid)}</p>
             </div>
@@ -841,18 +1063,26 @@ export default function RepaymentReportPage() {
               No center-based repayment data found.
             </div>
           ) : (
-            <div className="mt-4 overflow-x-auto rounded-2xl border border-cyan-100">
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-cyan-100 bg-white shadow-inner">
               <table className="min-w-full text-sm text-left text-slate-700 bg-white">
-                <thead className="bg-cyan-50/70 text-slate-700">
+                <thead className="bg-gradient-to-r from-cyan-100/75 via-sky-100/65 to-blue-100/65 text-slate-700">
                   <tr>
-                    <th className="px-3 py-2 font-semibold">Member No</th>
-                    <th className="px-3 py-2 font-semibold">Member Name</th>
-                    <th className="px-3 py-2 font-semibold">Loan Amount</th>
-                    <th className="px-3 py-2 font-semibold">Due Amount</th>
-                    <th className="px-3 py-2 font-semibold">Total Balance</th>
-                    <th className="px-3 py-2 font-semibold">Arrears</th>
-                    <th className="px-3 py-2 font-semibold">Paid ({reportMonth || 'All'})</th>
-                    <th className="px-3 py-2 font-semibold">Correction</th>
+                    <th rowSpan={2} className="px-3 py-2.5 font-semibold">Member No</th>
+                    <th rowSpan={2} className="px-3 py-2.5 font-semibold">Member Name</th>
+                    <th rowSpan={2} className="px-3 py-2.5 font-semibold">Loan Amount</th>
+                    <th rowSpan={2} className="px-3 py-2.5 font-semibold">Due Amount</th>
+                    <th rowSpan={2} className="px-3 py-2.5 font-semibold">Total Balance</th>
+                    <th rowSpan={2} className="px-3 py-2.5 font-semibold">Arrears</th>
+                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">{dateColumnLabel}</th>
+                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">{dateColumnLabel}</th>
+                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">{dateColumnLabel}</th>
+                    <th className="px-3 py-2.5 font-semibold whitespace-nowrap">{dateColumnLabel}</th>
+                  </tr>
+                  <tr>
+                    <th className="px-3 py-2 text-xs font-semibold text-slate-600">Paid Amount | Correc.</th>
+                    <th className="px-3 py-2 text-xs font-semibold text-slate-600">Paid Amount | Correc.</th>
+                    <th className="px-3 py-2 text-xs font-semibold text-slate-600">Paid Amount | Correc.</th>
+                    <th className="px-3 py-2 text-xs font-semibold text-slate-600">Paid Amount | Correc.</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -871,8 +1101,8 @@ export default function RepaymentReportPage() {
 
                     return (
                       <Fragment key={`center-block-${centerBlock.key}`}>
-                        <tr className="bg-slate-200/80 border-t border-slate-300">
-                          <td colSpan={8} className="px-3 py-2 font-bold text-slate-900 uppercase tracking-wide">
+                        <tr className="bg-slate-200/85 border-t border-slate-300">
+                          <td colSpan={10} className="px-3 py-2 font-bold text-slate-900 uppercase tracking-wide">
                             {centerBlock.centerName} ({centerBlock.centerCode})
                           </td>
                         </tr>
@@ -893,14 +1123,14 @@ export default function RepaymentReportPage() {
 
                           return (
                             <Fragment key={`group-block-${centerBlock.key}-${groupKey}`}>
-                              <tr className="bg-slate-100 border-t border-slate-200">
-                                <td colSpan={8} className="px-3 py-2 font-semibold text-slate-800">
+                              <tr className="bg-slate-100/90 border-t border-slate-200">
+                                <td colSpan={10} className="px-3 py-2 font-semibold text-slate-800">
                                   Group {groupCode} - {groupName}
                                 </td>
                               </tr>
 
-                              {groupRows.map((row) => (
-                                <tr key={`center-${centerBlock.key}-group-${groupKey}-loan-${row.loanId}`} className="border-b border-cyan-100 last:border-b-0 hover:bg-cyan-50/40 transition-colors">
+                              {groupRows.map((row, rowIndex) => (
+                                <tr key={`center-${centerBlock.key}-group-${groupKey}-loan-${row.loanId}`} className={`border-b border-cyan-100 last:border-b-0 transition-colors hover:bg-cyan-50/50 ${rowIndex % 2 === 0 ? 'bg-white' : 'bg-cyan-50/20'}`}>
                                   <td className="px-3 py-2 font-semibold text-slate-900">{row.customerNo}</td>
                                   <td className="px-3 py-2">{row.customerName}</td>
                                   <td className="px-3 py-2">{formatMoney(row.loanAmount)}</td>
@@ -908,6 +1138,9 @@ export default function RepaymentReportPage() {
                                   <td className="px-3 py-2 text-rose-700 font-semibold">{formatMoney(row.pendingAmount)}</td>
                                   <td className="px-3 py-2 text-amber-700 font-semibold">{formatMoney(row.arrearsBalance)}</td>
                                   <td className="px-3 py-2 text-emerald-700 font-semibold">{formatMoney(monthPaidByLoan.get(row.loanId) || 0)}</td>
+                                  <td className="px-3 py-2">-</td>
+                                  <td className="px-3 py-2">-</td>
+                                  <td className="px-3 py-2">-</td>
                                   <td className="px-3 py-2">-</td>
                                 </tr>
                               ))}
@@ -920,6 +1153,9 @@ export default function RepaymentReportPage() {
                                 <td className="px-3 py-2">{formatMoney(groupTotal.balance)}</td>
                                 <td className="px-3 py-2">{formatMoney(groupTotal.arrears)}</td>
                                 <td className="px-3 py-2">{formatMoney(groupTotal.paid)}</td>
+                                <td className="px-3 py-2">-</td>
+                                <td className="px-3 py-2">-</td>
+                                <td className="px-3 py-2">-</td>
                                 <td className="px-3 py-2">-</td>
                               </tr>
                             </Fragment>
@@ -935,10 +1171,22 @@ export default function RepaymentReportPage() {
                           <td className="px-3 py-2">{formatMoney(centerTotal.arrears)}</td>
                           <td className="px-3 py-2">{formatMoney(centerTotal.paid)}</td>
                           <td className="px-3 py-2">-</td>
+                          <td className="px-3 py-2">-</td>
+                          <td className="px-3 py-2">-</td>
+                          <td className="px-3 py-2">-</td>
                         </tr>
                       </Fragment>
                     );
                   })}
+                  <tr className="bg-white">
+                    <td colSpan={10} className="px-3 py-2 text-slate-700">Executive</td>
+                  </tr>
+                  <tr className="bg-slate-50">
+                    <td colSpan={10} className="px-3 py-2 text-slate-700">Cashier</td>
+                  </tr>
+                  <tr className="bg-white">
+                    <td colSpan={10} className="px-3 py-2 text-slate-700">Manager</td>
+                  </tr>
                 </tbody>
               </table>
             </div>

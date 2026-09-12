@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getApiBaseUrl, getBackendOrigin } from '@/lib/api';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
+import QRCode from 'qrcode';
 
 type MFRoute = { id: number; name: string; code: string };
 type MFCenter = { id: number; mf_route_id: number; name: string; code: string };
@@ -172,6 +173,28 @@ type DetailsDocumentItem = {
 };
 
 const ACTIVE_LOAN_STATUSES = new Set(['approved', 'released']);
+
+const buildLoanQrContent = (loan: LoanRequest) => {
+  return JSON.stringify(
+    {
+      app: 'microcreditv4',
+      entity: 'loan_request',
+      loan_id: loan.id,
+      loan_code: String(loan.loan_code || '').trim() || null,
+      reference_no: String(loan.reference_no || '').trim() || null,
+      customer_no: String(loan.customer_no || '').trim(),
+      customer_name: String(loan.customer_name || '').trim(),
+      loan_amount: Number(loan.loan_amount || 0),
+      refundable_amount: Number(loan.refundable_amount || 0),
+      installment_amount: Number(loan.installment_amount || 0),
+      status: String(loan.status || '').trim() || null,
+      workflow_step: Number(loan.workflow_step || 0),
+      generated_at: new Date().toISOString(),
+    },
+    null,
+    0
+  );
+};
 
 const formatDisplayDate = (value?: string | null) => {
   if (!value) return '-';
@@ -378,6 +401,8 @@ export default function ReleasedLoansPage() {
   const [downloadingAgreementId, setDownloadingAgreementId] = useState<number | null>(null);
   const [downloadingReminderId, setDownloadingReminderId] = useState<number | null>(null);
   const [downloadingLegalId, setDownloadingLegalId] = useState<number | null>(null);
+  const [downloadingQrId, setDownloadingQrId] = useState<number | null>(null);
+  const [loanQrByLoanId, setLoanQrByLoanId] = useState<Record<number, string>>({});
   const [editStep, setEditStep] = useState(1);
 
   const openModal = (message: string, title = 'Notice') => {
@@ -1062,6 +1087,36 @@ export default function ReleasedLoansPage() {
     }
   };
 
+  const handleDownloadLoanQr = async (loan: LoanRequest) => {
+    if (!token) return;
+
+    setDownloadingQrId(loan.id);
+    try {
+      const dataUrl = await QRCode.toDataURL(buildLoanQrContent(loan), {
+        errorCorrectionLevel: 'M',
+        type: 'image/png',
+        margin: 2,
+        scale: 8,
+        width: 920,
+      });
+
+      const fileLabel = String(loan.reference_no || loan.loan_code || loan.customer_no || loan.id)
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, '_');
+
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `loan_qr_${fileLabel || loan.id}.png`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch {
+      openModal('Failed to generate loan QR.', 'Error');
+    } finally {
+      setDownloadingQrId(null);
+    }
+  };
+
   const [query, setQuery] = useState('');
   const [scopeFilter, setScopeFilter] = useState('all');
   const [routeFilter, setRouteFilter] = useState('all');
@@ -1705,6 +1760,44 @@ export default function ReleasedLoansPage() {
   const visiblePaginatedLoans = paginatedLoans.filter(
     (loan) => !hiddenWidgetKeys.has(`${widgetPrefix}loan_card_${loan.id}`)
   );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const generateVisibleLoanQrs = async () => {
+      const updates: Record<number, string> = {};
+
+      await Promise.all(
+        visiblePaginatedLoans.map(async (loan) => {
+          if (loanQrByLoanId[loan.id]) return;
+
+          try {
+            const dataUrl = await QRCode.toDataURL(buildLoanQrContent(loan), {
+              errorCorrectionLevel: 'M',
+              type: 'image/png',
+              margin: 1,
+              scale: 4,
+              width: 180,
+            });
+            updates[loan.id] = dataUrl;
+          } catch {
+            // Skip rendering QR if generation fails for one record.
+          }
+        })
+      );
+
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setLoanQrByLoanId((prev) => ({ ...prev, ...updates }));
+      }
+    };
+
+    void generateVisibleLoanQrs();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visiblePaginatedLoans, loanQrByLoanId]);
+
   const renderTransactionCellValue = (row: CollectionTransaction, key: (typeof transactionColumns)[number]['key']) => {
     if (key === 'date') return formatTransactionDate(row.date);
     if (key === 'loanCode') return row.loanCode;
@@ -2032,115 +2125,164 @@ export default function ReleasedLoansPage() {
                     ×
                   </button>
                 </WidgetCloseGate>
-                <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
-                  <div className="space-y-1 min-w-0">
-                    <h2 className="text-lg font-bold text-gray-900">{loan.customer_name}</h2>
-                    <p className="text-sm text-gray-600">Loan Code: {loan.customer_no}</p>
-                    <p className="text-sm text-gray-600">
-                      Scope: {loan.loan_scope === 'center_loan' ? 'Center Loan' : loan.loan_scope === 'route_loan' ? 'Route Loan' : 'Direct Loan'}
-                    </p>
-                    <p className="text-sm text-gray-600 break-words">
-                      Route: {loan.route?.name || '-'} | Center: {loan.center?.name || '-'} | Group: {loan.group?.name || '-'}
-                    </p>
+                <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-r from-cyan-200/35 via-sky-100/30 to-blue-100/20 pointer-events-none"></div>
+                <div className="relative grid grid-cols-1 gap-4 xl:grid-cols-[1.25fr,1fr]">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-start gap-3">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 text-sm font-extrabold text-white shadow-sm">
+                        {String(loan.customer_name || 'C').trim().charAt(0).toUpperCase() || 'C'}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <h2 className="text-xl font-bold text-slate-900 leading-tight break-words">{loan.customer_name}</h2>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                          <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 font-semibold text-cyan-800">Loan Code: {loan.customer_no}</span>
+                          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 font-semibold text-emerald-700 capitalize">{loan.status}</span>
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-semibold text-slate-700">
+                            {loan.loan_scope === 'center_loan' ? 'Center Loan' : loan.loan_scope === 'route_loan' ? 'Route Loan' : 'Direct Loan'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      <div className="rounded-lg border border-cyan-100 bg-cyan-50/70 p-2.5">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500">Route</p>
+                        <p className="mt-0.5 text-sm font-semibold text-slate-900">{loan.route?.name || '-'}</p>
+                      </div>
+                      <div className="rounded-lg border border-cyan-100 bg-cyan-50/70 p-2.5">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500">Center</p>
+                        <p className="mt-0.5 text-sm font-semibold text-slate-900">{loan.center?.name || '-'}</p>
+                      </div>
+                      <div className="rounded-lg border border-cyan-100 bg-cyan-50/70 p-2.5">
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500">Group</p>
+                        <p className="mt-0.5 text-sm font-semibold text-slate-900">{loan.group?.name || '-'}</p>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="w-full lg:w-auto lg:min-w-[22rem] text-left lg:text-right">
-                    <div className="mb-2 flex flex-wrap justify-start lg:justify-end gap-2">
-                      {canManageSensitiveLoanActions && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => handleDownloadAgreement(loan.id, loan.customer_no)}
-                            disabled={downloadingAgreementId === loan.id}
-                            className="w-full sm:w-auto px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-800 text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
-                            {downloadingAgreementId === loan.id ? 'Downloading...' : 'Download Agreement'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDownloadReminderLetter(loan.id, loan.customer_no)}
-                            disabled={downloadingReminderId === loan.id}
-                            className="w-full sm:w-auto px-3 py-1.5 rounded-lg border border-violet-200 bg-violet-50 hover:bg-violet-100 text-violet-800 text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
-                            {downloadingReminderId === loan.id ? 'Downloading...' : 'Reminder Letter'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDownloadLegalLetter(loan.id, loan.customer_no)}
-                            disabled={downloadingLegalId === loan.id}
-                            className="w-full sm:w-auto px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
-                            {downloadingLegalId === loan.id ? 'Downloading...' : 'Legal Letter'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => openEditModal(loan)}
-                            className="w-full sm:w-auto px-3 py-1.5 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-semibold"
-                          >
-                            Edit Loan
-                          </button>
-                        </>
-                      )}
-                      {isSuperAdmin && (
-                        <button
-                          type="button"
-                          onClick={() => openRemoveConfirmModal(loan)}
-                          disabled={removingLoanId === loan.id}
-                          className="w-full sm:w-auto px-3 py-1.5 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-800 text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
-                        >
-                          {removingLoanId === loan.id ? 'Removing...' : 'Remove Loan'}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => openDocumentsModal(loan)}
-                        className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-200 bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-xs font-semibold"
-                      >
-                        <EyeIcon className="h-3.5 w-3.5" />
-                        <span>View Documents ({Array.isArray(loan.documents) ? loan.documents.length : 0})</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openDetailsModal(loan)}
-                        className="w-full sm:w-auto px-3 py-1.5 rounded-lg border border-sky-200 bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-semibold"
-                      >
-                        View More Details
-                      </button>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr,auto]">
+                    <div className="rounded-xl border border-sky-100 bg-gradient-to-br from-white to-sky-50/50 p-3">
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Loan Amount</p>
+                      <p className="mt-1 text-2xl font-extrabold text-cyan-700">{Number(loan.loan_amount || 0).toFixed(2)}</p>
+                      <p className="mt-1 text-xs text-slate-600">
+                        {loan.interest_type} | {Number(loan.interest_rate || 0)}% | {loan.terms_count} {loan.refund_option}(s)
+                      </p>
                     </div>
-                    <p className="text-sm text-gray-600">Loan Amount</p>
-                    <p className="text-xl font-extrabold text-cyan-700">{Number(loan.loan_amount || 0).toFixed(2)}</p>
-                    <p className="text-xs text-gray-500 mt-1">
-                      {loan.interest_type} | {Number(loan.interest_rate || 0)}% | {loan.terms_count} {loan.refund_option}(s)
-                    </p>
+
+                    <div className="rounded-xl border border-cyan-200 bg-cyan-50/70 p-2.5">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-cyan-800 text-center">Loan QR</p>
+                      {loanQrByLoanId[loan.id] ? (
+                        <img
+                          src={loanQrByLoanId[loan.id]}
+                          alt={`Loan QR for ${loan.customer_no}`}
+                          className="mt-1 h-24 w-24 rounded-md border border-cyan-100 bg-white object-contain"
+                        />
+                      ) : (
+                        <div className="mt-1 flex h-24 w-24 items-center justify-center rounded-md border border-cyan-100 bg-white text-[10px] font-semibold text-slate-500">
+                          Generating...
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
+                <div className="mt-4 grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
+                  {canManageSensitiveLoanActions && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadAgreement(loan.id, loan.customer_no)}
+                        disabled={downloadingAgreementId === loan.id}
+                        className="w-full px-3 py-2 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-800 text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {downloadingAgreementId === loan.id ? 'Downloading...' : 'Download Agreement'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadReminderLetter(loan.id, loan.customer_no)}
+                        disabled={downloadingReminderId === loan.id}
+                        className="w-full px-3 py-2 rounded-lg border border-violet-200 bg-violet-50 hover:bg-violet-100 text-violet-800 text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {downloadingReminderId === loan.id ? 'Downloading...' : 'Reminder Letter'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadLegalLetter(loan.id, loan.customer_no)}
+                        disabled={downloadingLegalId === loan.id}
+                        className="w-full px-3 py-2 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {downloadingLegalId === loan.id ? 'Downloading...' : 'Legal Letter'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDownloadLoanQr(loan)}
+                        disabled={downloadingQrId === loan.id}
+                        className="w-full px-3 py-2 rounded-lg border border-cyan-200 bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {downloadingQrId === loan.id ? 'Generating QR...' : 'Download Loan QR'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(loan)}
+                        className="w-full px-3 py-2 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-semibold"
+                      >
+                        Edit Loan
+                      </button>
+                    </>
+                  )}
+                  {isSuperAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => openRemoveConfirmModal(loan)}
+                      disabled={removingLoanId === loan.id}
+                      className="w-full px-3 py-2 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-800 text-xs font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {removingLoanId === loan.id ? 'Removing...' : 'Remove Loan'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => openDocumentsModal(loan)}
+                    className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-cyan-200 bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-xs font-semibold"
+                  >
+                    <EyeIcon className="h-3.5 w-3.5" />
+                    <span>View Documents ({Array.isArray(loan.documents) ? loan.documents.length : 0})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openDetailsModal(loan)}
+                    className="w-full px-3 py-2 rounded-lg border border-sky-200 bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-semibold"
+                  >
+                    View More Details
+                  </button>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-7 gap-3 mt-4">
-                  <div className="rounded-lg bg-cyan-50 border border-cyan-100 p-3">
+                  <div className="rounded-xl bg-cyan-50/80 border border-cyan-100 p-3">
                     <p className="text-xs uppercase tracking-wide text-gray-500">Refundable</p>
                     <p className="text-sm font-bold text-gray-900">{Number(loan.refundable_amount || 0).toFixed(2)}</p>
                   </div>
-                  <div className="rounded-lg bg-cyan-50 border border-cyan-100 p-3">
+                  <div className="rounded-xl bg-cyan-50/80 border border-cyan-100 p-3">
                     <p className="text-xs uppercase tracking-wide text-gray-500">Installment</p>
                     <p className="text-sm font-bold text-gray-900">{Number(loan.installment_amount || 0).toFixed(2)}</p>
                   </div>
-                  <div className="rounded-lg bg-cyan-50 border border-cyan-100 p-3">
+                  <div className="rounded-xl bg-cyan-50/80 border border-cyan-100 p-3">
                     <p className="text-xs uppercase tracking-wide text-gray-500">Loan Request Date</p>
                     <p className="text-sm font-bold text-gray-900">{formatDisplayDate(loan.loan_request_date)}</p>
                   </div>
-                  <div className="rounded-lg bg-cyan-50 border border-cyan-100 p-3">
+                  <div className="rounded-xl bg-cyan-50/80 border border-cyan-100 p-3">
                     <p className="text-xs uppercase tracking-wide text-gray-500">Next Payment Date</p>
                     <p className="text-sm font-bold text-gray-900">{formatDisplayDate(loan.next_payment_date)}</p>
                   </div>
-                  <div className="rounded-lg bg-cyan-50 border border-cyan-100 p-3">
+                  <div className="rounded-xl bg-cyan-50/80 border border-cyan-100 p-3">
                     <p className="text-xs uppercase tracking-wide text-gray-500">Due Date</p>
                     <p className="text-sm font-bold text-gray-900">{formatDisplayDate(loan.due_date)}</p>
                   </div>
-                  <div className="rounded-lg bg-cyan-50 border border-cyan-100 p-3">
+                  <div className="rounded-xl bg-cyan-50/80 border border-cyan-100 p-3">
                     <p className="text-xs uppercase tracking-wide text-gray-500">Loan End Date</p>
                     <p className="text-sm font-bold text-gray-900">{formatDisplayDate(loan.loan_end_date)}</p>
                   </div>
-                  <div className="rounded-lg bg-cyan-50 border border-cyan-100 p-3">
+                  <div className="rounded-xl bg-cyan-50/80 border border-cyan-100 p-3">
                     <p className="text-xs uppercase tracking-wide text-gray-500">Approved Status</p>
                     <p className="text-sm font-bold text-emerald-700 capitalize">{loan.status}</p>
                   </div>

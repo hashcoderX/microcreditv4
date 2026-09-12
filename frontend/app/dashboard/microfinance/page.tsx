@@ -363,6 +363,16 @@ export default function MicrofinanceDashboard() {
       permissionTokens: ['field officer collection report', '/dashboard/microfinance/reports/field-officer-collection'],
     },
     {
+      key: 'mf_widget_report_center_collection',
+      name: 'Center Collection Report',
+      icon: '🏢',
+      color: 'from-cyan-500 to-sky-500',
+      bgColor: 'from-cyan-50 to-sky-50',
+      description: 'View collection details by center, field officer, and date range.',
+      path: '/dashboard/microfinance/reports/center-collection',
+      permissionTokens: ['center collection report', '/dashboard/microfinance/reports/center-collection'],
+    },
+    {
       key: 'mf_widget_report_arrears',
       name: 'Arrears Report',
       icon: '⚠️',

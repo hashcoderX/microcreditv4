@@ -135,6 +135,10 @@ type ApprovalCandidate = {
 };
 
 type EditLoanForm = {
+  loan_scope: 'route_loan' | 'center_loan' | 'direct_loan';
+  mf_route_id: number;
+  mf_center_id: number;
+  mf_group_id: number;
   customer_name: string;
   contact_no: string;
   address: string;
@@ -158,6 +162,23 @@ type EditLoanForm = {
   refund_option: 'day' | 'week' | 'month';
   interest_type: 'flat' | 'reducing';
   loan_request_date: string;
+  family_monthly_expenses: string;
+  family_savings_habit: string;
+  repayment_behaviour: string;
+  existing_loans: 'yes' | 'no';
+  monthly_loan_obligations: string;
+  credit_score: string;
+  credit_history_notes: string;
+  business_monthly_income: string;
+  business_monthly_expenses: string;
+  family_monthly_income: string;
+  guarantors: Array<{
+    name: string;
+    nic: string;
+    address: string;
+    contact_no: string;
+    relationship: string;
+  }>;
 };
 
 const API_BASE = getApiBaseUrl();
@@ -476,6 +497,7 @@ export default function LoanApprovalsPage() {
   const [advancingId, setAdvancingId] = useState<number | null>(null);
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
+  const [qrDownloadingId, setQrDownloadingId] = useState<number | null>(null);
   const [documentRequestingId, setDocumentRequestingId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [scopeFilter, setScopeFilter] = useState('all');
@@ -658,11 +680,16 @@ export default function LoanApprovalsPage() {
     open: boolean;
     loan: LoanRequest | null;
     form: EditLoanForm;
+    activeStep: number;
     saving: boolean;
   }>({
     open: false,
     loan: null,
     form: {
+      loan_scope: 'center_loan',
+      mf_route_id: 0,
+      mf_center_id: 0,
+      mf_group_id: 0,
       customer_name: '',
       contact_no: '',
       address: '',
@@ -686,7 +713,19 @@ export default function LoanApprovalsPage() {
       refund_option: 'month',
       interest_type: 'flat',
       loan_request_date: '',
+      family_monthly_expenses: '',
+      family_savings_habit: '',
+      repayment_behaviour: '',
+      existing_loans: 'no',
+      monthly_loan_obligations: '',
+      credit_score: '',
+      credit_history_notes: '',
+      business_monthly_income: '',
+      business_monthly_expenses: '',
+      family_monthly_income: '',
+      guarantors: [],
     },
+    activeStep: 1,
     saving: false,
   });
   const [documentViewerLoading, setDocumentViewerLoading] = useState(false);
@@ -1773,11 +1812,40 @@ export default function LoanApprovalsPage() {
   };
 
   const openEditLoanModal = (loan: LoanRequest) => {
+    void ensureCustomerDocumentsLoaded(loan);
+
+    const readPayload = (keys: string[]) => {
+      const payload = loan.evaluation_payload;
+      if (!payload || typeof payload !== 'object') return '';
+
+      for (const key of keys) {
+        const value = payload[key];
+        if (value === null || value === undefined) continue;
+        const normalized = String(value).trim();
+        if (normalized !== '') return normalized;
+      }
+
+      return '';
+    };
+
+    const guarantors = (loan.guarantors || []).map((guarantor) => ({
+      name: String(guarantor.name || '').trim(),
+      nic: String(guarantor.nic || '').trim(),
+      address: String(guarantor.address || '').trim(),
+      contact_no: String(guarantor.contact_no || '').trim(),
+      relationship: String(guarantor.relationship || '').trim(),
+    }));
+
     setEditLoanModal({
       open: true,
       loan,
+      activeStep: 1,
       saving: false,
       form: {
+        loan_scope: loan.loan_scope,
+        mf_route_id: Number(loan.route?.id || 0),
+        mf_center_id: Number(loan.center?.id || 0),
+        mf_group_id: Number(loan.group?.id || 0),
         customer_name: String(loan.customer_name || '').trim(),
         contact_no: String(loan.contact_no || '').trim(),
         address: String(loan.address || '').trim(),
@@ -1803,20 +1871,192 @@ export default function LoanApprovalsPage() {
         refund_option: loan.refund_option,
         interest_type: loan.interest_type,
         loan_request_date: String(loan.loan_request_date || '').slice(0, 10),
+        family_monthly_expenses: readPayload(['family_monthly_expenses']),
+        family_savings_habit: readPayload(['savings_habit', 'family_savings_habit']),
+        repayment_behaviour: readPayload(['repayment_behaviour']),
+        existing_loans: readPayload(['existing_loans', 'has_existing_loans']) === 'yes' ? 'yes' : 'no',
+        monthly_loan_obligations: readPayload(['monthly_loan_obligations', 'other_loans_monthly_installment']),
+        credit_score: readPayload(['credit_score']),
+        credit_history_notes: readPayload(['credit_history_notes']),
+        business_monthly_income: readPayload(['business_monthly_income']),
+        business_monthly_expenses: readPayload(['business_monthly_expenses']),
+        family_monthly_income: readPayload(['family_monthly_income']),
+        guarantors: guarantors.length > 0 ? guarantors : [{ name: '', nic: '', address: '', contact_no: '', relationship: '' }],
       },
     });
   };
 
   const closeEditLoanModal = () => {
     if (editLoanModal.saving) return;
-    setEditLoanModal((prev) => ({ ...prev, open: false, loan: null }));
+    setEditLoanModal((prev) => ({ ...prev, open: false, loan: null, activeStep: 1 }));
+  };
+
+  const editLoanSteps = useMemo(
+    () => [
+      { id: 1, title: 'Location Mapping', hint: 'Scope, route, center, group' },
+      { id: 2, title: 'Officer & Team', hint: 'Manager and field team details' },
+      { id: 3, title: 'Customer Details', hint: 'Reference no, customer profile, NIC' },
+      { id: 4, title: 'Family & Financial', hint: 'Family, financial behaviour, banking, credit' },
+      { id: 5, title: 'Documents', hint: 'Upload customer support documents' },
+      { id: 6, title: 'Residence Images', hint: 'Residence environment photos' },
+      { id: 7, title: 'Evaluation', hint: 'Income, assets, liabilities, and cash flow' },
+      { id: 8, title: 'Guarantors', hint: 'Guarantor information' },
+      { id: 9, title: 'Loan Details', hint: 'Amount, terms, and charges' },
+    ],
+    []
+  );
+
+  const editLoanProgress = (editLoanModal.activeStep / editLoanSteps.length) * 100;
+
+  const setEditLoanField = <K extends keyof EditLoanForm>(field: K, value: EditLoanForm[K]) => {
+    setEditLoanModal((prev) => ({
+      ...prev,
+      form: {
+        ...prev.form,
+        [field]: value,
+      },
+    }));
+  };
+
+  const setEditGuarantorField = (
+    index: number,
+    field: keyof EditLoanForm['guarantors'][number],
+    value: string
+  ) => {
+    setEditLoanModal((prev) => {
+      const guarantors = [...prev.form.guarantors];
+      const existing = guarantors[index] || {
+        name: '',
+        nic: '',
+        address: '',
+        contact_no: '',
+        relationship: '',
+      };
+
+      guarantors[index] = {
+        ...existing,
+        [field]: value,
+      };
+
+      return {
+        ...prev,
+        form: {
+          ...prev.form,
+          guarantors,
+        },
+      };
+    });
+  };
+
+  const addEditGuarantor = () => {
+    setEditLoanModal((prev) => ({
+      ...prev,
+      form: {
+        ...prev.form,
+        guarantors: [...prev.form.guarantors, { name: '', nic: '', address: '', contact_no: '', relationship: '' }],
+      },
+    }));
+  };
+
+  const removeEditGuarantor = (index: number) => {
+    setEditLoanModal((prev) => {
+      const next = prev.form.guarantors.filter((_, itemIndex) => itemIndex !== index);
+      return {
+        ...prev,
+        form: {
+          ...prev.form,
+          guarantors: next.length > 0 ? next : [{ name: '', nic: '', address: '', contact_no: '', relationship: '' }],
+        },
+      };
+    });
+  };
+
+  const validateEditLoanStep = (stepId: number): string | null => {
+    const form = editLoanModal.form;
+
+    if (stepId === 2) {
+      if (!form.manager_name.trim()) return 'Manager is required.';
+      if (!form.field_officer.trim()) return 'Field officer is required.';
+      return null;
+    }
+
+    if (stepId === 3) {
+      if (!form.customer_name.trim()) return 'Customer name is required.';
+      if (!form.contact_no.trim()) return 'Contact number is required.';
+      if (!form.address.trim()) return 'Address is required.';
+      if (!form.loan_request_date.trim()) return 'Loan request date is required.';
+      return null;
+    }
+
+    if (stepId === 9) {
+      const loanAmount = Number(form.loan_amount || 0);
+      const interestRate = Number(form.interest_rate || 0);
+      const termsCount = Number(form.terms_count || 0);
+      const refundableAmount = Number(form.refundable_amount || 0);
+      const installmentAmount = Number(form.installment_amount || 0);
+
+      if (loanAmount <= 0) return 'Loan amount must be greater than 0.';
+      if (interestRate < 0) return 'Interest rate cannot be negative.';
+      if (termsCount < 1) return 'Terms count must be at least 1.';
+      if (refundableAmount < 0) return 'Refundable amount cannot be negative.';
+      if (installmentAmount < 0) return 'Installment amount cannot be negative.';
+      return null;
+    }
+
+    return null;
+  };
+
+  const goToEditLoanStep = (stepId: number) => {
+    if (stepId <= editLoanModal.activeStep) {
+      setEditLoanModal((prev) => ({ ...prev, activeStep: stepId }));
+      return;
+    }
+
+    const currentStepError = validateEditLoanStep(editLoanModal.activeStep);
+    if (currentStepError) {
+      openModal(currentStepError, 'Validation');
+      return;
+    }
+
+    setEditLoanModal((prev) => ({ ...prev, activeStep: Math.min(stepId, editLoanSteps.length) }));
+  };
+
+  const nextEditLoanStep = () => {
+    const currentStepError = validateEditLoanStep(editLoanModal.activeStep);
+    if (currentStepError) {
+      openModal(currentStepError, 'Validation');
+      return;
+    }
+
+    setEditLoanModal((prev) => ({
+      ...prev,
+      activeStep: Math.min(prev.activeStep + 1, editLoanSteps.length),
+    }));
+  };
+
+  const prevEditLoanStep = () => {
+    setEditLoanModal((prev) => ({ ...prev, activeStep: Math.max(prev.activeStep - 1, 1) }));
   };
 
   const submitEditLoanDetails = async () => {
     if (!token || !editLoanModal.loan) return;
 
+    if (!canEditLoanDetails) {
+      openModal('Only Super Admin can edit loan details.', 'Permission');
+      return;
+    }
+
     const loan = editLoanModal.loan;
     const form = editLoanModal.form;
+
+    for (let step = 1; step <= editLoanSteps.length; step += 1) {
+      const stepError = validateEditLoanStep(step);
+      if (stepError) {
+        setEditLoanModal((prev) => ({ ...prev, activeStep: step }));
+        openModal(stepError, 'Validation');
+        return;
+      }
+    }
 
     if (!form.customer_name.trim() || !form.contact_no.trim() || !form.address.trim()) {
       openModal('Customer name, contact number, and address are required.', 'Validation');
@@ -1847,10 +2087,10 @@ export default function LoanApprovalsPage() {
       const response = await axios.put(
         `${API_BASE}/microfinance/loan-requests/${loan.id}`,
         {
-          loan_scope: loan.loan_scope,
-          mf_route_id: loan.route?.id ?? null,
-          mf_center_id: loan.center?.id ?? null,
-          mf_group_id: loan.group?.id ?? null,
+          loan_scope: form.loan_scope,
+          mf_route_id: form.mf_route_id > 0 ? form.mf_route_id : null,
+          mf_center_id: form.mf_center_id > 0 ? form.mf_center_id : null,
+          mf_group_id: form.mf_group_id > 0 ? form.mf_group_id : null,
           approval_employee_id: loan.approval_employee_id ?? null,
           manager_name: form.manager_name.trim(),
           field_officer: form.field_officer.trim(),
@@ -1877,13 +2117,15 @@ export default function LoanApprovalsPage() {
           charge_payment_mode: form.charge_payment_mode,
           charges_collection_status: form.charges_collection_status,
           loan_request_date: form.loan_request_date || loan.loan_request_date,
-          guarantors: (loan.guarantors || []).map((guarantor) => ({
-            name: String(guarantor.name || '').trim(),
-            nic: guarantor.nic || null,
-            address: guarantor.address || null,
-            contact_no: guarantor.contact_no || null,
-            relationship: guarantor.relationship || null,
-          })),
+          guarantors: form.guarantors
+            .map((guarantor) => ({
+              name: String(guarantor.name || '').trim(),
+              nic: String(guarantor.nic || '').trim() || null,
+              address: String(guarantor.address || '').trim() || null,
+              contact_no: String(guarantor.contact_no || '').trim() || null,
+              relationship: String(guarantor.relationship || '').trim() || null,
+            }))
+            .filter((guarantor) => guarantor.name !== ''),
         },
         { headers }
       );
@@ -2208,7 +2450,7 @@ export default function LoanApprovalsPage() {
         .replace(/\s+/g, ' ')
         .trim();
 
-    const allowedRoleKeywords = ['finance manager', 'branch manager', 'managing director', 'business owner', 'admin'];
+    const allowedRoleKeywords = ['super admin', 'superadmin', 'system admin'];
 
     const email = normalize(String(authUser?.email || ''));
     if (email === 'superadmin softcodelk com') {
@@ -2489,7 +2731,8 @@ export default function LoanApprovalsPage() {
         delete next[loan.id];
         return next;
       });
-      openModal('Loan approved successfully.', 'Success');
+      await handleDownloadLoanQr(loan, { silentSuccess: true });
+      openModal('Loan approved successfully. Loan QR downloaded.', 'Success');
     } catch (error: unknown) {
       const message =
         axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
@@ -2617,6 +2860,66 @@ export default function LoanApprovalsPage() {
       openModal(message, 'Error');
     } finally {
       setDownloadingId(null);
+    }
+  };
+
+  const buildLoanQrContent = (loan: LoanRequest) => {
+    const workflowStep = resolveWorkflowStep(loan);
+    return JSON.stringify(
+      {
+        app: 'microcreditv4',
+        entity: 'loan_request',
+        loan_id: loan.id,
+        loan_code: String(loan.loan_code || '').trim() || null,
+        reference_no: String(loan.reference_no || '').trim() || null,
+        customer_no: String(loan.customer_no || '').trim(),
+        customer_name: String(loan.customer_name || '').trim(),
+        loan_amount: Number(loan.loan_amount || 0),
+        refundable_amount: Number(loan.refundable_amount || 0),
+        installment_amount: Number(loan.installment_amount || 0),
+        status: String(loan.status || '').trim() || null,
+        workflow_step: workflowStep,
+        workflow_label: getWorkflowStepLabel(workflowStep),
+        generated_at: new Date().toISOString(),
+      },
+      null,
+      0
+    );
+  };
+
+  const handleDownloadLoanQr = async (loan: LoanRequest, options?: { silentSuccess?: boolean }) => {
+    if (!token) return;
+
+    setQrDownloadingId(loan.id);
+    try {
+      const qrModule = await import('qrcode');
+      const qrContent = buildLoanQrContent(loan);
+      const dataUrl = await qrModule.toDataURL(qrContent, {
+        errorCorrectionLevel: 'M',
+        type: 'image/png',
+        margin: 2,
+        scale: 8,
+        width: 920,
+      });
+
+      const anchor = document.createElement('a');
+      const loanLabel = String(loan.reference_no || loan.loan_code || loan.customer_no || loan.id)
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, '_');
+      anchor.href = dataUrl;
+      anchor.download = `loan_qr_${loanLabel || loan.id}.png`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+
+      if (!options?.silentSuccess) {
+        openModal('Loan QR downloaded successfully.', 'Success');
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error && error.message ? error.message : 'Failed to download loan QR.';
+      openModal(message, 'Error');
+    } finally {
+      setQrDownloadingId(null);
     }
   };
 
@@ -2911,19 +3214,17 @@ export default function LoanApprovalsPage() {
                       >
                         View More Details
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!canEditLoanDetails) {
-                            openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can edit loan details.', 'Permission');
-                            return;
-                          }
-                          openEditLoanModal(loan);
-                        }}
-                        className="hidden"
-                      >
-                        Edit Loan Details
-                      </button>
+                      {canEditLoanDetails && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            openEditLoanModal(loan);
+                          }}
+                          className="inline-flex items-center rounded-full border border-emerald-200 bg-white px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                        >
+                          Edit Loan Details
+                        </button>
+                      )}
                     </div>
                     </div>
                   </div>
@@ -3062,20 +3363,31 @@ export default function LoanApprovalsPage() {
                     >
                       {downloadingId === loan.id ? 'Processing...' : 'Download Agreement'}
                     </button>
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (!canEditLoanDetails) {
-                          openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can edit loan details.', 'Permission');
-                          return;
-                        }
-                        openEditLoanModal(loan);
-                      }}
-                      className="hidden"
-                    >
-                      Edit Loan Details
-                    </button>
+                    {isFinalWorkflowStep && (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void handleDownloadLoanQr(loan);
+                        }}
+                        disabled={qrDownloadingId === loan.id || approvingId === loan.id}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-cyan-200 bg-white text-cyan-700 font-semibold shadow-sm disabled:opacity-70"
+                      >
+                        {qrDownloadingId === loan.id ? 'Generating QR...' : 'Download Loan QR'}
+                      </button>
+                    )}
+                    {canEditLoanDetails && (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          openEditLoanModal(loan);
+                        }}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-semibold shadow"
+                      >
+                        Edit Loan Details
+                      </button>
+                    )}
                     {canUseApprovalActions && (
                       <>
                         <button
@@ -4429,19 +4741,17 @@ export default function LoanApprovalsPage() {
                 <p className="text-sm text-slate-600">{detailsViewer.loan.customer_name} ({detailsViewer.loan.customer_no})</p>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!canEditLoanDetails) {
-                      openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can edit loan details.', 'Permission');
-                      return;
-                    }
-                    openEditLoanModal(detailsViewer.loan!);
-                  }}
-                  className="hidden"
-                >
-                  Edit Loan Details
-                </button>
+                {canEditLoanDetails && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openEditLoanModal(detailsViewer.loan!);
+                    }}
+                    className="rounded-lg bg-emerald-100 px-3 py-1.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-200"
+                  >
+                    Edit Loan Details
+                  </button>
+                )}
                 {Boolean(detailsViewer.loan?.can_send_back_workflow) && (
                   <button
                     type="button"
@@ -5117,86 +5427,546 @@ export default function LoanApprovalsPage() {
         </div>
       )}
 
+      <style jsx>{`
+        .stepPanel {
+          border: 1px solid #a7f3d0;
+          border-radius: 1rem;
+          padding: 1rem;
+          background: linear-gradient(135deg, rgba(16,185,129,0.08) 0%, rgba(6,182,212,0.09) 100%);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
+        }
+        .stepProgressBar {
+          width: 100%;
+          height: 0.55rem;
+          border-radius: 999px;
+          background: rgba(148,163,184,0.22);
+          overflow: hidden;
+        }
+        .stepProgressFill {
+          height: 100%;
+          border-radius: inherit;
+          background: linear-gradient(90deg, #10b981 0%, #14b8a6 55%, #06b6d4 100%);
+          transition: width 0.3s ease;
+        }
+        .stepTabs {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 0.5rem;
+        }
+        @media (min-width: 768px) {
+          .stepTabs {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+        }
+        .stepTab {
+          display: flex;
+          align-items: center;
+          gap: 0.7rem;
+          width: 100%;
+          border: 1px solid #cbd5e1;
+          border-radius: 0.85rem;
+          padding: 0.55rem 0.7rem;
+          text-align: left;
+          background: rgba(255,255,255,0.86);
+          color: #0f172a;
+          transition: all 0.2s ease;
+        }
+        .stepTab:hover {
+          border-color: #67e8f9;
+          transform: translateY(-1px);
+        }
+        .stepTab.active {
+          border-color: #14b8a6;
+          background: rgba(240,253,250,0.95);
+          box-shadow: 0 0 0 3px rgba(45,212,191,0.15);
+        }
+        .stepTab.done {
+          border-color: #6ee7b7;
+        }
+        .stepNumber {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 1.7rem;
+          height: 1.7rem;
+          border-radius: 999px;
+          font-size: 0.78rem;
+          font-weight: 800;
+          background: #e2e8f0;
+          color: #334155;
+          flex-shrink: 0;
+        }
+        .stepTab.active .stepNumber,
+        .stepTab.done .stepNumber {
+          background: linear-gradient(135deg, #10b981 0%, #06b6d4 100%);
+          color: #ffffff;
+        }
+        .stepText {
+          display: flex;
+          flex-direction: column;
+          min-width: 0;
+        }
+        .stepTitle {
+          font-size: 0.82rem;
+          font-weight: 700;
+          line-height: 1.1;
+        }
+        .stepHint {
+          font-size: 0.72rem;
+          color: #64748b;
+          line-height: 1.2;
+        }
+        .input {
+          width: 100%;
+          border: 1px solid #d1fae5;
+          background: rgba(255, 255, 255, 0.95);
+          border-radius: 0.75rem;
+          padding: 0.68rem 0.9rem;
+          font-size: 0.9rem;
+          color: #0f172a;
+          outline: none;
+          transition: all 0.2s ease;
+        }
+        .input:focus {
+          border-color: #10b981;
+          box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.2);
+        }
+        .sectionCard {
+          border: 1px solid #d1fae5;
+          border-radius: 1rem;
+          padding: 1.1rem;
+          background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(240,253,250,0.72) 100%);
+        }
+        .sectionCard.cyan {
+          border-color: #bae6fd;
+          background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(236,254,255,0.8) 100%);
+        }
+        .sectionCard.blue {
+          border-color: #bfdbfe;
+          background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(239,246,255,0.78) 100%);
+        }
+        .sectionCard.emerald {
+          border-color: #a7f3d0;
+        }
+        .sectionTitle {
+          font-size: 1.05rem;
+          font-weight: 700;
+          color: #0f172a;
+          letter-spacing: 0.01em;
+        }
+        .fieldLabel {
+          display: block;
+          margin-bottom: 0.35rem;
+          color: #0f172a;
+          font-size: 0.78rem;
+          font-weight: 700;
+          letter-spacing: 0.03em;
+          text-transform: uppercase;
+        }
+      `}</style>
+
       {editLoanModal.open && editLoanModal.loan && (
-        <div className="fixed inset-0 z-[74] flex items-center justify-center bg-slate-900/70 px-4 py-8">
-          <div className="w-full max-w-4xl rounded-2xl bg-white p-5 shadow-2xl border border-cyan-100 max-h-[92vh] overflow-auto">
-            <div className="mb-4 flex items-start justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-bold text-slate-900">Edit Loan Details</h3>
-                <p className="text-sm text-slate-600">
-                  {editLoanModal.loan.customer_name} ({editLoanModal.loan.customer_no})
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={closeEditLoanModal}
-                className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200"
-                disabled={editLoanModal.saving}
-              >
-                Close
-              </button>
-            </div>
+        <div className="fixed inset-0 z-[74] flex items-center justify-center bg-slate-900/55 px-4 py-8">
+          <div className="w-full max-w-5xl rounded-2xl border border-cyan-100 bg-white p-5 shadow-2xl max-h-[92vh] overflow-auto">
+            {(() => {
+              const currentLoan = editLoanModal.loan;
+              const customerDocuments = customerDocumentsByLoanId[currentLoan.id] || [];
+              const loanDocuments = currentLoan.documents || [];
+              const residenceDocuments = loanDocuments.filter((document) => {
+                const type = String(document.document_type || '').toLowerCase();
+                return type.includes('residence') || type.includes('house') || type.includes('home') || type.includes('living');
+              });
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-              <input className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Customer Name" value={editLoanModal.form.customer_name} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, customer_name: e.target.value } }))} />
-              <input className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Contact No" value={editLoanModal.form.contact_no} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, contact_no: e.target.value } }))} />
-              <input className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Manager Name" value={editLoanModal.form.manager_name} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, manager_name: e.target.value } }))} />
-              <input className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Collection Officer" value={editLoanModal.form.field_officer} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, field_officer: e.target.value } }))} />
-              <input className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Group Leader" value={editLoanModal.form.group_leader} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, group_leader: e.target.value } }))} />
-              <input type="date" className="rounded-lg border border-cyan-100 px-3 py-2 text-black" value={editLoanModal.form.loan_request_date} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, loan_request_date: e.target.value } }))} />
-              <input className="md:col-span-2 rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Address" value={editLoanModal.form.address} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, address: e.target.value } }))} />
-              <input className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Bank Name" value={editLoanModal.form.bank_name} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, bank_name: e.target.value } }))} />
-              <input className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Bank Branch" value={editLoanModal.form.bank_branch} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, bank_branch: e.target.value } }))} />
-              <input className="md:col-span-2 rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Bank Account No" value={editLoanModal.form.bank_account_no} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, bank_account_no: e.target.value } }))} />
+              return (
+                <>
+                  <div className="mb-4 flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-900">Edit Loan Details</h3>
+                      <p className="text-sm text-slate-600">{currentLoan.customer_name} ({currentLoan.customer_no})</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeEditLoanModal}
+                      className="rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200"
+                      disabled={editLoanModal.saving}
+                    >
+                      Close
+                    </button>
+                  </div>
 
-              <input type="number" min="0" step="0.01" className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Loan Amount" value={editLoanModal.form.loan_amount} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, loan_amount: e.target.value } }))} />
-              <input type="number" min="0" step="0.01" className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Interest Rate" value={editLoanModal.form.interest_rate} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, interest_rate: e.target.value } }))} />
-              <input type="number" min="1" step="1" className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Terms Count" value={editLoanModal.form.terms_count} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, terms_count: e.target.value } }))} />
-              <select className="rounded-lg border border-cyan-100 px-3 py-2 text-black" value={editLoanModal.form.refund_option} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, refund_option: e.target.value as EditLoanForm['refund_option'] } }))}>
-                <option value="day">Day</option>
-                <option value="week">Week</option>
-                <option value="month">Month</option>
-              </select>
-              <input type="number" min="0" step="0.01" className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Refundable Amount" value={editLoanModal.form.refundable_amount} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, refundable_amount: e.target.value } }))} />
-              <input type="number" min="0" step="0.01" className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Installment Amount" value={editLoanModal.form.installment_amount} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, installment_amount: e.target.value } }))} />
-              <select className="rounded-lg border border-cyan-100 px-3 py-2 text-black" value={editLoanModal.form.interest_type} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, interest_type: e.target.value as EditLoanForm['interest_type'] } }))}>
-                <option value="flat">Flat</option>
-                <option value="reducing">Reducing</option>
-              </select>
+                  <div className="stepPanel mb-4">
+                    <div className="stepProgressBar">
+                      <div className="stepProgressFill" style={{ width: `${editLoanProgress}%` }}></div>
+                    </div>
+                    <div className="stepTabs mt-4">
+                      {editLoanSteps.map((step) => (
+                        <button
+                          key={`edit-loan-step-${step.id}`}
+                          type="button"
+                          onClick={() => goToEditLoanStep(step.id)}
+                          className={`stepTab ${editLoanModal.activeStep === step.id ? 'active' : ''} ${step.id < editLoanModal.activeStep ? 'done' : ''}`}
+                        >
+                          <span className="stepNumber">{step.id}</span>
+                          <span className="stepText">
+                            <span className="stepTitle">{step.title}</span>
+                            <span className="stepHint">{step.hint}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
 
-              <input type="number" min="0" step="0.01" className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Document Charges" value={editLoanModal.form.document_charges} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, document_charges: e.target.value } }))} />
-              <input type="number" min="0" step="0.01" className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Stamp Charges" value={editLoanModal.form.stamp_charges} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, stamp_charges: e.target.value } }))} />
-              <input type="number" min="0" step="0.01" className="rounded-lg border border-cyan-100 px-3 py-2 text-black" placeholder="Insurance Charges" value={editLoanModal.form.insurance_charges} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, insurance_charges: e.target.value } }))} />
-              <select className="rounded-lg border border-cyan-100 px-3 py-2 text-black" value={editLoanModal.form.charge_payment_mode} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, charge_payment_mode: e.target.value as EditLoanForm['charge_payment_mode'] } }))}>
-                <option value="deduct_from_loan">Deduct from loan</option>
-                <option value="hand_cash">Hand cash</option>
-              </select>
-              <select className="rounded-lg border border-cyan-100 px-3 py-2 text-black" value={editLoanModal.form.charges_collection_status} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, charges_collection_status: e.target.value as EditLoanForm['charges_collection_status'] } }))}>
-                <option value="pending">Pending</option>
-                <option value="done">Done</option>
-              </select>
+                  {editLoanModal.activeStep === 1 && (
+                    <div className="sectionCard">
+                      <h4 className="sectionTitle">Location Mapping</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+                        <div>
+                          <label className="fieldLabel">Loan Scope *</label>
+                          <select className="input" value={editLoanModal.form.loan_scope} onChange={(e) => setEditLoanField('loan_scope', e.target.value as EditLoanForm['loan_scope'])}>
+                            <option value="route_loan">Route Loan</option>
+                            <option value="center_loan">Center Loan</option>
+                            <option value="direct_loan">Direct Loan</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Route</label>
+                          <input className="input" value={String(currentLoan.route?.name || '-')} readOnly />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Center</label>
+                          <input className="input" value={String(currentLoan.center?.name || '-')} readOnly />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Group</label>
+                          <input className="input" value={String(currentLoan.group?.name || '-')} readOnly />
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
-              <textarea className="md:col-span-2 rounded-lg border border-cyan-100 px-3 py-2 text-black" rows={3} placeholder="Reason" value={editLoanModal.form.reason} onChange={(e) => setEditLoanModal((prev) => ({ ...prev, form: { ...prev.form, reason: e.target.value } }))} />
-            </div>
+                  {editLoanModal.activeStep === 2 && (
+                    <div className="sectionCard">
+                      <h4 className="sectionTitle">Officer & Team</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        <div>
+                          <label className="fieldLabel">Manager *</label>
+                          <input className="input" value={editLoanModal.form.manager_name} onChange={(e) => setEditLoanField('manager_name', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Field Officer *</label>
+                          <input className="input" value={editLoanModal.form.field_officer} onChange={(e) => setEditLoanField('field_officer', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Group Leader</label>
+                          <input className="input" value={editLoanModal.form.group_leader} onChange={(e) => setEditLoanField('group_leader', e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={closeEditLoanModal}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                disabled={editLoanModal.saving}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={submitEditLoanDetails}
-                className="rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 px-4 py-2 text-sm font-semibold text-white shadow disabled:opacity-70"
-                disabled={editLoanModal.saving}
-              >
-                {editLoanModal.saving ? 'Saving...' : 'Save Loan Details'}
-              </button>
-            </div>
+                  {editLoanModal.activeStep === 3 && (
+                    <div className="sectionCard emerald">
+                      <h4 className="sectionTitle">Customer Details</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        <div>
+                          <label className="fieldLabel">Reference No</label>
+                          <input className="input" value={String(currentLoan.reference_no || currentLoan.loan_code || '-')} readOnly />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">NIC</label>
+                          <input className="input" value={String(currentLoan.nic || '-')} readOnly />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Loan Request Date *</label>
+                          <input className="input" type="date" value={editLoanModal.form.loan_request_date} onChange={(e) => setEditLoanField('loan_request_date', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Customer Name *</label>
+                          <input className="input" value={editLoanModal.form.customer_name} onChange={(e) => setEditLoanField('customer_name', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Contact *</label>
+                          <input className="input" value={editLoanModal.form.contact_no} onChange={(e) => setEditLoanField('contact_no', e.target.value)} />
+                        </div>
+                        <div className="md:col-span-3">
+                          <label className="fieldLabel">Address *</label>
+                          <input className="input" value={editLoanModal.form.address} onChange={(e) => setEditLoanField('address', e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {editLoanModal.activeStep === 4 && (
+                    <div className="sectionCard cyan">
+                      <h4 className="sectionTitle">Family & Financial</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        <div>
+                          <label className="fieldLabel">Family Monthly Expenses</label>
+                          <input className="input" value={editLoanModal.form.family_monthly_expenses} onChange={(e) => setEditLoanField('family_monthly_expenses', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Savings Habit</label>
+                          <input className="input" value={editLoanModal.form.family_savings_habit} onChange={(e) => setEditLoanField('family_savings_habit', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Repayment Behaviour</label>
+                          <input className="input" value={editLoanModal.form.repayment_behaviour} onChange={(e) => setEditLoanField('repayment_behaviour', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Existing Loans</label>
+                          <select className="input" value={editLoanModal.form.existing_loans} onChange={(e) => setEditLoanField('existing_loans', e.target.value as EditLoanForm['existing_loans'])}>
+                            <option value="no">No</option>
+                            <option value="yes">Yes</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Monthly Loan Obligations</label>
+                          <input className="input" value={editLoanModal.form.monthly_loan_obligations} onChange={(e) => setEditLoanField('monthly_loan_obligations', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Credit Score</label>
+                          <input className="input" value={editLoanModal.form.credit_score} onChange={(e) => setEditLoanField('credit_score', e.target.value)} />
+                        </div>
+                        <div className="md:col-span-3">
+                          <label className="fieldLabel">Credit History Notes</label>
+                          <textarea className="input" rows={3} value={editLoanModal.form.credit_history_notes} onChange={(e) => setEditLoanField('credit_history_notes', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Bank Name</label>
+                          <input className="input" value={editLoanModal.form.bank_name} onChange={(e) => setEditLoanField('bank_name', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Bank Branch</label>
+                          <input className="input" value={editLoanModal.form.bank_branch} onChange={(e) => setEditLoanField('bank_branch', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Bank Account No</label>
+                          <input className="input" value={editLoanModal.form.bank_account_no} onChange={(e) => setEditLoanField('bank_account_no', e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {editLoanModal.activeStep === 5 && (
+                    <div className="sectionCard">
+                      <h4 className="sectionTitle">Documents</h4>
+                      <div className="mt-4 space-y-2">
+                        {loanDocuments.length === 0 && customerDocuments.length === 0 && (
+                          <p className="rounded-lg border border-cyan-100 bg-cyan-50/50 px-3 py-2 text-sm text-slate-700">No customer documents found for this request.</p>
+                        )}
+                        {loanDocuments.map((document) => (
+                          <div key={`loan-doc-${document.id}`} className="rounded-lg border border-cyan-100 bg-cyan-50/50 px-3 py-2 flex items-center justify-between gap-3">
+                            <div>
+                              <p className="font-semibold text-slate-900 text-sm">{document.document_type || 'Loan Document'}</p>
+                              <p className="text-xs text-slate-600">{document.original_name || document.file_path}</p>
+                            </div>
+                            <button type="button" onClick={() => void openDocumentViewer(document.original_name || document.document_type || 'Loan Document', resolveDocumentUrl(document))} className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-700">Preview</button>
+                          </div>
+                        ))}
+                        {customerDocuments.map((document) => (
+                          <div key={`customer-doc-${document.id}`} className="rounded-lg border border-cyan-100 bg-cyan-50/50 px-3 py-2 flex items-center justify-between gap-3">
+                            <div>
+                              <p className="font-semibold text-slate-900 text-sm">{document.document_type || 'Customer Document'}</p>
+                              <p className="text-xs text-slate-600">{document.original_name || document.file_path}</p>
+                            </div>
+                            <button type="button" onClick={() => void openCustomerDocumentViewer(currentLoan, document)} className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-700">Open</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {editLoanModal.activeStep === 6 && (
+                    <div className="sectionCard">
+                      <h4 className="sectionTitle">Residence Images</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        {residenceDocuments.length === 0 && (
+                          <p className="md:col-span-3 rounded-lg border border-cyan-100 bg-cyan-50/50 px-3 py-2 text-sm text-slate-700">No residence images tagged in this loan request.</p>
+                        )}
+                        {residenceDocuments.map((document) => (
+                          <button key={`residence-doc-${document.id}`} type="button" onClick={() => void openDocumentViewer(document.original_name || document.document_type || 'Residence Image', resolveDocumentUrl(document))} className="rounded-lg border border-cyan-100 bg-white p-3 text-left">
+                            <p className="font-semibold text-slate-900 text-sm">{document.document_type || 'Residence Image'}</p>
+                            <p className="text-xs text-slate-600 mt-1">{document.original_name || document.file_path}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {editLoanModal.activeStep === 7 && (
+                    <div className="sectionCard cyan">
+                      <h4 className="sectionTitle">Evaluation</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        <div>
+                          <label className="fieldLabel">Business Monthly Income</label>
+                          <input className="input" value={editLoanModal.form.business_monthly_income} onChange={(e) => setEditLoanField('business_monthly_income', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Business Monthly Expenses</label>
+                          <input className="input" value={editLoanModal.form.business_monthly_expenses} onChange={(e) => setEditLoanField('business_monthly_expenses', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Family Monthly Income</label>
+                          <input className="input" value={editLoanModal.form.family_monthly_income} onChange={(e) => setEditLoanField('family_monthly_income', e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {editLoanModal.activeStep === 8 && (
+                    <div className="sectionCard cyan">
+                      <h4 className="sectionTitle">Guarantors</h4>
+                      <div className="mt-3 flex justify-end">
+                        <button type="button" onClick={addEditGuarantor} className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-700">Add Guarantor</button>
+                      </div>
+                      <div className="space-y-3 mt-3">
+                        {editLoanModal.form.guarantors.map((guarantor, index) => (
+                          <div key={`edit-guarantor-${index}`} className="rounded-lg border border-cyan-100 bg-cyan-50/50 p-3">
+                            <div className="mb-2 flex items-center justify-between">
+                              <p className="text-xs font-semibold text-slate-700">Guarantor {index + 1}</p>
+                              <button type="button" onClick={() => removeEditGuarantor(index)} className="rounded-md bg-white px-2 py-1 text-xs font-semibold text-rose-700 border border-rose-200">Remove</button>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              <div>
+                                <label className="fieldLabel">Name</label>
+                                <input className="input" value={guarantor.name} onChange={(e) => setEditGuarantorField(index, 'name', e.target.value)} />
+                              </div>
+                              <div>
+                                <label className="fieldLabel">NIC</label>
+                                <input className="input" value={guarantor.nic} onChange={(e) => setEditGuarantorField(index, 'nic', e.target.value)} />
+                              </div>
+                              <div>
+                                <label className="fieldLabel">Contact</label>
+                                <input className="input" value={guarantor.contact_no} onChange={(e) => setEditGuarantorField(index, 'contact_no', e.target.value)} />
+                              </div>
+                              <div>
+                                <label className="fieldLabel">Relationship</label>
+                                <input className="input" value={guarantor.relationship} onChange={(e) => setEditGuarantorField(index, 'relationship', e.target.value)} />
+                              </div>
+                              <div className="md:col-span-2">
+                                <label className="fieldLabel">Address</label>
+                                <input className="input" value={guarantor.address} onChange={(e) => setEditGuarantorField(index, 'address', e.target.value)} />
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {editLoanModal.activeStep === 9 && (
+                    <div className="sectionCard blue">
+                      <h4 className="sectionTitle">Loan Details</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        <div>
+                          <label className="fieldLabel">Loan Amount *</label>
+                          <input className="input" type="number" min="0" step="0.01" value={editLoanModal.form.loan_amount} onChange={(e) => setEditLoanField('loan_amount', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Interest Rate (%) *</label>
+                          <input className="input" type="number" min="0" step="0.01" value={editLoanModal.form.interest_rate} onChange={(e) => setEditLoanField('interest_rate', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Terms Count *</label>
+                          <input className="input" type="number" min="1" step="1" value={editLoanModal.form.terms_count} onChange={(e) => setEditLoanField('terms_count', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Refund Option *</label>
+                          <select className="input" value={editLoanModal.form.refund_option} onChange={(e) => setEditLoanField('refund_option', e.target.value as EditLoanForm['refund_option'])}>
+                            <option value="day">Day</option>
+                            <option value="week">Week</option>
+                            <option value="month">Month</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Interest Type *</label>
+                          <select className="input" value={editLoanModal.form.interest_type} onChange={(e) => setEditLoanField('interest_type', e.target.value as EditLoanForm['interest_type'])}>
+                            <option value="flat">Flat</option>
+                            <option value="reducing">Reducing</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Collection Mode *</label>
+                          <select className="input" value={editLoanModal.form.charge_payment_mode} onChange={(e) => setEditLoanField('charge_payment_mode', e.target.value as EditLoanForm['charge_payment_mode'])}>
+                            <option value="hand_cash">Hand Cash</option>
+                            <option value="deduct_from_loan">Deduct From Loan</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Refundable Amount</label>
+                          <input className="input" type="number" min="0" step="0.01" value={editLoanModal.form.refundable_amount} onChange={(e) => setEditLoanField('refundable_amount', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Installment Amount</label>
+                          <input className="input" type="number" min="0" step="0.01" value={editLoanModal.form.installment_amount} onChange={(e) => setEditLoanField('installment_amount', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Charges Collection Status</label>
+                          <select className="input" value={editLoanModal.form.charges_collection_status} onChange={(e) => setEditLoanField('charges_collection_status', e.target.value as EditLoanForm['charges_collection_status'])}>
+                            <option value="pending">Pending</option>
+                            <option value="done">Done</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Document Charges</label>
+                          <input className="input" type="number" min="0" step="0.01" value={editLoanModal.form.document_charges} onChange={(e) => setEditLoanField('document_charges', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Stamp Charges</label>
+                          <input className="input" type="number" min="0" step="0.01" value={editLoanModal.form.stamp_charges} onChange={(e) => setEditLoanField('stamp_charges', e.target.value)} />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Insurance Charges</label>
+                          <input className="input" type="number" min="0" step="0.01" value={editLoanModal.form.insurance_charges} onChange={(e) => setEditLoanField('insurance_charges', e.target.value)} />
+                        </div>
+                        <div className="md:col-span-3">
+                          <label className="fieldLabel">Reason</label>
+                          <textarea className="input" rows={3} value={editLoanModal.form.reason} onChange={(e) => setEditLoanField('reason', e.target.value)} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mt-5 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={prevEditLoanStep}
+                      className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                      disabled={editLoanModal.saving || editLoanModal.activeStep === 1}
+                    >
+                      Back Step
+                    </button>
+                    {editLoanModal.activeStep < editLoanSteps.length ? (
+                      <button
+                        type="button"
+                        onClick={nextEditLoanStep}
+                        className="rounded-lg bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-2 text-sm font-semibold text-white"
+                        disabled={editLoanModal.saving}
+                      >
+                        Continue
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={submitEditLoanDetails}
+                        className="rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-70"
+                        disabled={editLoanModal.saving}
+                      >
+                        {editLoanModal.saving ? 'Saving...' : 'Save Changes'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={closeEditLoanModal}
+                      className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                      disabled={editLoanModal.saving}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}

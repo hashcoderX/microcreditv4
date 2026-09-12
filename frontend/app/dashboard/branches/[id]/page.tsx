@@ -481,6 +481,11 @@ export default function BranchDashboardPage() {
             path: withBranch('/dashboard/microfinance/reports/field-officer-collection'),
           },
           {
+            title: 'Center Collection Report',
+            description: 'Collection breakdown by center, field officer, and date.',
+            path: withBranch('/dashboard/microfinance/reports/center-collection'),
+          },
+          {
             title: 'Arrears Report',
             description: 'Overdue and arrears-focused loan analysis.',
             path: withBranch('/dashboard/microfinance/reports/arrears'),

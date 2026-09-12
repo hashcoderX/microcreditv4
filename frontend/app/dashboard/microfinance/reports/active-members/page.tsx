@@ -42,6 +42,17 @@ type ActiveMemberRow = {
   dueDate: string;
 };
 
+type AuthUser = {
+  name?: string | null;
+  email?: string | null;
+  designation?: {
+    name?: string | null;
+  } | null;
+  roles?: Array<{
+    name?: string | null;
+  }>;
+};
+
 const API_BASE = getApiBaseUrl();
 
 export default function MicrofinanceActiveMembersReportPage() {
@@ -49,6 +60,7 @@ export default function MicrofinanceActiveMembersReportPage() {
   const searchParams = useSearchParams();
   const branchId = searchParams.get('branch_id') || '';
   const [token, setToken] = useState('');
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<ActiveMemberRow[]>([]);
   const [loadingWidgets, setLoadingWidgets] = useState(true);
@@ -60,6 +72,8 @@ export default function MicrofinanceActiveMembersReportPage() {
   });
   const [officerFilter, setOfficerFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'approved' | 'released'>('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
 
 
   const fetchWidgetPreferences = async (authToken: string) => {
@@ -130,6 +144,14 @@ export default function MicrofinanceActiveMembersReportPage() {
     }
 
     setToken(storedToken);
+    const storedUser = localStorage.getItem('auth_user');
+    if (storedUser) {
+      try {
+        setAuthUser(JSON.parse(storedUser) as AuthUser);
+      } catch {
+        setAuthUser(null);
+      }
+    }
     void fetchWidgetPreferences(storedToken);
   }, [router]);
 
@@ -245,6 +267,19 @@ export default function MicrofinanceActiveMembersReportPage() {
       }
     );
   }, [filteredRows]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [officerFilter, statusFilter, rows.length, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredRows.slice(start, start + pageSize);
+  }, [filteredRows, currentPage, pageSize]);
+
+  const pageStart = filteredRows.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const pageEnd = Math.min(currentPage * pageSize, filteredRows.length);
 
   const summaryCards = [
     {
@@ -432,6 +467,15 @@ export default function MicrofinanceActiveMembersReportPage() {
     doc.save(`active-member-report-${getReportFileDate()}.pdf`);
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('auth_user');
+    router.push('/');
+  };
+
+  const displayName = String(authUser?.name || authUser?.email || 'User').trim();
+  const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
+
   if (!token || loading || loadingWidgets) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50 flex items-center justify-center">
@@ -441,7 +485,7 @@ export default function MicrofinanceActiveMembersReportPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50 p-6 relative overflow-hidden">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_8%_12%,rgba(14,165,233,0.2),transparent_36%),radial-gradient(circle_at_88%_14%,rgba(16,185,129,0.2),transparent_34%),linear-gradient(155deg,#ecfeff_0%,#eff6ff_45%,#f0fdfa_100%)] p-6 relative overflow-hidden">
       <div className="pointer-events-none absolute inset-0 opacity-45">
         <div className="absolute -top-20 left-14 h-72 w-72 rounded-full bg-blue-300 blur-3xl"></div>
         <div className="absolute top-20 right-8 h-80 w-80 rounded-full bg-cyan-300 blur-3xl"></div>
@@ -449,6 +493,49 @@ export default function MicrofinanceActiveMembersReportPage() {
       </div>
 
       <div className="relative z-10 max-w-7xl mx-auto space-y-6">
+        <nav className="relative z-10 rounded-2xl border border-white/20 bg-white/80 p-3 shadow-lg backdrop-blur-lg">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-r from-emerald-500 to-cyan-500">
+                <span className="text-sm font-bold text-white">DOF</span>
+              </div>
+              <h1 className="max-w-[220px] truncate bg-gradient-to-r from-emerald-600 to-cyan-600 bg-clip-text text-base font-bold text-transparent sm:max-w-none sm:text-xl">
+                Desk of Finance
+              </h1>
+            </div>
+
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
+              <button
+                type="button"
+                onClick={() => router.push('/dashboard/microfinance')}
+                className="rounded-full border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-50"
+              >
+                Back to Microfinance
+              </button>
+
+              <div className="hidden items-center space-x-2 text-xs text-gray-600 sm:flex sm:text-sm">
+                <div className="h-2 w-2 animate-pulse rounded-full bg-green-500"></div>
+                <span>System Online</span>
+              </div>
+
+              <div className="hidden items-center rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-left sm:flex">
+                <div className="leading-tight">
+                  <p className="max-w-[220px] truncate text-xs font-semibold text-slate-900">{displayName}</p>
+                  <p className="truncate text-[11px] text-slate-500">{roleName}</p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="w-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-xs font-medium text-white shadow-lg transition-all duration-300 hover:from-emerald-600 hover:to-cyan-600 hover:shadow-xl sm:w-auto sm:px-6 sm:text-sm"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </nav>
+
         <div className="bg-white/82 backdrop-blur-xl rounded-3xl border border-white/70 shadow-[0_20px_60px_-30px_rgba(14,116,144,0.45)] p-6 md:p-7">
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div>
@@ -466,9 +553,13 @@ export default function MicrofinanceActiveMembersReportPage() {
             </button>
           </div>
 
-          <div className="mt-5 grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-3">
+          <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
             {visibleSummaryCards.map((card) => (
-              <div key={card.key} className="relative rounded-xl bg-white/90 border border-white shadow-sm p-4">
+              <div
+                key={card.key}
+                className="group relative overflow-hidden rounded-2xl border border-cyan-100/80 bg-gradient-to-br from-white via-cyan-50/35 to-white p-3.5 shadow-[0_10px_25px_-18px_rgba(6,95,70,0.5)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_16px_34px_-20px_rgba(14,116,144,0.45)] sm:p-4"
+              >
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-cyan-400 via-emerald-400 to-sky-500 opacity-70"></div>
                 <WidgetCloseGate>
 <button
                   type="button"
@@ -479,8 +570,12 @@ export default function MicrofinanceActiveMembersReportPage() {
                   ×
                 </button>
 </WidgetCloseGate>
-                <p className="text-xs uppercase tracking-wide text-slate-500">{card.label}</p>
-                <p className={`text-2xl font-extrabold mt-1 ${card.valueClass}`}>{card.value}</p>
+                <p className="pr-8 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 sm:text-[11px]">
+                  {card.label}
+                </p>
+                <p className={`mt-1.5 text-xl font-black leading-tight sm:text-2xl ${card.valueClass}`}>
+                  {card.value}
+                </p>
               </div>
             ))}
           </div>
@@ -571,71 +666,138 @@ export default function MicrofinanceActiveMembersReportPage() {
               No active member data found for selected filters.
             </div>
           ) : (
-            <div className="mt-4 overflow-x-auto rounded-2xl border border-cyan-100">
-              <table className="min-w-full text-sm text-left text-slate-700 bg-white">
-                <thead className="bg-cyan-50/70 text-slate-700">
-                  <tr>
-                    {visibleTableColumns.map((column) => (
-                      <th key={column.key} className="px-3 py-2 font-semibold">
-                        <div className="flex items-center gap-2">
-                          <span>{column.label}</span>
-                          <WidgetCloseGate>
-<button
-                            type="button"
-                            onClick={() => void hideWidget(`mf_active_members_widget_col_${column.key}`)}
-                            className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-[10px] font-bold text-slate-600 transition hover:bg-rose-50 hover:text-rose-700"
-                            aria-label={`Hide ${column.label} column`}
-                          >
-                            ×
-                          </button>
-</WidgetCloseGate>
-                        </div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleTableColumns.length === 0 && (
+            <>
+              <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-cyan-100 bg-cyan-50/40 px-3 py-2 text-xs text-slate-700">
+                <p>
+                  Showing {pageStart} to {pageEnd} of {filteredRows.length} records
+                </p>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">Rows</label>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value) || 15)}
+                    className="rounded-lg border border-cyan-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
+                  >
+                    <option value={10}>10</option>
+                    <option value={15}>15</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="mt-4 overflow-x-auto rounded-2xl border border-cyan-100">
+                <table className="min-w-full text-sm text-left text-slate-700 bg-white">
+                  <thead className="bg-cyan-50/70 text-slate-700">
                     <tr>
-                      <td className="px-3 py-4 text-center text-amber-700" colSpan={1}>
-                        All table columns are hidden. Restore from dashboard with admin approval.
-                      </td>
+                      {visibleTableColumns.map((column) => (
+                        <th key={column.key} className="px-3 py-2 font-semibold">
+                          <div className="flex items-center gap-2">
+                            <span>{column.label}</span>
+                            <WidgetCloseGate>
+<button
+                              type="button"
+                              onClick={() => void hideWidget(`mf_active_members_widget_col_${column.key}`)}
+                              className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-[10px] font-bold text-slate-600 transition hover:bg-rose-50 hover:text-rose-700"
+                              aria-label={`Hide ${column.label} column`}
+                            >
+                              ×
+                            </button>
+</WidgetCloseGate>
+                          </div>
+                        </th>
+                      ))}
                     </tr>
-                  )}
-                  {filteredRows.map((row) => (
-                    <tr key={row.loanId} className="border-b border-cyan-100 last:border-b-0 hover:bg-cyan-50/40 transition-colors">
-                      {visibleTableColumns.map((column) => {
-                        if (column.key === 'loanId') return <td key={column.key} className="px-3 py-2">{row.loanId || '-'}</td>;
-                        if (column.key === 'customerNo') return <td key={column.key} className="px-3 py-2 font-semibold text-slate-900">{row.customerNo}</td>;
-                        if (column.key === 'customer') return <td key={column.key} className="px-3 py-2">{row.customerName}</td>;
-                        if (column.key === 'nic') return <td key={column.key} className="px-3 py-2">{row.nic}</td>;
-                        if (column.key === 'contact') return <td key={column.key} className="px-3 py-2">{row.contact}</td>;
-                        if (column.key === 'fieldOfficer') return <td key={column.key} className="px-3 py-2">{row.fieldOfficer}</td>;
-                        if (column.key === 'status') {
-                          return (
-                            <td key={column.key} className="px-3 py-2">
-                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold capitalize ${
-                                String(row.status).toLowerCase() === 'released'
-                                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                                  : 'border-blue-200 bg-blue-50 text-blue-800'
-                              }`}>
-                                {row.status}
-                              </span>
-                            </td>
-                          );
-                        }
-                        if (column.key === 'loanAmount') return <td key={column.key} className="px-3 py-2">{formatMoney(row.loanAmount)}</td>;
-                        if (column.key === 'refundable') return <td key={column.key} className="px-3 py-2">{formatMoney(row.refundableAmount)}</td>;
-                        if (column.key === 'collected') return <td key={column.key} className="px-3 py-2 text-emerald-700 font-semibold">{formatMoney(row.collectedAmount)}</td>;
-                        if (column.key === 'pending') return <td key={column.key} className="px-3 py-2 text-rose-700 font-semibold">{formatMoney(row.pendingAmount)}</td>;
-                        if (column.key === 'dueDate') return <td key={column.key} className="px-3 py-2">{formatDate(row.dueDate)}</td>;
-                        return null;
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {visibleTableColumns.length === 0 && (
+                      <tr>
+                        <td className="px-3 py-4 text-center text-amber-700" colSpan={1}>
+                          All table columns are hidden. Restore from dashboard with admin approval.
+                        </td>
+                      </tr>
+                    )}
+                    {paginatedRows.map((row) => (
+                      <tr key={row.loanId} className="border-b border-cyan-100 last:border-b-0 hover:bg-cyan-50/40 transition-colors">
+                        {visibleTableColumns.map((column) => {
+                          if (column.key === 'loanId') return <td key={column.key} className="px-3 py-2">{row.loanId || '-'}</td>;
+                          if (column.key === 'customerNo') return <td key={column.key} className="px-3 py-2 font-semibold text-slate-900">{row.customerNo}</td>;
+                          if (column.key === 'customer') return <td key={column.key} className="px-3 py-2">{row.customerName}</td>;
+                          if (column.key === 'nic') return <td key={column.key} className="px-3 py-2">{row.nic}</td>;
+                          if (column.key === 'contact') return <td key={column.key} className="px-3 py-2">{row.contact}</td>;
+                          if (column.key === 'fieldOfficer') return <td key={column.key} className="px-3 py-2">{row.fieldOfficer}</td>;
+                          if (column.key === 'status') {
+                            return (
+                              <td key={column.key} className="px-3 py-2">
+                                <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold capitalize ${
+                                  String(row.status).toLowerCase() === 'released'
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                                    : 'border-blue-200 bg-blue-50 text-blue-800'
+                                }`}>
+                                  {row.status}
+                                </span>
+                              </td>
+                            );
+                          }
+                          if (column.key === 'loanAmount') return <td key={column.key} className="px-3 py-2">{formatMoney(row.loanAmount)}</td>;
+                          if (column.key === 'refundable') return <td key={column.key} className="px-3 py-2">{formatMoney(row.refundableAmount)}</td>;
+                          if (column.key === 'collected') return <td key={column.key} className="px-3 py-2 text-emerald-700 font-semibold">{formatMoney(row.collectedAmount)}</td>;
+                          if (column.key === 'pending') return <td key={column.key} className="px-3 py-2 text-rose-700 font-semibold">{formatMoney(row.pendingAmount)}</td>;
+                          if (column.key === 'dueDate') return <td key={column.key} className="px-3 py-2">{formatDate(row.dueDate)}</td>;
+                          return null;
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-3 flex flex-col gap-2 rounded-xl border border-cyan-100 bg-white/80 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-slate-600">
+                  Page {currentPage} of {totalPages}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                    disabled={currentPage <= 1}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  {Array.from({ length: totalPages }, (_, index) => index + 1)
+                    .filter((page) => page === 1 || page === totalPages || Math.abs(page - currentPage) <= 1)
+                    .map((page, index, arr) => {
+                      const prevPage = arr[index - 1];
+                      const showDots = index > 0 && prevPage !== undefined && page - prevPage > 1;
+                      return (
+                        <div key={page} className="flex items-center gap-2">
+                          {showDots && <span className="text-xs text-slate-400">...</span>}
+                          <button
+                            type="button"
+                            onClick={() => setCurrentPage(page)}
+                            className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+                              page === currentPage
+                                ? 'bg-cyan-600 text-white shadow-sm'
+                                : 'border border-slate-200 bg-white text-slate-700 hover:bg-cyan-50'
+                            }`}
+                          >
+                            {page}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                    disabled={currentPage >= totalPages}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </>
           )}
         </div>
 

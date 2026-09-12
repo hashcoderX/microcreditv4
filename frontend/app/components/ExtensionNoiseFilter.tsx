@@ -23,22 +23,28 @@ function patchPromiseRejections() {
   const previousOnUnhandledRejection = window.onunhandledrejection;
   const previousOnError = window.onerror;
 
+  const eventLooksLikeExtensionNoise = (event: unknown) => {
+    if (!event || typeof event !== 'object') return false;
+    const record = event as Record<string, unknown>;
+    return isExtensionNoise(record.reason) || isExtensionNoise(record.error) || isExtensionNoise(record.message) || isExtensionNoise(record.detail);
+  };
+
   const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-    if (!isExtensionNoise(event.reason)) return;
+    if (!(isExtensionNoise(event.reason) || eventLooksLikeExtensionNoise(event))) return;
     event.preventDefault();
     event.stopImmediatePropagation?.();
     event.stopPropagation?.();
   };
 
   const onWindowError = (event: ErrorEvent) => {
-    if (!isExtensionNoise(event.error ?? event.message)) return;
+    if (!(isExtensionNoise(event.error ?? event.message) || eventLooksLikeExtensionNoise(event))) return;
     event.preventDefault();
     event.stopImmediatePropagation?.();
     event.stopPropagation?.();
   };
 
   window.onunhandledrejection = (event) => {
-    if (isExtensionNoise(event?.reason)) {
+    if (isExtensionNoise(event?.reason) || eventLooksLikeExtensionNoise(event)) {
       event?.preventDefault?.();
       return true;
     }
@@ -51,7 +57,7 @@ function patchPromiseRejections() {
   };
 
   window.onerror = (message, source, lineno, colno, error) => {
-    if (isExtensionNoise(error ?? message)) {
+    if (isExtensionNoise(error ?? message) || eventLooksLikeExtensionNoise(error)) {
       return true;
     }
 

@@ -2226,33 +2226,9 @@ class LoanRequestController extends Controller
 
     private function canEditLoanRequest(?object $user, MicrofinanceLoanRequest $loanRequest): bool
     {
-        if ($this->hasReleasedLoanActionAccess($user)) {
-            return true;
-        }
-
-        if (!$user) {
-            return false;
-        }
-
-        $status = strtolower(trim((string) ($loanRequest->status ?? '')));
-        if ($status !== 'hold') {
-            return false;
-        }
-
-        $userId = (int) ($user->id ?? 0);
-        $userEmployeeId = (int) ($user->employee_id ?? 0);
-        $createdByUserId = (int) ($loanRequest->created_by ?? 0);
-        $assignedEmployeeId = (int) ($loanRequest->approval_employee_id ?? 0);
-
-        if ($userId > 0 && $userId === $createdByUserId) {
-            return true;
-        }
-
-        if ($userEmployeeId > 0 && $userEmployeeId === $assignedEmployeeId) {
-            return true;
-        }
-
-        return false;
+        return $user !== null
+            && method_exists($user, 'isSystemAdmin')
+            && $user->isSystemAdmin();
     }
 
     private function canRemoveLoan(?object $user): bool
@@ -3487,7 +3463,7 @@ class LoanRequestController extends Controller
     {
         if (!$this->canEditLoanRequest($request->user(), $loanRequest)) {
             return response()->json([
-                'message' => 'Only Finance Manager, Branch Manager, Admin, or the send-back assigned employee can edit loan details.'
+                'message' => 'Only Super Admin can edit loan details.'
             ], 403);
         }
 

@@ -66,6 +66,10 @@ export default function RootLayout({
                   /aggressive_mode/i,
                   /a listener indicated an asynchronous response by returning true/i,
                   /message channel closed before a response was received/i,
+                   /reportallchanges/i,
+                   /cannot read properties of undefined \(reading ['\"]starttime['\"]\)/i,
+                   /slow network is detected/i,
+                   /fallback font will be used while loading/i,
                   /could not establish connection\\. receiving end does not exist/i,
                   /runtime\\.lasterror/i,
                   /extension context invalidated/i,
@@ -79,6 +83,29 @@ export default function RootLayout({
                 };
 
                 var isNoise = function (value) {
+                  if (value && typeof value === 'object') {
+                    var directMessage = typeof value.message === 'string' ? value.message : '';
+                    var reason = value.reason;
+                    var reasonMessage =
+                      reason && typeof reason === 'object' && typeof reason.message === 'string'
+                        ? reason.message + ' ' + (reason.stack || '')
+                        : typeof reason === 'string'
+                          ? reason
+                          : '';
+                    var detail = value.detail;
+                    var detailMessage = typeof detail === 'string' ? detail : '';
+                    var error = value.error;
+                    var errorMessage =
+                      error && typeof error === 'object' && typeof error.message === 'string'
+                        ? error.message + ' ' + (error.stack || '')
+                        : typeof error === 'string'
+                          ? error
+                          : '';
+
+                    var merged = [directMessage, reasonMessage, detailMessage, errorMessage].filter(Boolean).join(' ').trim();
+                    if (merged && matchesNoise(merged)) return true;
+                  }
+
                   if (value && typeof value === 'object' && typeof value.message === 'string') {
                     return matchesNoise(value.message + ' ' + (value.stack || ''));
                   }
@@ -115,7 +142,7 @@ export default function RootLayout({
                 });
 
                 var rejectionHandler = function (event) {
-                  if (isNoise(event && event.reason)) {
+                  if (isNoise(event && event.reason) || isNoise(event && event.message) || isNoise(event && event.detail) || isNoise(event)) {
                     stopNoiseEvent(event);
                     return true;
                   }
@@ -123,7 +150,7 @@ export default function RootLayout({
                 };
 
                 var errorHandler = function (event) {
-                  if (isNoise((event && event.error) || (event && event.message))) {
+                  if (isNoise((event && event.error) || (event && event.message)) || isNoise(event && event.detail) || isNoise(event)) {
                     stopNoiseEvent(event);
                     return true;
                   }

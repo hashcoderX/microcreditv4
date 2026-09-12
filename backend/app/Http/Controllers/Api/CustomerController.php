@@ -17,6 +17,20 @@ use Illuminate\Support\Facades\Storage;
 
 class CustomerController extends Controller
 {
+    private function defaultCompanyId(): int
+    {
+        $preferred = (int) Company::query()
+            ->where('is_main_branch', true)
+            ->orderBy('id')
+            ->value('id');
+
+        if ($preferred > 0) {
+            return $preferred;
+        }
+
+        return (int) (Company::query()->orderBy('id')->value('id') ?? 0);
+    }
+
     private function isAdminUser(?object $user): bool
     {
         if (!$user) {
@@ -169,6 +183,17 @@ class CustomerController extends Controller
 
             if ($requestedTenantId > 0) {
                 $resolvedTenantId = $requestedTenantId;
+            }
+
+            // Local/dev super admin users may not be attached to a branch/employee record.
+            // Fall back to the primary company so customer onboarding still works.
+            $defaultCompanyId = $this->defaultCompanyId();
+            if ($resolvedBranchId <= 0 && $defaultCompanyId > 0) {
+                $resolvedBranchId = $defaultCompanyId;
+            }
+
+            if ($resolvedTenantId <= 0 && $defaultCompanyId > 0) {
+                $resolvedTenantId = $defaultCompanyId;
             }
         }
 
