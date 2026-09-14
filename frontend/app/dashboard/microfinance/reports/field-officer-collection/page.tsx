@@ -1,19 +1,12 @@
 'use client';
 
 import axios from 'axios';
-import { getApiBaseUrl, getBackendOrigin } from '@/lib/api';
+import { getApiBaseUrl } from '@/lib/api';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
-
-type LoanRow = {
-  id: number;
-  customer_no?: string | null;
-  customer_name?: string | null;
-  field_officer?: string | null;
-};
 
 type CollectionRow = {
   id: number;
@@ -26,6 +19,12 @@ type CollectionRow = {
   penalty_amount?: number | string;
   payment_type?: string | null;
   payment_reference?: string | null;
+  loan_request?: {
+    id?: number | string;
+    customer_no?: string | null;
+    customer_name?: string | null;
+    field_officer?: string | null;
+  } | null;
 };
 
 type TransactionRow = {
@@ -134,47 +133,31 @@ export default function FieldOfficerCollectionReportPage() {
     const loadReport = async () => {
       setLoading(true);
       try {
-        const [loanRes, collectionRes] = await Promise.all([
-          axios.get(`${API_BASE}/microfinance/loan-requests`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: 'application/json',
-            },
-            params: {
-              branch_id: branchId,
-            },
-          }),
-          axios.get(`${API_BASE}/microfinance/collections`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: 'application/json',
-            },
-            params: {
-              branch_id: branchId,
-            },
-          }),
-        ]);
-
-        const loans: LoanRow[] = Array.isArray(loanRes.data) ? loanRes.data : [];
-        const collections: CollectionRow[] = Array.isArray(collectionRes.data) ? collectionRes.data : [];
-
-        const loanMap = new Map<number, LoanRow>();
-        loans.forEach((loan) => {
-          loanMap.set(Number(loan.id), loan);
+        const collectionRes = await axios.get(`${API_BASE}/microfinance/collections`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+          params: {
+            branch_id: branchId,
+          },
         });
+
+        const collections: CollectionRow[] = Array.isArray(collectionRes.data) ? collectionRes.data : [];
 
         const mapped: TransactionRow[] = collections
           .map((collection) => {
-            const loanId = Number(collection.mf_loan_request_id || 0);
-            const loan = loanMap.get(loanId);
+            const relationLoanId = Number(collection.loan_request?.id || 0);
+            const loanId = Number(collection.mf_loan_request_id || relationLoanId || 0);
+            const relationLoan = collection.loan_request || null;
 
             return {
               id: Number(collection.id),
               date: String(collection.collection_date || collection.created_at || ''),
               loanId,
-              customerNo: String(loan?.customer_no || '-'),
-              customerName: String(loan?.customer_name || '-'),
-              fieldOfficer: String(loan?.field_officer || 'Unassigned'),
+              customerNo: String(relationLoan?.customer_no || '-'),
+              customerName: String(relationLoan?.customer_name || '-'),
+              fieldOfficer: String(relationLoan?.field_officer || 'Unassigned'),
               collected: Number(collection.collected_amount || 0),
               capital: Number(collection.capital_amount || 0),
               interest: Number(collection.interest_amount || 0),

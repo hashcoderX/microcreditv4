@@ -225,7 +225,7 @@ class LoanCollectionController extends Controller
 
         $query = MicrofinanceLoanCollection::query()
             ->with([
-                'loanRequest:id,customer_no,customer_name',
+                'loanRequest:id,customer_no,customer_name,field_officer',
                 'deletedByUser:id,name,email',
             ])
             ->orderByDesc('id');
