@@ -428,6 +428,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
         Route::get('/{loanRequest}/download-reminder-letter', [MicrofinanceLoanRequestController::class, 'downloadReminderLetter']);
         Route::get('/{loanRequest}/download-legal-letter', [MicrofinanceLoanRequestController::class, 'downloadLegalLetter']);
         Route::post('/{loanRequest}/approve', [MicrofinanceLoanRequestController::class, 'approve']);
+        Route::post('/{loanRequest}/direct-approve', [MicrofinanceLoanRequestController::class, 'directApprove']);
         Route::post('/{loanRequest}/reject', [MicrofinanceLoanRequestController::class, 'reject']);
         Route::post('/{loanRequest}/request-approval', [MicrofinanceLoanRequestController::class, 'requestApproval']);
         Route::post('/{loanRequest}/approve-bm-step', [MicrofinanceLoanRequestController::class, 'approveBmStep']);

@@ -296,9 +296,9 @@ export default function ReportsHubPage() {
             path: '/dashboard/reports/loan-receivable',
           },
           {
-            title: 'Portfolio Arrears Report',
+            title: 'Portfolio at Risk (PAR) Report',
             description: 'Overdue loans and days overdue for collection management.',
-            path: '/dashboard/microfinance/reports/arrears',
+            path: '/dashboard/microfinance/reports/par',
           },
           {
             title: 'Interest Income Report',
@@ -357,9 +357,9 @@ export default function ReportsHubPage() {
             path: '/dashboard/microfinance/reports/field-officer-collection',
           },
           {
-            title: 'Arrears Report',
+            title: 'Portfolio at Risk (PAR) Report',
             description: 'Overdue and arrears-focused loan analysis.',
-            path: '/dashboard/microfinance/reports/arrears',
+            path: '/dashboard/microfinance/reports/par',
           },
           {
             title: 'Active Member Report',

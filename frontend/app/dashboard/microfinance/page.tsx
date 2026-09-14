@@ -374,13 +374,13 @@ export default function MicrofinanceDashboard() {
     },
     {
       key: 'mf_widget_report_arrears',
-      name: 'Arrears Report',
+      name: 'Portfolio at Risk (PAR) Report',
       icon: '⚠️',
       color: 'from-amber-500 to-orange-500',
       bgColor: 'from-amber-50 to-orange-50',
       description: 'Identify overdue and arrears-heavy accounts quickly.',
-      path: '/dashboard/microfinance/reports/arrears',
-      permissionTokens: ['arrears report', '/dashboard/microfinance/reports/arrears'],
+      path: '/dashboard/microfinance/reports/par',
+      permissionTokens: ['arrears report', 'par report', '/dashboard/microfinance/reports/arrears', '/dashboard/microfinance/reports/par'],
     },
     {
       key: 'mf_widget_report_active_members',

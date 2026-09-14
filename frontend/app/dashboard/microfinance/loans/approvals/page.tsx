@@ -494,6 +494,7 @@ export default function LoanApprovalsPage() {
   const [requests, setRequests] = useState<LoanRequest[]>([]);
   const [pageLoading, setPageLoading] = useState(true);
   const [approvingId, setApprovingId] = useState<number | null>(null);
+  const [directApprovingId, setDirectApprovingId] = useState<number | null>(null);
   const [advancingId, setAdvancingId] = useState<number | null>(null);
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
@@ -2468,6 +2469,43 @@ export default function LoanApprovalsPage() {
     return hasAllowedRole || hasAllowedDesignation;
   }, [authUser]);
 
+  const canUseDirectApproval = useMemo(() => {
+    const normalize = (value: string) =>
+      String(value || '')
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const email = normalize(String(authUser?.email || ''));
+    if (email === 'superadmin softcodelk com') {
+      return true;
+    }
+
+    const allowedKeywords = [
+      'level 1 senior management',
+      'chairman',
+      'chairperson',
+      'vice chairman',
+      'non executive director',
+      'executive director',
+      'board director',
+      'super admin',
+      'superadmin',
+    ];
+
+    const roleNames = (authUser?.roles || []).map((role) => normalize(String(role?.name || '')));
+    const designationName = normalize(String(authUser?.designation?.name || ''));
+
+    const hasAllowedRole = roleNames.some((roleName) =>
+      allowedKeywords.some((keyword) => roleName.includes(keyword))
+    );
+    const hasAllowedDesignation = allowedKeywords.some((keyword) => designationName.includes(keyword));
+
+    return hasAllowedRole || hasAllowedDesignation;
+  }, [authUser]);
+
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
     if (!storedToken) {
@@ -2741,6 +2779,47 @@ export default function LoanApprovalsPage() {
       openModal(message, 'Error');
     } finally {
       setApprovingId(null);
+    }
+  };
+
+  const handleDirectApprove = async (loan: LoanRequest) => {
+    if (!token) return;
+    if (!canUseDirectApproval) {
+      openModal('Direct approval is allowed only for Level 1 - Senior Management and Super Admin.', 'Access Denied');
+      return;
+    }
+
+    const schedule = getLoanSchedule(loan);
+
+    setDirectApprovingId(loan.id);
+    try {
+      await axios.post(
+        `${API_BASE}/microfinance/loan-requests/${loan.id}/direct-approve`,
+        {
+          approval_date: schedule.approvalDate,
+          next_payment_date: schedule.nextPaymentDate,
+          loan_end_date: schedule.loanEndDate,
+        },
+        { headers }
+      );
+
+      setRequests((prev) => prev.filter((item) => item.id !== loan.id));
+      setScheduleByLoanId((prev) => {
+        const next = { ...prev };
+        delete next[loan.id];
+        return next;
+      });
+
+      await handleDownloadLoanQr(loan, { silentSuccess: true });
+      openModal('Loan granted instantly through direct approval. Loan QR downloaded.', 'Success');
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
+          ? error.response.data.message
+          : 'Failed to direct approve loan.';
+      openModal(message, 'Error');
+    } finally {
+      setDirectApprovingId(null);
     }
   };
 
@@ -3386,6 +3465,23 @@ export default function LoanApprovalsPage() {
                         className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-semibold shadow"
                       >
                         Edit Loan Details
+                      </button>
+                    )}
+                    {canUseDirectApproval && (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleDirectApprove(loan);
+                        }}
+                        disabled={directApprovingId === loan.id || approvingId === loan.id || advancingId === loan.id}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-fuchsia-600 to-violet-600 text-white font-semibold shadow disabled:opacity-70"
+                        title="Bypass workflow steps and grant loan instantly"
+                      >
+                        {(directApprovingId === loan.id) && (
+                          <span className="h-4 w-4 rounded-full border-2 border-white/40 border-t-white animate-spin"></span>
+                        )}
+                        {directApprovingId === loan.id ? 'Granting...' : 'Direct Approval (Grant Loan)'}
                       </button>
                     )}
                     {canUseApprovalActions && (

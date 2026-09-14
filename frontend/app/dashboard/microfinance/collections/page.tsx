@@ -1211,9 +1211,9 @@ export default function CollectionManagementPage() {
     (loan) => getLoanRecordRowState(loan, loanRecordHighlightDate) === 'pending'
   ).length;
 
-  const currentLoanRecordsCollectedTotal = useMemo(
-    () => currentLoanRecordRows.reduce((sum, loan) => sum + getPaidTotal(loan.id), 0),
-    [currentLoanRecordRows, paidTotalByLoan]
+  const currentLoanRecordsTodayCollectedTotal = useMemo(
+    () => currentLoanRecordRows.reduce((sum, loan) => sum + getTodayCollected(loan.id), 0),
+    [currentLoanRecordRows, todayCollectedByLoan]
   );
 
   const officeDebtAmount = useMemo(
@@ -2924,7 +2924,7 @@ export default function CollectionManagementPage() {
               <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Preview</p>
                 <p className="mt-1 text-sm font-bold text-emerald-900">
-                  Total Collected Amount: {currentLoanRecordsCollectedTotal.toFixed(2)}
+                  Today Collected Amount: {currentLoanRecordsTodayCollectedTotal.toFixed(2)}
                 </p>
               </div>
             )}

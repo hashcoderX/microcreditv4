@@ -486,9 +486,9 @@ export default function BranchDashboardPage() {
             path: withBranch('/dashboard/microfinance/reports/center-collection'),
           },
           {
-            title: 'Arrears Report',
+            title: 'Portfolio at Risk (PAR) Report',
             description: 'Overdue and arrears-focused loan analysis.',
-            path: withBranch('/dashboard/microfinance/reports/arrears'),
+            path: withBranch('/dashboard/microfinance/reports/par'),
           },
           {
             title: 'Active Member Report',

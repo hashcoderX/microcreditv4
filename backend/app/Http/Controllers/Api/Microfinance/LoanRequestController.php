@@ -2073,6 +2073,57 @@ class LoanRequestController extends Controller
         return false;
     }
 
+    private function hasDirectGrantAccess(?object $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if (method_exists($user, 'isSystemAdmin') && $user->isSystemAdmin()) {
+            return true;
+        }
+
+        $keywords = [
+            'level 1 senior management',
+            'level 1 - senior management',
+            'board ownership',
+            'chairman',
+            'chairperson',
+            'vice chairman',
+            'non executive director',
+            'executive director',
+            'board director',
+            'super admin',
+            'superadmin',
+        ];
+
+        $designation = strtolower(trim((string) optional($user->designation)->name));
+        foreach ($keywords as $keyword) {
+            if ($designation !== '' && str_contains($designation, $keyword)) {
+                return true;
+            }
+        }
+
+        if (!method_exists($user, 'roles')) {
+            return false;
+        }
+
+        foreach ($user->roles()->pluck('name') as $roleName) {
+            $normalized = strtolower(trim((string) $roleName));
+            if ($normalized === '') {
+                continue;
+            }
+
+            foreach ($keywords as $keyword) {
+                if (str_contains($normalized, $keyword)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private function hasSpecialLoanRequestPermission(?object $user): bool
     {
         if ($this->hasLoanApprovalAccess($user)) {
@@ -3948,6 +3999,99 @@ class LoanRequestController extends Controller
 
         return response()->json([
             'message' => 'Loan approved successfully.',
+            'data' => $loanRequest->load([
+                'route:id,name,code',
+                'center:id,name,code,meeting_day',
+                'group:id,name,code',
+                'guarantors',
+            ]),
+        ]);
+    }
+
+    public function directApprove(Request $request, MicrofinanceLoanRequest $loanRequest)
+    {
+        if (!in_array((string) ($loanRequest->status ?? ''), ['requested', 'hold'], true)) {
+            return response()->json([
+                'message' => 'Only requested or hold loans can be directly approved.'
+            ], 422);
+        }
+
+        if (!$this->hasDirectGrantAccess($request->user())) {
+            return response()->json([
+                'message' => 'Direct approval is allowed only for Level 1 - Senior Management and Super Admin.'
+            ], 403);
+        }
+
+        $penaltySetting = MicrofinancePenaltySetting::query()
+            ->where('is_active', true)
+            ->orderByDesc('id')
+            ->first();
+
+        if (!$penaltySetting) {
+            return response()->json([
+                'message' => 'Please configure an active penalty rate in Microfinance Settings before approving loans.'
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'approval_date' => ['nullable', 'date'],
+            'next_payment_date' => ['nullable', 'date'],
+            'loan_end_date' => ['nullable', 'date'],
+        ]);
+
+        $graceDays = 2;
+        $approveDate = !empty($validated['approval_date'])
+            ? new \DateTimeImmutable((string) $validated['approval_date'])
+            : new \DateTimeImmutable(date('Y-m-d'));
+        $refundOption = (string)$loanRequest->refund_option;
+        $termCount = max((int)$loanRequest->terms_count, 1);
+
+        $meetingDay = (string) optional($loanRequest->center)->meeting_day;
+        $approvalBaseDate = $approveDate->format('Y-m-d');
+        if (!empty($loanRequest->loan_request_date)) {
+            try {
+                $requestDate = new \DateTimeImmutable((string) $loanRequest->loan_request_date);
+                if ($requestDate > $approveDate) {
+                    $approvalBaseDate = $requestDate->format('Y-m-d');
+                }
+            } catch (\Throwable $e) {
+                // keep approval date fallback
+            }
+        }
+        $nextPaymentDate = !empty($validated['next_payment_date'])
+            ? (string) $validated['next_payment_date']
+            : $this->shiftByRefundOption(new \DateTimeImmutable($approvalBaseDate), $refundOption, 1)->format('Y-m-d');
+
+        $dueDate = $nextPaymentDate;
+        $loanEndDate = !empty($validated['loan_end_date'])
+            ? (string) $validated['loan_end_date']
+            : $this->shiftByRefundOption(
+                new \DateTimeImmutable($nextPaymentDate),
+                $refundOption,
+                max($termCount - 1, 0)
+            )->format('Y-m-d');
+
+        $penaltyStartsOn = (new \DateTimeImmutable($dueDate))
+            ->modify('+' . ($graceDays + 1) . ' days')
+            ->format('Y-m-d');
+
+        $loanRequest->status = 'approved';
+        $loanRequest->workflow_step = self::WORKFLOW_FINAL_STEP;
+        $loanRequest->workflow_step_updated_at = now();
+        if (trim((string) ($loanRequest->loan_code ?? '')) === '') {
+            $loanRequest->loan_code = $this->resolveLoanReference($loanRequest);
+        }
+        $loanRequest->next_payment_date = $nextPaymentDate;
+        $loanRequest->setAttribute('due_date', $dueDate);
+        $loanRequest->loan_end_date = $loanEndDate;
+        $loanRequest->arrears_balance = 0;
+        $loanRequest->penalty_rate = $penaltySetting->penalty_rate;
+        $loanRequest->penalty_grace_days = $graceDays;
+        $loanRequest->penalty_starts_on = $penaltyStartsOn;
+        $loanRequest->save();
+
+        return response()->json([
+            'message' => 'Loan directly approved and granted successfully.',
             'data' => $loanRequest->load([
                 'route:id,name,code',
                 'center:id,name,code,meeting_day',
