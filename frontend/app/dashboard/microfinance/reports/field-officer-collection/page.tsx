@@ -24,6 +24,14 @@ type CollectionRow = {
     customer_no?: string | null;
     customer_name?: string | null;
     field_officer?: string | null;
+    mf_route_id?: number | string | null;
+    route_name?: string | null;
+    route_code?: string | null;
+    route?: {
+      id?: number | string;
+      name?: string | null;
+      code?: string | null;
+    } | null;
   } | null;
 };
 
@@ -34,6 +42,7 @@ type TransactionRow = {
   customerNo: string;
   customerName: string;
   fieldOfficer: string;
+  routeName: string;
   collected: number;
   capital: number;
   interest: number;
@@ -53,6 +62,7 @@ export default function FieldOfficerCollectionReportPage() {
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [officerFilter, setOfficerFilter] = useState('all');
+  const [routeFilter, setRouteFilter] = useState('all');
   const [loadingWidgets, setLoadingWidgets] = useState(true);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [widgetNotice, setWidgetNotice] = useState<{ open: boolean; title: string; message: string }>({
@@ -158,6 +168,7 @@ export default function FieldOfficerCollectionReportPage() {
               customerNo: String(relationLoan?.customer_no || '-'),
               customerName: String(relationLoan?.customer_name || '-'),
               fieldOfficer: String(relationLoan?.field_officer || 'Unassigned'),
+              routeName: String(relationLoan?.route?.name || relationLoan?.route_name || relationLoan?.route_code || 'Unassigned Route'),
               collected: Number(collection.collected_amount || 0),
               capital: Number(collection.capital_amount || 0),
               interest: Number(collection.interest_amount || 0),
@@ -187,6 +198,10 @@ export default function FieldOfficerCollectionReportPage() {
     return Array.from(new Set(rows.map((row) => row.fieldOfficer))).sort((a, b) => a.localeCompare(b));
   }, [rows]);
 
+  const routeOptions = useMemo(() => {
+    return Array.from(new Set(rows.map((row) => row.routeName))).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
   const filteredRows = useMemo(() => {
     const from = fromDate ? new Date(`${fromDate}T00:00:00`) : null;
     const to = toDate ? new Date(`${toDate}T23:59:59`) : null;
@@ -206,9 +221,13 @@ export default function FieldOfficerCollectionReportPage() {
         return row.fieldOfficer.toLowerCase() === officerFilter;
       }
 
+      if (routeFilter !== 'all') {
+        return row.routeName.toLowerCase() === routeFilter;
+      }
+
       return true;
     });
-  }, [rows, fromDate, toDate, officerFilter]);
+  }, [rows, fromDate, toDate, officerFilter, routeFilter]);
 
   const officerSummaries = useMemo(() => {
     const map = new Map<string, {
@@ -219,6 +238,7 @@ export default function FieldOfficerCollectionReportPage() {
       interest: number;
       penalty: number;
       loanIds: Set<number>;
+      customerNos: Set<string>;
     }>();
 
     filteredRows.forEach((row) => {
@@ -231,6 +251,7 @@ export default function FieldOfficerCollectionReportPage() {
         interest: 0,
         penalty: 0,
         loanIds: new Set<number>(),
+        customerNos: new Set<string>(),
       };
 
       existing.transactions += 1;
@@ -241,6 +262,9 @@ export default function FieldOfficerCollectionReportPage() {
       if (row.loanId) {
         existing.loanIds.add(row.loanId);
       }
+      if (row.customerNo && row.customerNo !== '-') {
+        existing.customerNos.add(row.customerNo);
+      }
 
       map.set(key, existing);
     });
@@ -249,28 +273,98 @@ export default function FieldOfficerCollectionReportPage() {
       .map((item) => ({
         ...item,
         loanCount: item.loanIds.size,
+        customerCount: item.customerNos.size,
+      }))
+      .sort((a, b) => b.collected - a.collected);
+  }, [filteredRows]);
+
+  const routeSummaries = useMemo(() => {
+    const map = new Map<string, {
+      routeName: string;
+      transactions: number;
+      collected: number;
+      loanIds: Set<number>;
+      customerNos: Set<string>;
+    }>();
+
+    filteredRows.forEach((row) => {
+      const key = row.routeName || 'Unassigned Route';
+      const existing = map.get(key) || {
+        routeName: key,
+        transactions: 0,
+        collected: 0,
+        loanIds: new Set<number>(),
+        customerNos: new Set<string>(),
+      };
+
+      existing.transactions += 1;
+      existing.collected += row.collected;
+      if (row.loanId) {
+        existing.loanIds.add(row.loanId);
+      }
+      if (row.customerNo && row.customerNo !== '-') {
+        existing.customerNos.add(row.customerNo);
+      }
+
+      map.set(key, existing);
+    });
+
+    return Array.from(map.values())
+      .map((item) => ({
+        ...item,
+        loanCount: item.loanIds.size,
+        customerCount: item.customerNos.size,
       }))
       .sort((a, b) => b.collected - a.collected);
   }, [filteredRows]);
 
   const summary = useMemo(() => {
+    const loanIds = new Set<number>();
+    const customerNos = new Set<string>();
+    const routeNames = new Set<string>();
+
     const totals = filteredRows.reduce(
       (acc, row) => {
         acc.collected += row.collected;
         acc.capital += row.capital;
         acc.interest += row.interest;
         acc.penalty += row.penalty;
+        if (row.loanId > 0) {
+          loanIds.add(row.loanId);
+        }
+        if (row.customerNo && row.customerNo !== '-') {
+          customerNos.add(row.customerNo);
+        }
+        if (row.routeName) {
+          routeNames.add(row.routeName);
+        }
         return acc;
       },
       { collected: 0, capital: 0, interest: 0, penalty: 0 }
     );
 
+    const transactionCount = filteredRows.length;
+    const avgCollectionPerTxn = transactionCount > 0 ? totals.collected / transactionCount : 0;
+    const capitalShare = totals.collected > 0 ? (totals.capital / totals.collected) * 100 : 0;
+    const interestShare = totals.collected > 0 ? (totals.interest / totals.collected) * 100 : 0;
+    const penaltyShare = totals.collected > 0 ? (totals.penalty / totals.collected) * 100 : 0;
+
     return {
       ...totals,
-      transactionCount: filteredRows.length,
+      transactionCount,
       officerCount: officerSummaries.length,
+      customerCount: customerNos.size,
+      loanCount: loanIds.size,
+      routeCount: routeNames.size,
+      avgCollectionPerTxn,
+      capitalShare,
+      interestShare,
+      penaltyShare,
     };
   }, [filteredRows, officerSummaries.length]);
+
+  const topOfficer = officerSummaries[0] || null;
+  const topRoute = routeSummaries[0] || null;
 
   const formatDateTime = (value: string) => {
     const parsed = new Date(value);
@@ -296,6 +390,7 @@ export default function FieldOfficerCollectionReportPage() {
   const handleDownloadCsv = () => {
     const headers = [
       'Date & Time',
+      'Route',
       'Field Officer',
       'Loan ID',
       'Loan Code',
@@ -318,6 +413,7 @@ export default function FieldOfficerCollectionReportPage() {
 
     const body = filteredRows.map((row) => [
       formatDateTime(row.date),
+      row.routeName,
       row.fieldOfficer,
       row.loanId || '-',
       row.customerNo,
@@ -357,16 +453,23 @@ export default function FieldOfficerCollectionReportPage() {
         : 'Range: All Dates';
 
     const officerText = officerFilter === 'all' ? 'Officer: All' : `Officer: ${officerFilter}`;
+    const routeText = routeFilter === 'all' ? 'Route: All' : `Route: ${routeFilter}`;
+    const summaryText = `Transactions: ${summary.transactionCount} | Customers: ${summary.customerCount} | Loans: ${summary.loanCount} | Total Collections: LKR ${formatMoney(summary.collected)}`;
+    const mixText = `Capital: ${formatMoney(summary.capital)} (${summary.capitalShare.toFixed(1)}%) | Interest: ${formatMoney(summary.interest)} (${summary.interestShare.toFixed(1)}%) | Penalty: ${formatMoney(summary.penalty)} (${summary.penaltyShare.toFixed(1)}%)`;
 
     doc.setFontSize(16);
     doc.text('Field Officer Collection Report', 40, 40);
     doc.setFontSize(10);
-    doc.text(`${dateFilterText} | ${officerText} | Generated: ${generatedAt}`, 40, 58);
+    doc.text(`${dateFilterText} | ${officerText} | ${routeText}`, 40, 58);
+    doc.text(summaryText, 40, 74);
+    doc.text(mixText, 40, 90);
+    doc.text(`Generated: ${generatedAt}`, 40, 106);
 
     autoTable(doc, {
-      startY: 72,
+      startY: 120,
       head: [[
         'Date & Time',
+        'Route',
         'Field Officer',
         'Loan ID',
         'Loan Code',
@@ -380,6 +483,7 @@ export default function FieldOfficerCollectionReportPage() {
       ]],
       body: filteredRows.map((row) => [
         formatDateTime(row.date),
+        row.routeName,
         row.fieldOfficer,
         row.loanId || '-',
         row.customerNo,
@@ -391,6 +495,19 @@ export default function FieldOfficerCollectionReportPage() {
         formatMoney(row.interest),
         formatMoney(row.penalty),
       ]),
+      foot: [[
+        'TOTAL',
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        '-',
+        formatMoney(summary.collected),
+        formatMoney(summary.capital),
+        formatMoney(summary.interest),
+        formatMoney(summary.penalty),
+      ]],
       styles: {
         fontSize: 8,
         cellPadding: 4,
@@ -398,6 +515,11 @@ export default function FieldOfficerCollectionReportPage() {
       headStyles: {
         fillColor: [2, 132, 199],
         textColor: [255, 255, 255],
+      },
+      footStyles: {
+        fillColor: [15, 23, 42],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
       },
       alternateRowStyles: {
         fillColor: [241, 245, 249],
@@ -420,6 +542,18 @@ export default function FieldOfficerCollectionReportPage() {
       key: `${widgetPrefix}summary_officers`,
       label: 'Officers',
       value: String(summary.officerCount),
+      valueClass: 'text-slate-900',
+    },
+    {
+      key: `${widgetPrefix}summary_customers`,
+      label: 'Customers',
+      value: String(summary.customerCount),
+      valueClass: 'text-slate-900',
+    },
+    {
+      key: `${widgetPrefix}summary_loans`,
+      label: 'Loans',
+      value: String(summary.loanCount),
       valueClass: 'text-slate-900',
     },
     {
@@ -555,6 +689,21 @@ export default function FieldOfficerCollectionReportPage() {
                 </select>
               </div>
               <div>
+                <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Route</label>
+                <select
+                  value={routeFilter}
+                  onChange={(e) => setRouteFilter(e.target.value)}
+                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                >
+                  <option value="all">All Routes</option>
+                  {routeOptions.map((route) => (
+                    <option key={route} value={route.toLowerCase()}>
+                      {route}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
                 <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">From Date</label>
                 <input
                   type="date"
@@ -576,6 +725,7 @@ export default function FieldOfficerCollectionReportPage() {
                 type="button"
                 onClick={() => {
                   setOfficerFilter('all');
+                  setRouteFilter('all');
                   setFromDate('');
                   setToDate('');
                 }}
@@ -583,6 +733,25 @@ export default function FieldOfficerCollectionReportPage() {
               >
                 Reset
               </button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            <div className="rounded-xl border border-cyan-100 bg-cyan-50/70 p-3">
+              <p className="text-xs uppercase tracking-wide text-cyan-800">Average Collection / Transaction</p>
+              <p className="mt-1 text-sm font-bold text-cyan-900">LKR {formatMoney(summary.avgCollectionPerTxn)}</p>
+            </div>
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
+              <p className="text-xs uppercase tracking-wide text-emerald-800">Collection Mix</p>
+              <p className="mt-1 text-sm font-bold text-emerald-900">Cap {summary.capitalShare.toFixed(1)}% | Int {summary.interestShare.toFixed(1)}% | Pen {summary.penaltyShare.toFixed(1)}%</p>
+            </div>
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
+              <p className="text-xs uppercase tracking-wide text-indigo-800">Top Officer</p>
+              <p className="mt-1 text-sm font-bold text-indigo-900">{topOfficer ? `${topOfficer.officer} (LKR ${formatMoney(topOfficer.collected)})` : '-'}</p>
+            </div>
+            <div className="rounded-xl border border-sky-100 bg-sky-50/70 p-3">
+              <p className="text-xs uppercase tracking-wide text-sky-800">Top Route</p>
+              <p className="mt-1 text-sm font-bold text-sky-900">{topRoute ? `${topRoute.routeName} (LKR ${formatMoney(topRoute.collected)})` : '-'}</p>
             </div>
           </div>
 
@@ -598,6 +767,7 @@ export default function FieldOfficerCollectionReportPage() {
                     <th className="px-3 py-2 font-semibold">Field Officer</th>
                     <th className="px-3 py-2 font-semibold">Transactions</th>
                     <th className="px-3 py-2 font-semibold">Loans Covered</th>
+                    <th className="px-3 py-2 font-semibold">Customers</th>
                     <th className="px-3 py-2 font-semibold">Collected</th>
                     <th className="px-3 py-2 font-semibold">Capital</th>
                     <th className="px-3 py-2 font-semibold">Interest</th>
@@ -610,6 +780,7 @@ export default function FieldOfficerCollectionReportPage() {
                       <td className="px-3 py-2 font-semibold text-slate-900">{item.officer}</td>
                       <td className="px-3 py-2">{item.transactions}</td>
                       <td className="px-3 py-2">{item.loanCount}</td>
+                      <td className="px-3 py-2">{item.customerCount}</td>
                       <td className="px-3 py-2 font-semibold text-emerald-700">{formatMoney(item.collected)}</td>
                       <td className="px-3 py-2">{formatMoney(item.capital)}</td>
                       <td className="px-3 py-2">{formatMoney(item.interest)}</td>
@@ -647,6 +818,7 @@ export default function FieldOfficerCollectionReportPage() {
                 <thead className="bg-cyan-50/70 text-slate-700">
                   <tr>
                     <th className="px-3 py-2 font-semibold">Date & Time</th>
+                    <th className="px-3 py-2 font-semibold">Route</th>
                     <th className="px-3 py-2 font-semibold">Field Officer</th>
                     <th className="px-3 py-2 font-semibold">Loan ID</th>
                     <th className="px-3 py-2 font-semibold">Loan Code</th>
@@ -663,6 +835,7 @@ export default function FieldOfficerCollectionReportPage() {
                   {filteredRows.map((row) => (
                     <tr key={row.id} className="border-b border-cyan-100 last:border-b-0 hover:bg-cyan-50/40 transition-colors">
                       <td className="px-3 py-2">{formatDateTime(row.date)}</td>
+                      <td className="px-3 py-2">{row.routeName}</td>
                       <td className="px-3 py-2">{row.fieldOfficer}</td>
                       <td className="px-3 py-2">{row.loanId || '-'}</td>
                       <td className="px-3 py-2 font-semibold text-slate-900">{row.customerNo}</td>

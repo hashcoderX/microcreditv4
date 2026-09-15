@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\Company;
 use App\Models\CompanyAccount;
 use App\Models\Customer;
+use App\Models\Employee;
+use App\Models\EmployeeWalletCashHandover;
 use App\Models\Finance;
 use App\Models\FinanceCollection;
 use App\Models\LoanRequest;
@@ -951,6 +953,454 @@ class AccountingReportsController extends Controller
             ],
             'employee_totals' => $employees,
             'rows' => $rows,
+        ]);
+    }
+
+    public function teamMemberWalletsReport(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'branch_id' => ['nullable', 'integer', 'exists:companies,id'],
+            'company_id' => ['nullable', 'integer', 'exists:companies,id'],
+            'manager_employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+            'wallet_status' => ['nullable', 'string', 'max:30'],
+            'q' => ['nullable', 'string', 'max:120'],
+        ]);
+
+        $branchId = (int) ($validated['branch_id'] ?? $validated['company_id'] ?? 0);
+        if ($branchId <= 0) {
+            $branchId = (int) ($this->scopedBranchId($request) ?? 0);
+        } elseif (!$this->isAdminUser($request->user())) {
+            $scoped = (int) ($request->user()?->branch_id ?? 0);
+            if ($scoped <= 0 || $scoped !== $branchId) {
+                return response()->json(['message' => 'You do not have access to this branch.'], 403);
+            }
+        }
+
+        if ($branchId <= 0) {
+            return response()->json(['message' => 'Select a branch to view team wallets.'], 422);
+        }
+
+        $company = Company::query()->findOrFail($branchId);
+        $isAdmin = $this->isAdminUser($request->user());
+        $actorEmployeeId = (int) ($request->user()?->employee_id ?? 0);
+        $requestedManagerId = (int) ($validated['manager_employee_id'] ?? 0);
+        $search = mb_strtolower(trim((string) ($validated['q'] ?? '')));
+        $walletStatusFilter = mb_strtolower(trim((string) ($validated['wallet_status'] ?? 'all')));
+        if ($walletStatusFilter === '') {
+            $walletStatusFilter = 'all';
+        }
+
+        $employees = Employee::query()
+            ->with([
+                'wallet:id,employee_id,wallet_no,opening_balance,current_balance,status',
+                'designation:id,name',
+            ])
+            ->where('branch_id', $branchId)
+            ->orderBy('first_name')
+            ->orderBy('last_name')
+            ->get([
+                'id',
+                'branch_id',
+                'employee_code',
+                'first_name',
+                'last_name',
+                'email',
+                'designation_id',
+                'reporting_person',
+                'status',
+            ]);
+
+        /** @var array<int, Employee> $employeesById */
+        $employeesById = [];
+        /** @var array<string, Employee> $employeesByEmail */
+        $employeesByEmail = [];
+        /** @var array<string, Employee> $employeesByCode */
+        $employeesByCode = [];
+        /** @var array<string, Employee> $employeesByFullName */
+        $employeesByFullName = [];
+
+        foreach ($employees as $employee) {
+            $employeeId = (int) ($employee->id ?? 0);
+            if ($employeeId <= 0) {
+                continue;
+            }
+
+            $employeesById[$employeeId] = $employee;
+
+            $email = mb_strtolower(trim((string) ($employee->email ?? '')));
+            if ($email !== '') {
+                $employeesByEmail[$email] = $employee;
+            }
+
+            $code = mb_strtolower(trim((string) ($employee->employee_code ?? '')));
+            if ($code !== '') {
+                $employeesByCode[$code] = $employee;
+            }
+
+            $fullName = mb_strtolower(trim((string) ($employee->first_name ?? '') . ' ' . (string) ($employee->last_name ?? '')));
+            if ($fullName !== '') {
+                $employeesByFullName[$fullName] = $employee;
+            }
+        }
+
+        $resolveManager = function (string $rawValue) use ($employeesById, $employeesByEmail, $employeesByCode, $employeesByFullName): ?Employee {
+            $value = trim($rawValue);
+            if ($value === '') {
+                return null;
+            }
+
+            if (ctype_digit($value)) {
+                $candidate = $employeesById[(int) $value] ?? null;
+                if ($candidate instanceof Employee) {
+                    return $candidate;
+                }
+            }
+
+            $normalized = mb_strtolower($value);
+
+            $emailCandidate = $employeesByEmail[$normalized] ?? null;
+            if ($emailCandidate instanceof Employee) {
+                return $emailCandidate;
+            }
+
+            $codeCandidate = $employeesByCode[$normalized] ?? null;
+            if ($codeCandidate instanceof Employee) {
+                return $codeCandidate;
+            }
+
+            $nameCandidate = $employeesByFullName[$normalized] ?? null;
+            if ($nameCandidate instanceof Employee) {
+                return $nameCandidate;
+            }
+
+            return null;
+        };
+
+        $managerCounts = [];
+        $rows = [];
+
+        foreach ($employees as $employee) {
+            $managerEmployee = $resolveManager((string) ($employee->reporting_person ?? ''));
+            $managerEmployeeId = (int) ($managerEmployee?->id ?? 0);
+
+            if ($managerEmployeeId > 0) {
+                $managerCounts[$managerEmployeeId] = (int) ($managerCounts[$managerEmployeeId] ?? 0) + 1;
+            }
+
+            if (!$isAdmin) {
+                if ($actorEmployeeId <= 0) {
+                    continue;
+                }
+
+                if ($managerEmployeeId !== $actorEmployeeId) {
+                    continue;
+                }
+            }
+
+            if ($requestedManagerId > 0 && $managerEmployeeId !== $requestedManagerId) {
+                continue;
+            }
+
+            $wallet = $employee->wallet;
+            $walletStatus = mb_strtolower(trim((string) ($wallet?->status ?? '')));
+            $walletStatus = $walletStatus !== '' ? $walletStatus : 'no_wallet';
+
+            if ($walletStatusFilter !== 'all' && $walletStatusFilter !== $walletStatus) {
+                continue;
+            }
+
+            $employeeName = trim((string) ($employee->first_name ?? '') . ' ' . (string) ($employee->last_name ?? ''));
+            $managerName = trim((string) ($managerEmployee?->first_name ?? '') . ' ' . (string) ($managerEmployee?->last_name ?? ''));
+            $designationName = trim((string) ($employee->designation?->name ?? ''));
+            $searchText = mb_strtolower(implode(' ', [
+                (string) ($employee->employee_code ?? ''),
+                $employeeName,
+                (string) ($employee->email ?? ''),
+                $designationName,
+                (string) ($wallet?->wallet_no ?? ''),
+                $managerName,
+            ]));
+
+            if ($search !== '' && !str_contains($searchText, $search)) {
+                continue;
+            }
+
+            $rows[] = [
+                'employee_id' => (int) $employee->id,
+                'employee_code' => (string) ($employee->employee_code ?? ''),
+                'employee_name' => $employeeName,
+                'employee_email' => (string) ($employee->email ?? ''),
+                'employee_status' => (string) ($employee->status ?? ''),
+                'designation' => $designationName,
+                'reporting_person' => (string) ($employee->reporting_person ?? ''),
+                'manager_employee_id' => $managerEmployeeId > 0 ? $managerEmployeeId : null,
+                'manager_employee_code' => (string) ($managerEmployee?->employee_code ?? ''),
+                'manager_name' => $managerName,
+                'wallet_id' => (int) ($wallet?->id ?? 0),
+                'wallet_no' => (string) ($wallet?->wallet_no ?? ''),
+                'wallet_status' => $walletStatus,
+                'opening_balance' => $this->roundMoney((float) ($wallet?->opening_balance ?? 0)),
+                'current_balance' => $this->roundMoney((float) ($wallet?->current_balance ?? 0)),
+            ];
+        }
+
+        usort($rows, static function (array $a, array $b): int {
+            $balanceCompare = ((float) ($b['current_balance'] ?? 0)) <=> ((float) ($a['current_balance'] ?? 0));
+            if ($balanceCompare !== 0) {
+                return $balanceCompare;
+            }
+
+            return strcmp((string) ($a['employee_name'] ?? ''), (string) ($b['employee_name'] ?? ''));
+        });
+
+        $managerOptions = [];
+        foreach ($managerCounts as $managerId => $directReports) {
+            if ($managerId <= 0 || !isset($employeesById[$managerId])) {
+                continue;
+            }
+
+            $manager = $employeesById[$managerId];
+            $managerName = trim((string) ($manager->first_name ?? '') . ' ' . (string) ($manager->last_name ?? ''));
+            if ($managerName === '') {
+                $managerName = 'Employee #' . $managerId;
+            }
+
+            $managerOptions[] = [
+                'employee_id' => $managerId,
+                'employee_code' => (string) ($manager->employee_code ?? ''),
+                'name' => $managerName,
+                'direct_reports' => (int) $directReports,
+            ];
+        }
+
+        usort($managerOptions, static function (array $a, array $b): int {
+            return strcmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+        });
+
+        if (!$isAdmin) {
+            if ($actorEmployeeId <= 0) {
+                return response()->json(['message' => 'No employee profile linked to this account.'], 422);
+            }
+
+            $managerOptions = array_values(array_filter(
+                $managerOptions,
+                static fn (array $row): bool => (int) ($row['employee_id'] ?? 0) === $actorEmployeeId
+            ));
+
+            if ($requestedManagerId > 0 && $requestedManagerId !== $actorEmployeeId) {
+                return response()->json(['message' => 'You can only view your own team wallet balances.'], 403);
+            }
+        }
+
+        $totalCurrent = array_sum(array_map(static fn (array $row): float => (float) ($row['current_balance'] ?? 0), $rows));
+        $totalOpening = array_sum(array_map(static fn (array $row): float => (float) ($row['opening_balance'] ?? 0), $rows));
+        $walletHolders = count(array_filter($rows, static fn (array $row): bool => (int) ($row['wallet_id'] ?? 0) > 0));
+        $noWalletCount = count($rows) - $walletHolders;
+
+        return response()->json([
+            'company' => [
+                'id' => $company->id,
+                'name' => $company->name,
+                'currency' => $company->currency ?: 'LKR',
+            ],
+            'filters' => [
+                'branch_id' => $branchId,
+                'manager_employee_id' => $requestedManagerId > 0 ? $requestedManagerId : null,
+                'wallet_status' => $walletStatusFilter,
+                'q' => $search,
+            ],
+            'scope' => [
+                'is_admin' => $isAdmin,
+                'actor_employee_id' => $actorEmployeeId > 0 ? $actorEmployeeId : null,
+            ],
+            'summary' => [
+                'team_members' => count($rows),
+                'wallet_holders' => $walletHolders,
+                'no_wallet_members' => $noWalletCount,
+                'total_opening_balance' => $this->roundMoney((float) $totalOpening),
+                'total_current_balance' => $this->roundMoney((float) $totalCurrent),
+            ],
+            'manager_options' => $managerOptions,
+            'rows' => $rows,
+        ]);
+    }
+
+    public function teamMemberWalletTransactions(Request $request, Employee $employee): JsonResponse
+    {
+        $validated = $request->validate([
+            'branch_id' => ['nullable', 'integer', 'exists:companies,id'],
+            'company_id' => ['nullable', 'integer', 'exists:companies,id'],
+            'limit' => ['nullable', 'integer', 'min:1', 'max:50'],
+        ]);
+
+        $branchId = (int) ($validated['branch_id'] ?? $validated['company_id'] ?? 0);
+        if ($branchId <= 0) {
+            $branchId = (int) ($this->scopedBranchId($request) ?? 0);
+        } elseif (!$this->isAdminUser($request->user())) {
+            $scoped = (int) ($request->user()?->branch_id ?? 0);
+            if ($scoped <= 0 || $scoped !== $branchId) {
+                return response()->json(['message' => 'You do not have access to this branch.'], 403);
+            }
+        }
+
+        if ($branchId <= 0) {
+            return response()->json(['message' => 'Select a branch to view wallet transactions.'], 422);
+        }
+
+        if ((int) ($employee->branch_id ?? 0) !== $branchId) {
+            return response()->json(['message' => 'Employee does not belong to the selected branch.'], 403);
+        }
+
+        $isAdmin = $this->isAdminUser($request->user());
+        $actorEmployeeId = (int) ($request->user()?->employee_id ?? 0);
+
+        if (!$isAdmin) {
+            if ($actorEmployeeId <= 0) {
+                return response()->json(['message' => 'No employee profile linked to this account.'], 422);
+            }
+
+            $reportingPerson = mb_strtolower(trim((string) ($employee->reporting_person ?? '')));
+            $actorEmployee = Employee::query()->find($actorEmployeeId);
+            $actorCode = mb_strtolower(trim((string) ($actorEmployee?->employee_code ?? '')));
+            $actorEmail = mb_strtolower(trim((string) ($actorEmployee?->email ?? '')));
+            $actorName = mb_strtolower(trim((string) ($actorEmployee?->first_name ?? '') . ' ' . (string) ($actorEmployee?->last_name ?? '')));
+
+            $canAccess = false;
+            if ($reportingPerson !== '') {
+                if ($reportingPerson === (string) $actorEmployeeId) {
+                    $canAccess = true;
+                }
+                if (!$canAccess && $actorCode !== '' && $reportingPerson === $actorCode) {
+                    $canAccess = true;
+                }
+                if (!$canAccess && $actorEmail !== '' && $reportingPerson === $actorEmail) {
+                    $canAccess = true;
+                }
+                if (!$canAccess && $actorName !== '' && $reportingPerson === $actorName) {
+                    $canAccess = true;
+                }
+            }
+
+            if (!$canAccess) {
+                return response()->json(['message' => 'You can only view transactions for your own team members.'], 403);
+            }
+        }
+
+        $limit = (int) ($validated['limit'] ?? 10);
+        $company = Company::query()->findOrFail($branchId);
+
+        $wallet = $employee->wallet()
+            ->first(['id', 'employee_id', 'wallet_no', 'opening_balance', 'current_balance', 'status']);
+
+        if (!$wallet) {
+            return response()->json([
+                'company' => [
+                    'id' => $company->id,
+                    'name' => $company->name,
+                    'currency' => $company->currency ?: 'LKR',
+                ],
+                'employee' => [
+                    'id' => (int) $employee->id,
+                    'employee_code' => (string) ($employee->employee_code ?? ''),
+                    'name' => trim((string) ($employee->first_name ?? '') . ' ' . (string) ($employee->last_name ?? '')),
+                ],
+                'wallet' => null,
+                'summary' => [
+                    'deposit_count' => 0,
+                    'handover_count' => 0,
+                    'total_deposit_amount' => 0,
+                    'total_handover_amount' => 0,
+                ],
+                'recent_deposits' => [],
+                'recent_handovers' => [],
+            ]);
+        }
+
+        $recentDeposits = EmployeeWalletBankDeposit::query()
+            ->with('bankAccount:id,account_name,bank_name,account_type,account_number')
+            ->where('employee_wallet_id', (int) $wallet->id)
+            ->orderByDesc('deposit_date')
+            ->orderByDesc('id')
+            ->limit($limit)
+            ->get()
+            ->map(fn (EmployeeWalletBankDeposit $row): array => [
+                'id' => (int) $row->id,
+                'deposit_date' => (string) ($row->deposit_date ?? ''),
+                'amount' => $this->roundMoney((float) ($row->amount ?? 0)),
+                'status' => (string) ($row->status ?? ''),
+                'note' => (string) ($row->note ?? ''),
+                'bank_account_name' => (string) ($row->bankAccount?->account_name ?? ''),
+                'bank_name' => (string) ($row->bankAccount?->bank_name ?? ''),
+                'account_type' => (string) ($row->bankAccount?->account_type ?? ''),
+            ])
+            ->values();
+
+        $recentHandovers = EmployeeWalletCashHandover::query()
+            ->with([
+                'cashAccount:id,account_name,bank_name,account_type,account_number',
+                'managerEmployee:id,employee_code,first_name,last_name',
+            ])
+            ->where('employee_wallet_id', (int) $wallet->id)
+            ->orderByDesc('handover_date')
+            ->orderByDesc('id')
+            ->limit($limit)
+            ->get()
+            ->map(fn (EmployeeWalletCashHandover $row): array => [
+                'id' => (int) $row->id,
+                'handover_date' => (string) ($row->handover_date ?? ''),
+                'amount' => $this->roundMoney((float) ($row->amount ?? 0)),
+                'status' => (string) ($row->status ?? ''),
+                'received_by' => (string) ($row->received_by ?? ''),
+                'note' => (string) ($row->note ?? ''),
+                'cash_account_name' => (string) ($row->cashAccount?->account_name ?? ''),
+                'cash_account_type' => (string) ($row->cashAccount?->account_type ?? ''),
+                'manager_name' => trim((string) ($row->managerEmployee?->first_name ?? '') . ' ' . (string) ($row->managerEmployee?->last_name ?? '')),
+                'manager_employee_code' => (string) ($row->managerEmployee?->employee_code ?? ''),
+            ])
+            ->values();
+
+        $depositCount = (int) EmployeeWalletBankDeposit::query()
+            ->where('employee_wallet_id', (int) $wallet->id)
+            ->count();
+
+        $handoverCount = (int) EmployeeWalletCashHandover::query()
+            ->where('employee_wallet_id', (int) $wallet->id)
+            ->count();
+
+        $totalDepositAmount = (float) EmployeeWalletBankDeposit::query()
+            ->where('employee_wallet_id', (int) $wallet->id)
+            ->sum('amount');
+
+        $totalHandoverAmount = (float) EmployeeWalletCashHandover::query()
+            ->where('employee_wallet_id', (int) $wallet->id)
+            ->sum('amount');
+
+        return response()->json([
+            'company' => [
+                'id' => $company->id,
+                'name' => $company->name,
+                'currency' => $company->currency ?: 'LKR',
+            ],
+            'employee' => [
+                'id' => (int) $employee->id,
+                'employee_code' => (string) ($employee->employee_code ?? ''),
+                'name' => trim((string) ($employee->first_name ?? '') . ' ' . (string) ($employee->last_name ?? '')),
+            ],
+            'wallet' => [
+                'id' => (int) $wallet->id,
+                'wallet_no' => (string) ($wallet->wallet_no ?? ''),
+                'status' => (string) ($wallet->status ?? ''),
+                'opening_balance' => $this->roundMoney((float) ($wallet->opening_balance ?? 0)),
+                'current_balance' => $this->roundMoney((float) ($wallet->current_balance ?? 0)),
+            ],
+            'summary' => [
+                'deposit_count' => $depositCount,
+                'handover_count' => $handoverCount,
+                'total_deposit_amount' => $this->roundMoney($totalDepositAmount),
+                'total_handover_amount' => $this->roundMoney($totalHandoverAmount),
+            ],
+            'recent_deposits' => $recentDeposits,
+            'recent_handovers' => $recentHandovers,
         ]);
     }
 

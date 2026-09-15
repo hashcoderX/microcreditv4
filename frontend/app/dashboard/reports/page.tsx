@@ -333,6 +333,11 @@ export default function ReportsHubPage() {
             description: 'Investor capital and deposit balances from savings accounts.',
             path: '/dashboard/reports/investor-funding',
           },
+          {
+            title: 'Team Member Wallets Report',
+            description: 'Monitor employee wallet balances grouped by reporting hierarchy.',
+            path: '/dashboard/reports/team-member-wallets',
+          },
         ],
       },
       {
