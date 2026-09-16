@@ -84,7 +84,7 @@ class LoanCollectionController extends Controller
         }
 
         $newBalance = round((float) ($wallet->current_balance ?? 0) + $amountDelta, 2);
-        $wallet->current_balance = number_format($newBalance, 2, '.', '');
+        $wallet->setAttribute('current_balance', $newBalance);
         $wallet->save();
     }
 
@@ -222,10 +222,17 @@ class LoanCollectionController extends Controller
         $includeDeletedRequested = filter_var($request->get('include_deleted', false), FILTER_VALIDATE_BOOLEAN);
         $canViewDeleted = $this->isAdminUser($user) || $this->isManagerUser($user);
         $includeDeleted = $includeDeletedRequested && $canViewDeleted;
+        $limit = (int) $request->get('limit', 0);
+        if ($limit < 0) {
+            $limit = 0;
+        }
+        if ($limit > 2000) {
+            $limit = 2000;
+        }
 
         $query = MicrofinanceLoanCollection::query()
             ->with([
-                'loanRequest:id,customer_no,customer_name,field_officer,mf_route_id,mf_center_id,mf_group_id,loan_scope,refund_option,status,loan_amount,installment_amount,refundable_amount',
+                'loanRequest:id,branch_id,customer_no,customer_name,nic,field_officer,loan_code,mf_route_id,mf_center_id,mf_group_id,loan_scope,refund_option,status,loan_amount,net_disbursed_amount,loan_request_date,created_at,installment_amount,refundable_amount',
                 'loanRequest.route:id,name,code',
                 'loanRequest.center:id,name,code,meeting_day,mf_route_id',
                 'loanRequest.group:id,name,code,mf_center_id,mf_route_id',
@@ -246,6 +253,10 @@ class LoanCollectionController extends Controller
             $query->whereHas('loanRequest', function ($loanQuery) use ($branchId) {
                 $loanQuery->where('branch_id', $branchId);
             });
+        }
+
+        if ($limit > 0) {
+            $query->limit($limit);
         }
 
         $collections = $query->get()->map(function (MicrofinanceLoanCollection $collection) {

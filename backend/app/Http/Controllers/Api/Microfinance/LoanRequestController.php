@@ -564,7 +564,7 @@ class LoanRequestController extends Controller
             return false;
         }
 
-        $wallet->current_balance = round((float) ($wallet->current_balance ?? 0) + $chargeAmount, 2);
+        $wallet->setAttribute('current_balance', round((float) ($wallet->current_balance ?? 0) + $chargeAmount, 2));
         $wallet->save();
 
         $loanRequest->charges_wallet_credited_at = now();
@@ -607,7 +607,7 @@ class LoanRequestController extends Controller
             return false;
         }
 
-        $wallet->current_balance = round((float) ($wallet->current_balance ?? 0) - $chargeAmount, 2);
+        $wallet->setAttribute('current_balance', round((float) ($wallet->current_balance ?? 0) - $chargeAmount, 2));
         $wallet->save();
 
         // Mark as reversed to avoid duplicate refund attempts.
@@ -2333,9 +2333,17 @@ class LoanRequestController extends Controller
         $status = $request->get('status');
         $branchId = (int)$request->get('branch_id', 0);
         $fieldOfficer = trim((string)$request->get('field_officer', ''));
+        $compact = filter_var($request->get('compact', false), FILTER_VALIDATE_BOOLEAN);
+        $limit = (int) $request->get('limit', 0);
+        if ($limit < 0) {
+            $limit = 0;
+        }
+        if ($limit > 5000) {
+            $limit = 5000;
+        }
         $viewer = $request->user();
 
-        $query = MicrofinanceLoanRequest::with([
+        $relations = [
             'branch:id,name',
             'approvalEmployee:id,first_name,last_name',
             'createdBy:id,name,email,employee_id,branch_id',
@@ -2343,9 +2351,14 @@ class LoanRequestController extends Controller
             'route:id,name,code',
             'center:id,name,code,meeting_day',
             'group:id,name,code',
-            'guarantors',
-            'documents',
-        ])
+        ];
+
+        if (!$compact) {
+            $relations[] = 'guarantors';
+            $relations[] = 'documents';
+        }
+
+        $query = MicrofinanceLoanRequest::with($relations)
             ->withMax('collections as last_pay_date', 'collection_date')
             ->orderBy('id', 'desc');
 
@@ -2423,20 +2436,26 @@ class LoanRequestController extends Controller
             });
         }
 
+        if ($limit > 0) {
+            $query->limit($limit);
+        }
+
         $loans = $query->get();
 
-        $loans->each(function (MicrofinanceLoanRequest $loan) use ($viewer) {
-            $currentStep = $this->resolveWorkflowStep($loan);
-            $canConfiguredStepAction = $this->canPerformConfiguredStepAction($viewer, $loan, $currentStep);
-            $canRequesterAdvance = $this->canLoanRequesterAdvanceStepOne($viewer, $loan);
-            $canCreditOfficerMarkCalled = $this->canCreditOfficerHandlePendingCallConfirmation($viewer, $loan);
-            $canCreditOfficerSendBack = $this->canCreditOfficerSendBack($viewer, $loan);
-            $loan->setAttribute('can_advance_workflow', $canConfiguredStepAction || $canRequesterAdvance);
-            $loan->setAttribute('can_send_back_workflow', $canCreditOfficerSendBack);
-            $loan->setAttribute('can_mark_called_workflow', $canCreditOfficerMarkCalled);
-        });
+        if (!$compact) {
+            $loans->each(function (MicrofinanceLoanRequest $loan) use ($viewer) {
+                $currentStep = $this->resolveWorkflowStep($loan);
+                $canConfiguredStepAction = $this->canPerformConfiguredStepAction($viewer, $loan, $currentStep);
+                $canRequesterAdvance = $this->canLoanRequesterAdvanceStepOne($viewer, $loan);
+                $canCreditOfficerMarkCalled = $this->canCreditOfficerHandlePendingCallConfirmation($viewer, $loan);
+                $canCreditOfficerSendBack = $this->canCreditOfficerSendBack($viewer, $loan);
+                $loan->setAttribute('can_advance_workflow', $canConfiguredStepAction || $canRequesterAdvance);
+                $loan->setAttribute('can_send_back_workflow', $canCreditOfficerSendBack);
+                $loan->setAttribute('can_mark_called_workflow', $canCreditOfficerMarkCalled);
+            });
 
-        $this->attachCustomerPhotoUrls($loans);
+            $this->attachCustomerPhotoUrls($loans);
+        }
 
         return response()->json($loans);
     }

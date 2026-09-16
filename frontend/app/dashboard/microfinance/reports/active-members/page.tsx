@@ -1,32 +1,10 @@
 'use client';
 
 import axios from 'axios';
-import { getApiBaseUrl, getBackendOrigin } from '@/lib/api';
+import { getApiBaseUrl } from '@/lib/api';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-
-type LoanRow = {
-  id: number;
-  status?: string | null;
-  customer_no?: string | null;
-  customer_name?: string | null;
-  contact_no?: string | null;
-  nic?: string | null;
-  field_officer?: string | null;
-  loan_amount?: number | string | null;
-  refundable_amount?: number | string | null;
-  loan_balance?: number | string | null;
-  due_date?: string | null;
-  branch_id?: number | string | null;
-};
-
-type CollectionRow = {
-  mf_loan_request_id: number | string;
-  collected_amount?: number | string | null;
-};
 
 type ActiveMemberRow = {
   loanId: number;
@@ -162,67 +140,34 @@ export default function MicrofinanceActiveMembersReportPage() {
     const loadReport = async () => {
       setLoading(true);
       try {
-        const [loanRes, collectionRes] = await Promise.all([
-          axios.get(`${API_BASE}/microfinance/loan-requests`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: 'application/json',
-            },
-            params: {
-              branch_id: branchId,
-            },
-          }),
-          axios.get(`${API_BASE}/microfinance/collections`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: 'application/json',
-            },
-            params: {
-              branch_id: branchId,
-            },
-          }),
-        ]);
-
-        const loans: LoanRow[] = Array.isArray(loanRes.data) ? loanRes.data : [];
-        const collections: CollectionRow[] = Array.isArray(collectionRes.data) ? collectionRes.data : [];
-
-        const paidByLoan = new Map<number, number>();
-        collections.forEach((collection) => {
-          const loanId = Number(collection.mf_loan_request_id || 0);
-          if (!loanId) return;
-          paidByLoan.set(loanId, (paidByLoan.get(loanId) || 0) + Number(collection.collected_amount || 0));
+        const response = await axios.get(`${API_BASE}/reports/active-members`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+          params: {
+            branch_id: branchId,
+          },
         });
 
-        const mapped = loans
-          .filter((loan) => {
-            const status = String(loan.status || '').toLowerCase();
-            return status === 'approved' || status === 'released';
-          })
-          .map((loan) => {
-            const loanId = Number(loan.id || 0);
-            const refundableAmount = Number(loan.refundable_amount || 0);
-            const collectedAmount = paidByLoan.get(loanId) || 0;
-            const balanceFromLoan = Number(loan.loan_balance || 0);
-            const calculatedPending = Math.max(refundableAmount - collectedAmount, 0);
-            const pendingAmount = Math.max(balanceFromLoan, calculatedPending, 0);
-
-            return {
-              loanId,
-              customerNo: String(loan.customer_no || '-'),
-              customerName: String(loan.customer_name || '-'),
-              nic: String(loan.nic || '-'),
-              contact: String(loan.contact_no || '-'),
-              fieldOfficer: String(loan.field_officer || 'Unassigned'),
-              status: String(loan.status || '-'),
-              loanAmount: Number(loan.loan_amount || 0),
-              refundableAmount,
-              collectedAmount,
-              pendingAmount,
-              dueDate: String(loan.due_date || '').slice(0, 10) || '-',
-            } as ActiveMemberRow;
-          })
-          .filter((row) => row.pendingAmount > 0.009)
-          .sort((a, b) => b.pendingAmount - a.pendingAmount);
+        const apiRows: unknown[] = Array.isArray(response.data?.rows) ? response.data.rows : [];
+        const mapped: ActiveMemberRow[] = apiRows.map((raw: unknown) => {
+          const row = (raw ?? {}) as Record<string, unknown>;
+          return {
+            loanId: Number(row.loanId || 0),
+            customerNo: String(row.customerNo || '-'),
+            customerName: String(row.customerName || '-'),
+            nic: String(row.nic || '-'),
+            contact: String(row.contact || '-'),
+            fieldOfficer: String(row.fieldOfficer || 'Unassigned'),
+            status: String(row.status || '-'),
+            loanAmount: Number(row.loanAmount || 0),
+            refundableAmount: Number(row.refundableAmount || 0),
+            collectedAmount: Number(row.collectedAmount || 0),
+            pendingAmount: Number(row.pendingAmount || 0),
+            dueDate: String(row.dueDate || '-'),
+          };
+        });
 
         setRows(mapped);
       } catch {
@@ -404,7 +349,11 @@ export default function MicrofinanceActiveMembersReportPage() {
     URL.revokeObjectURL(link.href);
   };
 
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
+    const [{ jsPDF }, { default: autoTable }] = await Promise.all([
+      import('jspdf'),
+      import('jspdf-autotable'),
+    ]);
     const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
     const generatedAt = new Intl.DateTimeFormat('en-LK', {
       year: 'numeric',
@@ -481,7 +430,7 @@ export default function MicrofinanceActiveMembersReportPage() {
   const displayName = String(authUser?.name || authUser?.email || 'User').trim();
   const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
 
-  if (!token || loading || loadingWidgets) {
+  if (!token) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-600"></div>
@@ -549,6 +498,9 @@ export default function MicrofinanceActiveMembersReportPage() {
               </span>
               <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 mt-3">Active Member Report</h1>
               <p className="text-sm text-slate-600 mt-1">View active members with loan exposure, collected amount, and pending balance profile.</p>
+              {loadingWidgets ? (
+                <p className="mt-2 text-xs font-semibold text-cyan-700">Syncing widget preferences...</p>
+              ) : null}
             </div>
             <button
               onClick={() => router.back()}
@@ -666,7 +618,11 @@ export default function MicrofinanceActiveMembersReportPage() {
             </div>
           )}
 
-          {filteredRows.length === 0 ? (
+          {loading ? (
+            <div className="mt-4 rounded-2xl border border-cyan-100 bg-gradient-to-br from-cyan-100/60 to-teal-100/40 p-8 text-sm text-slate-700 text-center">
+              Loading active member data...
+            </div>
+          ) : filteredRows.length === 0 ? (
             <div className="mt-4 rounded-2xl border border-cyan-100 bg-gradient-to-br from-cyan-100/60 to-teal-100/40 p-8 text-sm text-slate-700 text-center">
               No active member data found for selected filters.
             </div>

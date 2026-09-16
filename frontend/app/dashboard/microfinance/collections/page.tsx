@@ -124,6 +124,31 @@ const API_BASE = getApiBaseUrl();
 export default function CollectionManagementPage() {
   const router = useRouter();
   const backendOrigin = useMemo(() => getBackendOrigin(), []);
+  const [loadProfile, setLoadProfile] = useState<'fast' | 'full'>(() => {
+    if (typeof window === 'undefined') return 'fast';
+    const saved = localStorage.getItem('mf_collections_load_profile');
+    return saved === 'full' ? 'full' : 'fast';
+  });
+  const [loanFetchLimit, setLoanFetchLimit] = useState(800);
+  const [collectionFetchLimit, setCollectionFetchLimit] = useState(1200);
+  const [hasMoreLoanRecords, setHasMoreLoanRecords] = useState(false);
+  const [hasMoreCollectionRecords, setHasMoreCollectionRecords] = useState(false);
+  const [fetchedLoanCount, setFetchedLoanCount] = useState(0);
+  const [fetchedCollectionCount, setFetchedCollectionCount] = useState(0);
+  const [centerListPage, setCenterListPage] = useState(1);
+  const [centerListPageSize, setCenterListPageSize] = useState(20);
+  const [routeListPage, setRouteListPage] = useState(1);
+  const [routeListPageSize, setRouteListPageSize] = useState(() => {
+    if (typeof window === 'undefined') return 20;
+    const saved = Number(localStorage.getItem('mf_collections_route_page_size') || '20');
+    return [10, 20, 30, 50].includes(saved) ? saved : 20;
+  });
+  const [officeListPage, setOfficeListPage] = useState(1);
+  const [officeListPageSize, setOfficeListPageSize] = useState(() => {
+    if (typeof window === 'undefined') return 20;
+    const saved = Number(localStorage.getItem('mf_collections_office_page_size') || '20');
+    return [10, 20, 30, 50].includes(saved) ? saved : 20;
+  });
   const [loadingWidgets, setLoadingWidgets] = useState(true);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [token, setToken] = useState('');
@@ -397,8 +422,6 @@ export default function CollectionManagementPage() {
   const loadLoans = useCallback(async () => {
     if (!token) return;
 
-    setLoading(true);
-
     const applyCacheMeta = (available: boolean, cachedAt: string | null) => {
       setCacheMeta({ available, cachedAt });
     };
@@ -407,21 +430,31 @@ export default function CollectionManagementPage() {
       const cached = await loadMfCollectionCache(scopeKey);
       if (!cached) {
         applyCacheMeta(false, null);
-        return false;
+        return null;
       }
 
-      setLoans(cached.loans as LoanRow[]);
-      setCollections(
-        (cached.collections as Record<string, unknown>[]).map((row) => normalizeCollectionRow(row))
-      );
+      const cachedLoans = cached.loans as LoanRow[];
+      const cachedCollections = (cached.collections as Record<string, unknown>[]).map((row) => normalizeCollectionRow(row));
+      setLoans(cachedLoans);
+      setCollections(cachedCollections);
       applyCacheMeta(true, cached.cachedAt);
-      return true;
+      return { cachedLoans, cachedCollections };
     };
+
+    const cachedState = await readCache();
+    if (cachedState) {
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
 
     const online = typeof navigator === 'undefined' ? true : navigator.onLine;
 
     if (!online) {
-      await readCache();
+      if (!cachedState) {
+        setLoans([]);
+        setCollections([]);
+      }
       setLoading(false);
       return;
     }
@@ -436,16 +469,29 @@ export default function CollectionManagementPage() {
                   status: 'approved',
                   branch_id: authUser.branch_id,
                   field_officer: authUser?.name || undefined,
+                  compact: loadProfile === 'fast' ? 1 : undefined,
+                  limit: loadProfile === 'fast' ? loanFetchLimit : undefined,
                 }
-              : { status: 'approved' },
+              : {
+                  status: 'approved',
+                  compact: loadProfile === 'fast' ? 1 : undefined,
+                  limit: loadProfile === 'fast' ? loanFetchLimit : undefined,
+                },
         }),
         axios.get(`${API_BASE}/microfinance/collections`, {
           headers,
+          params: {
+            limit: loadProfile === 'fast' ? collectionFetchLimit : undefined,
+          },
         }),
       ]);
 
       const loanRows = Array.isArray(loanResponse.data) ? loanResponse.data : [];
       const collectionRows = Array.isArray(collectionResponse.data) ? collectionResponse.data : [];
+      setFetchedLoanCount(loanRows.length);
+      setFetchedCollectionCount(collectionRows.length);
+      setHasMoreLoanRecords(loadProfile === 'fast' && loanRows.length >= loanFetchLimit);
+      setHasMoreCollectionRecords(loadProfile === 'fast' && collectionRows.length >= collectionFetchLimit);
       const normalizedCollections = collectionRows.map((row) =>
         normalizeCollectionRow(row as Record<string, unknown>)
       );
@@ -457,15 +503,16 @@ export default function CollectionManagementPage() {
       await cacheMfCollectionData(scopeKey, loanRows, normalizedCollections);
       applyCacheMeta(true, cachedAt);
     } catch {
-      const restored = await readCache();
-      if (!restored) {
+      if (!cachedState) {
         setLoans([]);
         setCollections([]);
       }
+      setHasMoreLoanRecords(false);
+      setHasMoreCollectionRecords(false);
     } finally {
       setLoading(false);
     }
-  }, [token, headers, isFieldOfficer, authUser?.branch_id, authUser?.name, scopeKey]);
+  }, [token, headers, isFieldOfficer, authUser?.branch_id, authUser?.name, scopeKey, loadProfile, loanFetchLimit, collectionFetchLimit]);
 
   const refreshAuthUserSnapshot = useCallback(async () => {
     if (!token) return;
@@ -546,6 +593,28 @@ export default function CollectionManagementPage() {
     if (!token) return;
     void loadLoans();
   }, [token, loadLoans]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('mf_collections_load_profile', loadProfile);
+  }, [loadProfile]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('mf_collections_route_page_size', String(routeListPageSize));
+  }, [routeListPageSize]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('mf_collections_office_page_size', String(officeListPageSize));
+  }, [officeListPageSize]);
+
+  useEffect(() => {
+    if (loadProfile === 'full') {
+      setHasMoreLoanRecords(false);
+      setHasMoreCollectionRecords(false);
+    }
+  }, [loadProfile]);
 
   const scopedLoans = useMemo(() => {
     if (!isFieldOfficer) return loans;
@@ -1041,6 +1110,49 @@ export default function CollectionManagementPage() {
       .sort((a, b) => a.centerName.localeCompare(b.centerName));
   }, [filteredScopedLoans, query]);
 
+  useEffect(() => {
+    setCenterListPage(1);
+  }, [activeMode, selectedCenterId, selectedGroupId, query, loanOfficerFilter, loanRouteFilter, loanCenterFilter]);
+
+  useEffect(() => {
+    setRouteListPage(1);
+    setOfficeListPage(1);
+  }, [activeMode, selectedRouteId, officeView, debtTargetDate, query, loanOfficerFilter, loanRouteFilter, loanCenterFilter]);
+
+  useEffect(() => {
+    setCenterListPage((prev) => {
+      const totalPages = Math.max(1, Math.ceil(centerCollections.length / centerListPageSize));
+      return Math.min(prev, totalPages);
+    });
+  }, [centerCollections.length, centerListPageSize]);
+
+  const centerCollectionsPaged = useMemo(() => {
+    const start = (centerListPage - 1) * centerListPageSize;
+    return centerCollections.slice(start, start + centerListPageSize);
+  }, [centerCollections, centerListPage, centerListPageSize]);
+
+  const centerListTotalPages = Math.max(1, Math.ceil(centerCollections.length / centerListPageSize));
+
+  useEffect(() => {
+    setRouteListPage((prev) => {
+      const totalPages = Math.max(1, Math.ceil(routeCollections.length / routeListPageSize));
+      return Math.min(prev, totalPages);
+    });
+  }, [routeCollections.length, routeListPageSize]);
+
+  const routeCollectionsPaged = useMemo(() => {
+    const start = (routeListPage - 1) * routeListPageSize;
+    return routeCollections.slice(start, start + routeListPageSize);
+  }, [routeCollections, routeListPage, routeListPageSize]);
+
+  const routeListTotalPages = Math.max(1, Math.ceil(routeCollections.length / routeListPageSize));
+
+  const loadMoreFastData = () => {
+    if (loadProfile !== 'fast') return;
+    setLoanFetchLimit((prev) => prev + 600);
+    setCollectionFetchLimit((prev) => prev + 800);
+  };
+
   const groupCollections = useMemo(() => {
     if (!selectedCenterId) return [];
 
@@ -1182,6 +1294,29 @@ export default function CollectionManagementPage() {
       return dueDate === officeDebtDate;
     });
   }, [activeMode, officeDebtDate, filteredLoans, todayDate, debtTargetDate]);
+
+  const officeDisplayLoansSorted = useMemo(() => {
+    return [...officeDisplayLoans].sort((a, b) => {
+      const aDue = String(a.due_date || '');
+      const bDue = String(b.due_date || '');
+      if (aDue !== bDue) return bDue.localeCompare(aDue);
+      return Number(b.id || 0) - Number(a.id || 0);
+    });
+  }, [officeDisplayLoans]);
+
+  useEffect(() => {
+    setOfficeListPage((prev) => {
+      const totalPages = Math.max(1, Math.ceil(officeDisplayLoansSorted.length / officeListPageSize));
+      return Math.min(prev, totalPages);
+    });
+  }, [officeDisplayLoansSorted.length, officeListPageSize]);
+
+  const officeDisplayLoansPaged = useMemo(() => {
+    const start = (officeListPage - 1) * officeListPageSize;
+    return officeDisplayLoansSorted.slice(start, start + officeListPageSize);
+  }, [officeDisplayLoansSorted, officeListPage, officeListPageSize]);
+
+  const officeListTotalPages = Math.max(1, Math.ceil(officeDisplayLoansSorted.length / officeListPageSize));
 
   const loanRecordHighlightDate =
     activeMode === 'today'
@@ -1942,8 +2077,11 @@ export default function CollectionManagementPage() {
 
       closeCollectModal();
       setReceiptModal({ open: true, receipt });
-    } catch (error: any) {
-      const message = error?.response?.data?.message || 'Failed to save collection.';
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
+          ? error.response.data.message
+          : 'Failed to save collection.';
       setNoticeModal({ open: true, title: 'Collection Error', message });
     } finally {
       setCollectSaving(false);
@@ -2099,7 +2237,7 @@ export default function CollectionManagementPage() {
     }
   }, [activeMode, canViewOfficeCollection, canViewCenterRouteCollections, cards, visibleCards]);
 
-  if (!token || loading || loadingWidgets) {
+  if (!token) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-cyan-50 to-blue-100 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-600"></div>
@@ -2195,6 +2333,7 @@ export default function CollectionManagementPage() {
               </span>
               <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 mt-3">{modeMeta.title}</h1>
               <p className="text-sm text-slate-600 mt-1">{modeMeta.subtitle}</p>
+              {loadingWidgets ? <p className="mt-2 text-xs font-semibold text-cyan-700">Syncing widget preferences...</p> : null}
             </div>
             <button
               onClick={() => router.push('/dashboard/microfinance')}
@@ -2229,6 +2368,38 @@ export default function CollectionManagementPage() {
               All summary cards are hidden. Restore from dashboard with admin approval.
             </div>
           )}
+
+          <div className="mt-4 rounded-xl border border-cyan-100/70 bg-cyan-50/50 px-3 py-2 text-xs text-cyan-900 flex flex-wrap items-center justify-between gap-2">
+            <p>
+              Load profile: <span className="font-bold uppercase">{loadProfile}</span>
+              {loadProfile === 'fast' ? ' (opens quicker with limited initial records)' : ' (loads complete records)'}
+              {loading ? ' - refreshing data...' : ''}
+            </p>
+            <div className="flex items-center gap-2">
+              {loadProfile === 'fast' ? (
+                <>
+                  <span className="text-[11px] text-cyan-800">
+                    Loaded {fetchedLoanCount} loans / {fetchedCollectionCount} collections
+                  </span>
+                  <button
+                    type="button"
+                    onClick={loadMoreFastData}
+                    disabled={loading || (!hasMoreLoanRecords && !hasMoreCollectionRecords)}
+                    className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Load More Data
+                  </button>
+                </>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setLoadProfile((prev) => (prev === 'fast' ? 'full' : 'fast'))}
+                className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-800 hover:bg-cyan-50"
+              >
+                {loadProfile === 'fast' ? 'Switch to Full Load' : 'Switch to Fast Load'}
+              </button>
+            </div>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2728,7 +2899,7 @@ export default function CollectionManagementPage() {
                               )}
                             </tr>
                           ))
-                        : centerCollections.map((row) => (
+                        : centerCollectionsPaged.map((row) => (
                             <tr
                               key={row.centerId}
                               onClick={() => setSelectedCenterId(row.centerId)}
@@ -2830,7 +3001,7 @@ export default function CollectionManagementPage() {
                               )}
                             </tr>
                           ))
-                        : routeCollections.map((row) => (
+                        : routeCollectionsPaged.map((row) => (
                             <tr
                               key={`route-${row.routeId}`}
                               onClick={() => setSelectedRouteId(row.routeId)}
@@ -2871,7 +3042,7 @@ export default function CollectionManagementPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {officeDisplayLoans.map((loan) => (
+                      {officeDisplayLoansPaged.map((loan) => (
                         <tr
                           key={loan.id}
                           onClick={() => openLoanDetailsModal(loan)}
@@ -2919,6 +3090,123 @@ export default function CollectionManagementPage() {
                 )}
               </table>
             </div>
+
+            {activeMode === 'center' && selectedCenterId === null && selectedGroupId === null && centerCollections.length > 0 && (
+              <div className="mt-3 flex flex-col gap-2 rounded-xl border border-cyan-100 bg-white/80 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-slate-600">
+                  Showing {(centerListPage - 1) * centerListPageSize + 1}-
+                  {Math.min(centerListPage * centerListPageSize, centerCollections.length)} of {centerCollections.length} centers
+                </p>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">Rows</label>
+                  <select
+                    value={centerListPageSize}
+                    onChange={(e) => setCenterListPageSize(Number(e.target.value) || 20)}
+                    className="rounded-lg border border-cyan-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
+                  >
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={30}>30</option>
+                    <option value={50}>50</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setCenterListPage((prev) => Math.max(1, prev - 1))}
+                    disabled={centerListPage <= 1}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs font-semibold text-slate-600">Page {centerListPage} of {centerListTotalPages}</span>
+                  <button
+                    type="button"
+                    onClick={() => setCenterListPage((prev) => Math.min(centerListTotalPages, prev + 1))}
+                    disabled={centerListPage >= centerListTotalPages}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {activeMode === 'route' && selectedRouteId === null && routeCollections.length > 0 && (
+              <div className="mt-3 flex flex-col gap-2 rounded-xl border border-cyan-100 bg-white/80 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-slate-600">
+                  Showing {(routeListPage - 1) * routeListPageSize + 1}-
+                  {Math.min(routeListPage * routeListPageSize, routeCollections.length)} of {routeCollections.length} routes
+                </p>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">Rows</label>
+                  <select
+                    value={routeListPageSize}
+                    onChange={(e) => setRouteListPageSize(Number(e.target.value) || 20)}
+                    className="rounded-lg border border-cyan-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
+                  >
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={30}>30</option>
+                    <option value={50}>50</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setRouteListPage((prev) => Math.max(1, prev - 1))}
+                    disabled={routeListPage <= 1}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs font-semibold text-slate-600">Page {routeListPage} of {routeListTotalPages}</span>
+                  <button
+                    type="button"
+                    onClick={() => setRouteListPage((prev) => Math.min(routeListTotalPages, prev + 1))}
+                    disabled={routeListPage >= routeListTotalPages}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {(activeMode === 'office' || activeMode === 'today' || activeMode === 'next') && officeDisplayLoansSorted.length > 0 && (
+              <div className="mt-3 flex flex-col gap-2 rounded-xl border border-cyan-100 bg-white/80 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-slate-600">
+                  Showing {(officeListPage - 1) * officeListPageSize + 1}-
+                  {Math.min(officeListPage * officeListPageSize, officeDisplayLoansSorted.length)} of {officeDisplayLoansSorted.length} loans
+                </p>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">Rows</label>
+                  <select
+                    value={officeListPageSize}
+                    onChange={(e) => setOfficeListPageSize(Number(e.target.value) || 20)}
+                    className="rounded-lg border border-cyan-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
+                  >
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={30}>30</option>
+                    <option value={50}>50</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setOfficeListPage((prev) => Math.max(1, prev - 1))}
+                    disabled={officeListPage <= 1}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs font-semibold text-slate-600">Page {officeListPage} of {officeListTotalPages}</span>
+                  <button
+                    type="button"
+                    onClick={() => setOfficeListPage((prev) => Math.min(officeListTotalPages, prev + 1))}
+                    disabled={officeListPage >= officeListTotalPages}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
 
             {currentLoanRecordRows.length > 0 && (
               <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3">

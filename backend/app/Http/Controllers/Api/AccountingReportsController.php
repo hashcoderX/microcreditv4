@@ -1403,6 +1403,100 @@ class AccountingReportsController extends Controller
         ]);
     }
 
+    public function activeMembersReport(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'branch_id' => ['nullable', 'integer', 'exists:companies,id'],
+            'company_id' => ['nullable', 'integer', 'exists:companies,id'],
+            'status' => ['nullable', 'string', 'in:all,approved,released'],
+            'officer' => ['nullable', 'string', 'max:150'],
+        ]);
+
+        $branchId = (int) ($validated['branch_id'] ?? $validated['company_id'] ?? 0);
+        if ($branchId <= 0) {
+            $branchId = (int) ($this->scopedBranchId($request) ?? 0);
+        } elseif (!$this->isAdminUser($request->user())) {
+            $scoped = (int) ($request->user()?->branch_id ?? 0);
+            if ($scoped <= 0 || $scoped !== $branchId) {
+                return response()->json(['message' => 'You do not have access to this branch.'], 403);
+            }
+        }
+
+        if ($branchId <= 0) {
+            return response()->json(['message' => 'Select a branch to view active members.'], 422);
+        }
+
+        $company = Company::query()->findOrFail($branchId);
+        $statusFilter = strtolower(trim((string) ($validated['status'] ?? 'all')));
+        $officerFilter = strtolower(trim((string) ($validated['officer'] ?? '')));
+
+        $collectionSums = DB::table('mf_loan_collections')
+            ->selectRaw('mf_loan_request_id, ROUND(COALESCE(SUM(collected_amount), 0), 2) as collected_amount')
+            ->groupBy('mf_loan_request_id');
+
+        $rows = DB::table('mf_loan_requests as loans')
+            ->leftJoinSub($collectionSums, 'col', function ($join) {
+                $join->on('col.mf_loan_request_id', '=', 'loans.id');
+            })
+            ->where('loans.branch_id', $branchId)
+            ->whereIn('loans.status', ['approved', 'released'])
+            ->when($statusFilter !== '' && $statusFilter !== 'all', fn ($query) => $query->whereRaw('LOWER(loans.status) = ?', [$statusFilter]))
+            ->when($officerFilter !== '', fn ($query) => $query->whereRaw('LOWER(COALESCE(loans.field_officer, "")) = ?', [$officerFilter]))
+            ->selectRaw('loans.id as loan_id')
+            ->selectRaw('COALESCE(loans.customer_no, "-") as customer_no')
+            ->selectRaw('COALESCE(loans.customer_name, "-") as customer_name')
+            ->selectRaw('COALESCE(loans.nic, "-") as nic')
+            ->selectRaw('COALESCE(loans.contact_no, "-") as contact_no')
+            ->selectRaw('COALESCE(loans.field_officer, "Unassigned") as field_officer')
+            ->selectRaw('COALESCE(loans.status, "-") as status')
+            ->selectRaw('ROUND(COALESCE(loans.loan_amount, 0), 2) as loan_amount')
+            ->selectRaw('ROUND(COALESCE(loans.refundable_amount, 0), 2) as refundable_amount')
+            ->selectRaw('ROUND(COALESCE(col.collected_amount, 0), 2) as collected_amount')
+            ->selectRaw('ROUND(GREATEST(COALESCE(loans.loan_balance, 0), GREATEST(COALESCE(loans.refundable_amount, 0) - COALESCE(col.collected_amount, 0), 0), 0), 2) as pending_amount')
+            ->selectRaw('DATE_FORMAT(loans.due_date, "%Y-%m-%d") as due_date')
+            ->havingRaw('pending_amount > 0.009')
+            ->orderByDesc('pending_amount')
+            ->get()
+            ->map(fn ($row) => [
+                'loanId' => (int) ($row->loan_id ?? 0),
+                'customerNo' => (string) ($row->customer_no ?? '-'),
+                'customerName' => (string) ($row->customer_name ?? '-'),
+                'nic' => (string) ($row->nic ?? '-'),
+                'contact' => (string) ($row->contact_no ?? '-'),
+                'fieldOfficer' => (string) ($row->field_officer ?? 'Unassigned'),
+                'status' => (string) ($row->status ?? '-'),
+                'loanAmount' => $this->roundMoney((float) ($row->loan_amount ?? 0)),
+                'refundableAmount' => $this->roundMoney((float) ($row->refundable_amount ?? 0)),
+                'collectedAmount' => $this->roundMoney((float) ($row->collected_amount ?? 0)),
+                'pendingAmount' => $this->roundMoney((float) ($row->pending_amount ?? 0)),
+                'dueDate' => (string) ($row->due_date ?? '-'),
+            ])
+            ->values();
+
+        $summary = [
+            'member_count' => $rows->count(),
+            'loan_amount' => $this->roundMoney((float) $rows->sum('loanAmount')),
+            'refundable' => $this->roundMoney((float) $rows->sum('refundableAmount')),
+            'collected' => $this->roundMoney((float) $rows->sum('collectedAmount')),
+            'pending' => $this->roundMoney((float) $rows->sum('pendingAmount')),
+        ];
+
+        return response()->json([
+            'company' => [
+                'id' => $company->id,
+                'name' => $company->name,
+                'currency' => $company->currency ?: 'LKR',
+            ],
+            'filters' => [
+                'branch_id' => $branchId,
+                'status' => $statusFilter,
+                'officer' => $officerFilter !== '' ? $officerFilter : null,
+            ],
+            'summary' => $summary,
+            'rows' => $rows,
+        ]);
+    }
+
     public function teamMemberWalletTransactions(Request $request, Employee $employee): JsonResponse
     {
         $validated = $request->validate([

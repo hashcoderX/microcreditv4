@@ -15,22 +15,6 @@ type AuthUser = {
   roles?: Array<{ id?: number; name?: string }>;
 };
 
-type LoanRow = {
-  id: number;
-  branch_id?: number | string | null;
-  field_officer?: string | null;
-  field_officer_id?: number | string | null;
-  loan_code?: string | null;
-  next_payment_date?: string | null;
-  customer_no?: string | null;
-  customer_name?: string | null;
-  nic?: string | null;
-  loan_amount?: number | string | null;
-  net_disbursed_amount?: number | string | null;
-  loan_request_date?: string | null;
-  created_at?: string | null;
-};
-
 type LoanLookupRow = {
   id: number;
   loan_code: string;
@@ -55,12 +39,32 @@ type PaymentRow = {
   payment_reference?: string | null;
   note?: string | null;
   loanRequest?: {
+    id?: number | string;
+    branch_id?: number | string;
     customer_no?: string;
     customer_name?: string;
+    nic?: string;
+    loan_code?: string;
+    field_officer?: string;
+    field_officer_id?: number | string;
+    loan_amount?: number | string;
+    net_disbursed_amount?: number | string;
+    loan_request_date?: string;
+    created_at?: string;
   } | null;
   loan_request?: {
+    id?: number | string;
+    branch_id?: number | string;
     customer_no?: string;
     customer_name?: string;
+    nic?: string;
+    loan_code?: string;
+    field_officer?: string;
+    field_officer_id?: number | string;
+    loan_amount?: number | string;
+    net_disbursed_amount?: number | string;
+    loan_request_date?: string;
+    created_at?: string;
   } | null;
   customer_no?: string;
   loan_code?: string;
@@ -159,6 +163,45 @@ const getPaymentPrimaryDate = (row: PaymentRow) => {
 };
 
 const API_BASE = getApiBaseUrl();
+const PAYMENTS_CACHE_VERSION = 'v1';
+const PAYMENTS_CACHE_TTL_MS = 2 * 60 * 1000;
+
+type PaymentsCachePayload = {
+  savedAt: number;
+  payments: PaymentRow[];
+  loansCatalog: LoanLookupRow[];
+};
+
+const buildPaymentsCacheKey = (
+  branchId: number,
+  datasetMode: 'fast' | 'full',
+  includeDeleted: boolean,
+  userId: number
+) => {
+  return `mf_payments_cache:${PAYMENTS_CACHE_VERSION}:${branchId}:${datasetMode}:${includeDeleted ? 1 : 0}:${userId}`;
+};
+
+const readPaymentsCache = (key: string): PaymentsCachePayload | null => {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PaymentsCachePayload;
+    if (!parsed || typeof parsed.savedAt !== 'number') return null;
+    if (!Array.isArray(parsed.payments) || !Array.isArray(parsed.loansCatalog)) return null;
+    if (Date.now() - parsed.savedAt > PAYMENTS_CACHE_TTL_MS) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const writePaymentsCache = (key: string, payload: PaymentsCachePayload) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // Ignore quota and serialization errors.
+  }
+};
 
 export default function MicrofinancePaymentsPage() {
   const router = useRouter();
@@ -186,6 +229,7 @@ export default function MicrofinancePaymentsPage() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pendingDeleteInvoiceId, setPendingDeleteInvoiceId] = useState<number | null>(null);
   const [deleteReason, setDeleteReason] = useState('');
+  const [datasetMode, setDatasetMode] = useState<'fast' | 'full'>('fast');
   const [alertModal, setAlertModal] = useState<{ open: boolean; title: string; message: string }>({
     open: false,
     title: '',
@@ -288,52 +332,41 @@ export default function MicrofinancePaymentsPage() {
     if (!token) return;
 
     const loadPayments = async () => {
-      setLoading(true);
+      const branchId = Number(authUser?.branch_id || 0);
+      const userId = Number(authUser?.id || 0);
+      const includeDeleted = canDeletePayments && showDeleted;
+      const cacheKey = buildPaymentsCacheKey(branchId, datasetMode, includeDeleted, userId);
+
+      const cached = readPaymentsCache(cacheKey);
+      if (cached) {
+        setPayments(cached.payments);
+        setLoansCatalog(cached.loansCatalog);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+
       try {
-        const [loanRes, paymentRes] = await Promise.all([
-          axios.get(`${API_BASE}/microfinance/loan-requests`, {
-            headers,
-          }),
-          axios.get(`${API_BASE}/microfinance/collections`, {
-            headers,
-            params: {
-              include_deleted: canDeletePayments && showDeleted ? 1 : 0,
-            },
-          }),
-        ]);
-
-        const allLoans: LoanRow[] = Array.isArray(loanRes.data) ? loanRes.data : [];
-        const rawPayments: PaymentRow[] = Array.isArray(paymentRes.data) ? paymentRes.data : [];
-
-        const loanMetaMap = new Map<number, { loan_code: string; customer_no: string; customer_name: string; customer_nic: string }>();
-        const loanOfficerMap = new Map<number, { field_officer: string; field_officer_id: number }>();
-        allLoans.forEach((loan) => {
-          const loanId = Number(loan.id);
-          loanMetaMap.set(Number(loan.id), {
-            loan_code: String(loan.loan_code || ''),
-            customer_no: String(loan.customer_no || ''),
-            customer_name: String(loan.customer_name || ''),
-            customer_nic: String(loan.nic || ''),
-          });
-
-          loanOfficerMap.set(loanId, {
-            field_officer: String(loan.field_officer || '').trim(),
-            field_officer_id: Number(loan.field_officer_id || 0),
-          });
+        const paymentRes = await axios.get(`${API_BASE}/microfinance/collections`, {
+          headers,
+          params: {
+            include_deleted: includeDeleted ? 1 : 0,
+            limit: datasetMode === 'fast' ? 500 : undefined,
+          },
         });
 
+        const rawPayments: PaymentRow[] = Array.isArray(paymentRes.data) ? paymentRes.data : [];
+
         const allPayments: PaymentRow[] = rawPayments.map((row) => {
-          const loanId = Number(row.mf_loan_request_id || 0);
           const relationMeta = row.loanRequest || row.loan_request;
-          const mapMeta = loanMetaMap.get(loanId);
-          const officerMeta = loanOfficerMap.get(loanId);
 
           const customerNo =
-            String(row.customer_no || relationMeta?.customer_no || mapMeta?.customer_no || '').trim();
-          const loanCode = String(row.loan_code || mapMeta?.loan_code || '').trim();
+            String(row.customer_no || relationMeta?.customer_no || '').trim();
+          const loanCode = String(row.loan_code || relationMeta?.loan_code || '').trim();
           const customerName =
-            String(row.customer_name || relationMeta?.customer_name || mapMeta?.customer_name || '').trim();
-          const customerNic = String(row.customer_nic || mapMeta?.customer_nic || '').trim();
+            String(row.customer_name || relationMeta?.customer_name || '').trim();
+          const customerNic = String(row.customer_nic || relationMeta?.nic || '').trim();
+          const normalizedOfficer = String(row.field_officer || relationMeta?.field_officer || '').trim();
 
           return {
             ...row,
@@ -341,11 +374,21 @@ export default function MicrofinancePaymentsPage() {
             customer_no: customerNo || '-',
             customer_name: customerName || '-',
             customer_nic: customerNic || '-',
-            field_officer: String(officerMeta?.field_officer || '').trim() || 'Unassigned',
-            field_officer_id: Number(officerMeta?.field_officer_id || 0),
+            field_officer: normalizedOfficer || 'Unassigned',
+            field_officer_id: Number(row.field_officer_id || relationMeta?.field_officer_id || 0),
             loanRequest: {
+              id: relationMeta?.id,
+              branch_id: relationMeta?.branch_id,
               customer_no: customerNo || '-',
               customer_name: customerName || '-',
+              nic: customerNic || '-',
+              loan_code: loanCode || '-',
+              field_officer: normalizedOfficer || 'Unassigned',
+              field_officer_id: Number(row.field_officer_id || relationMeta?.field_officer_id || 0),
+              loan_amount: relationMeta?.loan_amount,
+              net_disbursed_amount: relationMeta?.net_disbursed_amount,
+              loan_request_date: relationMeta?.loan_request_date,
+              created_at: relationMeta?.created_at,
             },
           };
         });
@@ -353,10 +396,11 @@ export default function MicrofinancePaymentsPage() {
         const branchId = Number(authUser?.branch_id || 0);
         const authOfficerId = Number(authUser?.employee?.id || 0);
 
-        const scopedLoans = allLoans.filter((loan) => {
-          const loanBranchId = Number(loan.branch_id || 0);
-          const loanOfficerId = Number(loan.field_officer_id || 0);
-          const loanOfficer = normalizeText(String(loan.field_officer || '').trim());
+        const scopedPayments = allPayments.filter((row) => {
+          const relationMeta = row.loanRequest || row.loan_request;
+          const loanBranchId = Number(relationMeta?.branch_id || 0);
+          const loanOfficerId = Number(row.field_officer_id || relationMeta?.field_officer_id || 0);
+          const loanOfficer = normalizeText(String(row.field_officer || relationMeta?.field_officer || '').trim());
 
           if (isAdmin) {
             return true;
@@ -376,30 +420,45 @@ export default function MicrofinancePaymentsPage() {
           return branchId > 0 ? loanBranchId === branchId : false;
         });
 
-        const scopedLoanIds = new Set(scopedLoans.map((loan) => Number(loan.id)));
-        setPayments(allPayments.filter((row) => scopedLoanIds.has(Number(row.mf_loan_request_id || 0))));
+        setPayments(scopedPayments);
 
-        const catalog = scopedLoans.map((loan) => ({
-            id: Number(loan.id),
-          loan_code: String(loan.loan_code || '-'),
-            customer_no: String(loan.customer_no || '-'),
-            customer_name: String(loan.customer_name || '-'),
-            customer_nic: String(loan.nic || '-'),
-            field_officer: String(loan.field_officer || 'Unassigned'),
-            issue_amount: Number(loan.net_disbursed_amount || loan.loan_amount || 0),
-            issue_date: String(loan.loan_request_date || loan.created_at || ''),
-          }));
+        const loanMap = new Map<number, LoanLookupRow>();
+        scopedPayments.forEach((row) => {
+          const relationMeta = row.loanRequest || row.loan_request;
+          const loanId = Number(row.mf_loan_request_id || relationMeta?.id || 0);
+          if (!loanId || loanMap.has(loanId)) return;
+
+          loanMap.set(loanId, {
+            id: loanId,
+            loan_code: String(row.loan_code || relationMeta?.loan_code || '-'),
+            customer_no: String(row.customer_no || relationMeta?.customer_no || '-'),
+            customer_name: String(row.customer_name || relationMeta?.customer_name || '-'),
+            customer_nic: String(row.customer_nic || relationMeta?.nic || '-'),
+            field_officer: String(row.field_officer || relationMeta?.field_officer || 'Unassigned'),
+            issue_amount: Number(relationMeta?.net_disbursed_amount || relationMeta?.loan_amount || 0),
+            issue_date: String(relationMeta?.loan_request_date || relationMeta?.created_at || ''),
+          });
+        });
+
+        const catalog = Array.from(loanMap.values()).sort((a, b) => b.id - a.id);
         setLoansCatalog(catalog);
+        writePaymentsCache(cacheKey, {
+          savedAt: Date.now(),
+          payments: scopedPayments,
+          loansCatalog: catalog,
+        });
       } catch {
-        setPayments([]);
-        setLoansCatalog([]);
+        if (!cached) {
+          setPayments([]);
+          setLoansCatalog([]);
+        }
       } finally {
         setLoading(false);
       }
     };
 
     loadPayments();
-  }, [token, headers, isAdmin, isManager, isCollectionOfficer, authUser?.branch_id, authUser?.employee?.id, officerNameCandidates, reloadCounter, canDeletePayments, showDeleted]);
+  }, [token, headers, isAdmin, isManager, isCollectionOfficer, authUser?.id, authUser?.branch_id, authUser?.employee?.id, officerNameCandidates, reloadCounter, canDeletePayments, showDeleted, datasetMode]);
 
   const openDeleteConfirm = (invoiceId: number) => {
     if (!canDeletePayments) {
@@ -794,7 +853,7 @@ export default function MicrofinancePaymentsPage() {
     return `${datePart} ${timePart}`;
   };
 
-  if (!token || loading) {
+  if (!token) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-[#eef8ff] via-[#ecfcf7] to-[#f2f9ff] flex items-center justify-center">
         <div className="h-14 w-14 animate-spin rounded-full border-4 border-cyan-100 border-t-cyan-600" />
@@ -926,6 +985,20 @@ export default function MicrofinancePaymentsPage() {
               <p className="text-xs uppercase tracking-wide text-slate-500">Cash / Bank</p>
               <p className="text-xl font-bold text-slate-900 mt-1">{totals.cashCount} / {totals.bankCount}</p>
             </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-cyan-100/70 bg-white/10 px-3 py-2 text-xs text-cyan-50 flex flex-wrap items-center justify-between gap-2">
+            <p>
+              Data mode: <span className="font-bold uppercase">{datasetMode}</span>
+              {datasetMode === 'fast' ? ' (loads latest 500 transactions first)' : ' (loads full transaction history)'}
+            </p>
+            <button
+              type="button"
+              onClick={() => setDatasetMode((prev) => (prev === 'fast' ? 'full' : 'fast'))}
+              className="rounded-lg border border-white/25 bg-white/15 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/25"
+            >
+              {datasetMode === 'fast' ? 'Load Full History' : 'Use Fast Mode'}
+            </button>
           </div>
         </div>
 
@@ -1107,7 +1180,11 @@ export default function MicrofinancePaymentsPage() {
             </div>
           )}
 
-          {filteredPayments.length === 0 ? (
+          {loading ? (
+            <div className="mt-4 rounded-2xl border border-cyan-100 bg-gradient-to-br from-cyan-100/60 to-teal-100/40 p-8 text-sm text-slate-700 text-center">
+              Loading payment records...
+            </div>
+          ) : filteredPayments.length === 0 ? (
             <div className="mt-4 rounded-2xl border border-cyan-100 bg-gradient-to-br from-cyan-100/60 to-teal-100/40 p-8 text-sm text-slate-700 text-center">
               No payment records found.
             </div>
