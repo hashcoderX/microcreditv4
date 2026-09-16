@@ -9,11 +9,28 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 type LoanRow = {
-  id: number;
-  loan_code?: string | null;
   customer_no?: string | null;
   customer_name?: string | null;
   field_officer?: string | null;
+  loan_scope?: string | null;
+  refund_option?: string | null;
+  status?: string | null;
+  route?: {
+    id?: number | string;
+    name?: string | null;
+    code?: string | null;
+  } | null;
+  center?: {
+    id?: number | string;
+    name?: string | null;
+    code?: string | null;
+    meeting_day?: string | null;
+  } | null;
+  group?: {
+    id?: number | string;
+    name?: string | null;
+    code?: string | null;
+  } | null;
 };
 
 type CollectionRow = {
@@ -25,8 +42,10 @@ type CollectionRow = {
   capital_amount?: number | string;
   interest_amount?: number | string;
   penalty_amount?: number | string;
+  correction_amount?: number | string;
   payment_type?: string | null;
   payment_reference?: string | null;
+  loan_request?: LoanRow | null;
 };
 
 type ReportRow = {
@@ -36,10 +55,18 @@ type ReportRow = {
   customerNo: string;
   customerName: string;
   fieldOfficer: string;
+  routeName: string;
+  centerName: string;
+  groupName: string;
+  productName: string;
+  meetingDay: string;
+  loanStatus: string;
   collected: number;
   capital: number;
   interest: number;
   penalty: number;
+  correction: number;
+  breakdownGap: number;
   paymentType: string;
   reference: string;
 };
@@ -62,6 +89,11 @@ export default function MicrofinanceCollectionReportPage() {
   });
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const [routeFilter, setRouteFilter] = useState('all');
+  const [centerFilter, setCenterFilter] = useState('all');
+  const [productFilter, setProductFilter] = useState('all');
+  const [officerFilter, setOfficerFilter] = useState('all');
+  const [paymentTypeFilter, setPaymentTypeFilter] = useState('all');
 
 
   const fetchWidgetPreferences = async (authToken: string) => {
@@ -143,51 +175,53 @@ export default function MicrofinanceCollectionReportPage() {
     const loadReport = async () => {
       setLoading(true);
       try {
-        const [loanRes, collectionRes] = await Promise.all([
-          axios.get(`${API_BASE}/microfinance/loan-requests`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: 'application/json',
-            },
-            params: {
-              branch_id: branchId,
-            },
-          }),
-          axios.get(`${API_BASE}/microfinance/collections`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: 'application/json',
-            },
-            params: {
-              branch_id: branchId,
-            },
-          }),
-        ]);
-
-        const loans: LoanRow[] = Array.isArray(loanRes.data) ? loanRes.data : [];
-        const collections: CollectionRow[] = Array.isArray(collectionRes.data) ? collectionRes.data : [];
-
-        const loanMap = new Map<number, LoanRow>();
-        loans.forEach((loan) => {
-          loanMap.set(Number(loan.id), loan);
+        const collectionRes = await axios.get(`${API_BASE}/microfinance/collections`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+          params: {
+            branch_id: branchId,
+          },
         });
+
+        const collections: CollectionRow[] = Array.isArray(collectionRes.data) ? collectionRes.data : [];
 
         const mapped: ReportRow[] = collections
           .map((collection) => {
             const loanId = Number(collection.mf_loan_request_id || 0);
-            const loan = loanMap.get(loanId);
+            const loan = collection.loan_request || null;
+            const routeName = String(loan?.route?.name || 'Unassigned Route');
+            const centerName = String(loan?.center?.name || 'Unassigned Center');
+            const groupName = String(loan?.group?.name || 'Unassigned Group');
+            const loanScope = String(loan?.loan_scope || '').trim().toLowerCase();
+            const productName = loanScope ? loanScope.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase()) : 'Center Loan';
+            const collected = Number(collection.collected_amount || 0);
+            const capital = Number(collection.capital_amount || 0);
+            const interest = Number(collection.interest_amount || 0);
+            const penalty = Number(collection.penalty_amount || 0);
+            const correction = Number(collection.correction_amount || 0);
+            const breakdownGap = Number((collected - (capital + interest + penalty + correction)).toFixed(2));
 
             return {
               id: Number(collection.id),
               date: String(collection.collection_date || collection.created_at || ''),
-              loanCode: String(loan?.loan_code || `LR-${loanId || 0}`),
+              loanCode: String(`MF-${loanId || 0}`),
               customerNo: String(loan?.customer_no || '-'),
               customerName: String(loan?.customer_name || '-'),
               fieldOfficer: String(loan?.field_officer || 'Unassigned'),
-              collected: Number(collection.collected_amount || 0),
-              capital: Number(collection.capital_amount || 0),
-              interest: Number(collection.interest_amount || 0),
-              penalty: Number(collection.penalty_amount || 0),
+              routeName,
+              centerName,
+              groupName,
+              productName,
+              meetingDay: String(loan?.center?.meeting_day || '-'),
+              loanStatus: String(loan?.status || '-'),
+              collected,
+              capital,
+              interest,
+              penalty,
+              correction,
+              breakdownGap,
               paymentType: String(collection.payment_type || '-').replace('_', ' '),
               reference: String(collection.payment_reference || '-'),
             };
@@ -209,6 +243,12 @@ export default function MicrofinanceCollectionReportPage() {
     loadReport();
   }, [token, branchId]);
 
+  const routeOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.routeName))).sort((a, b) => a.localeCompare(b)), [rows]);
+  const centerOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.centerName))).sort((a, b) => a.localeCompare(b)), [rows]);
+  const productOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.productName))).sort((a, b) => a.localeCompare(b)), [rows]);
+  const officerOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.fieldOfficer))).sort((a, b) => a.localeCompare(b)), [rows]);
+  const paymentTypeOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.paymentType))).sort((a, b) => a.localeCompare(b)), [rows]);
+
   const filteredRows = useMemo(() => {
     const from = fromDate ? new Date(`${fromDate}T00:00:00`) : null;
     const to = toDate ? new Date(`${toDate}T23:59:59`) : null;
@@ -224,26 +264,54 @@ export default function MicrofinanceCollectionReportPage() {
         return false;
       }
 
+      if (routeFilter !== 'all' && row.routeName !== routeFilter) {
+        return false;
+      }
+
+      if (centerFilter !== 'all' && row.centerName !== centerFilter) {
+        return false;
+      }
+
+      if (productFilter !== 'all' && row.productName !== productFilter) {
+        return false;
+      }
+
+      if (officerFilter !== 'all' && row.fieldOfficer !== officerFilter) {
+        return false;
+      }
+
+      if (paymentTypeFilter !== 'all' && row.paymentType !== paymentTypeFilter) {
+        return false;
+      }
+
       return true;
     });
-  }, [rows, fromDate, toDate]);
+  }, [rows, fromDate, toDate, routeFilter, centerFilter, productFilter, officerFilter, paymentTypeFilter]);
 
   const summary = useMemo(() => {
     let totalCollected = 0;
     let totalCapital = 0;
     let totalInterest = 0;
     let totalPenalty = 0;
+    let totalCorrection = 0;
+    let totalBreakdownGap = 0;
 
     const today = new Date().toISOString().slice(0, 10);
     let todayCollected = 0;
 
     const officers = new Set<string>();
+    const routes = new Set<string>();
+    const centers = new Set<string>();
+    const products = new Set<string>();
+    const qualityIssueRows = new Set<number>();
 
     filteredRows.forEach((row) => {
       totalCollected += row.collected;
       totalCapital += row.capital;
       totalInterest += row.interest;
       totalPenalty += row.penalty;
+      totalCorrection += row.correction;
+      totalBreakdownGap += row.breakdownGap;
 
       if (String(row.date).slice(0, 10) === today) {
         todayCollected += row.collected;
@@ -252,6 +320,22 @@ export default function MicrofinanceCollectionReportPage() {
       if (row.fieldOfficer && row.fieldOfficer !== 'Unassigned') {
         officers.add(row.fieldOfficer);
       }
+
+      if (row.routeName && !row.routeName.includes('Unassigned')) {
+        routes.add(row.routeName);
+      }
+
+      if (row.centerName && !row.centerName.includes('Unassigned')) {
+        centers.add(row.centerName);
+      }
+
+      if (row.productName) {
+        products.add(row.productName);
+      }
+
+      if (Math.abs(row.breakdownGap) > 0.02) {
+        qualityIssueRows.add(row.id);
+      }
     });
 
     return {
@@ -259,9 +343,16 @@ export default function MicrofinanceCollectionReportPage() {
       totalCapital,
       totalInterest,
       totalPenalty,
+      totalCorrection,
+      totalBreakdownGap,
       todayCollected,
       transactionCount: filteredRows.length,
       officerCount: officers.size,
+      routeCount: routes.size,
+      centerCount: centers.size,
+      productCount: products.size,
+      qualityIssueCount: qualityIssueRows.size,
+      averageTicket: filteredRows.length > 0 ? totalCollected / filteredRows.length : 0,
     };
   }, [filteredRows]);
 
@@ -293,9 +384,21 @@ export default function MicrofinanceCollectionReportPage() {
     },
     {
       key: 'mf_collection_widget_summary_today_officers',
-      label: 'Today / Officers',
-      value: `${new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 2 }).format(summary.todayCollected)} / ${summary.officerCount}`,
+      label: 'Today / Officers / Routes',
+      value: `${new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 2 }).format(summary.todayCollected)} / ${summary.officerCount} / ${summary.routeCount}`,
       style: 'text-cyan-800',
+    },
+    {
+      key: 'mf_collection_widget_summary_avg_ticket',
+      label: 'Avg Ticket / Centers',
+      value: `${new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 2 }).format(summary.averageTicket)} / ${summary.centerCount}`,
+      style: 'text-indigo-700',
+    },
+    {
+      key: 'mf_collection_widget_summary_quality',
+      label: 'Data Quality Alerts',
+      value: `${summary.qualityIssueCount} issue(s)`,
+      style: summary.qualityIssueCount > 0 ? 'text-rose-700' : 'text-emerald-700',
     },
   ];
   const visibleSummaryCards = summaryCards.filter((card) => !hiddenWidgetKeys.has(card.key));
@@ -305,15 +408,21 @@ export default function MicrofinanceCollectionReportPage() {
   const tableColumns = [
     { key: 'date', label: 'Date & Time' },
     { key: 'loanCode', label: 'Loan Code' },
+    { key: 'product', label: 'Product' },
+    { key: 'route', label: 'Route' },
+    { key: 'center', label: 'Center' },
     { key: 'customerNo', label: 'Customer No' },
     { key: 'customer', label: 'Customer' },
     { key: 'fieldOfficer', label: 'Field Officer' },
+    { key: 'loanStatus', label: 'Loan Status' },
     { key: 'paymentType', label: 'Payment Type' },
     { key: 'reference', label: 'Reference' },
     { key: 'collected', label: 'Collected' },
     { key: 'capital', label: 'Capital' },
     { key: 'interest', label: 'Interest' },
     { key: 'penalty', label: 'Penalty' },
+    { key: 'correction', label: 'Correction' },
+    { key: 'gap', label: 'Gap' },
   ];
   const visibleTableColumns = tableColumns.filter((column) => !hiddenWidgetKeys.has(`mf_collection_widget_col_${column.key}`));
 
@@ -342,15 +451,22 @@ export default function MicrofinanceCollectionReportPage() {
     const headers = [
       'Date & Time',
       'Loan Code',
+      'Product',
+      'Route',
+      'Center',
+      'Group',
       'Customer No',
       'Customer',
       'Field Officer',
+      'Loan Status',
       'Payment Type',
       'Reference',
       'Collected',
       'Capital',
       'Interest',
       'Penalty',
+      'Correction',
+      'Breakdown Gap',
     ];
 
     const escapeCsv = (value: string | number) => {
@@ -364,15 +480,22 @@ export default function MicrofinanceCollectionReportPage() {
     const body = filteredRows.map((row) => [
       formatDateTime(row.date),
       row.loanCode,
+      row.productName,
+      row.routeName,
+      row.centerName,
+      row.groupName,
       row.customerNo,
       row.customerName,
       row.fieldOfficer,
+      row.loanStatus,
       row.paymentType,
       row.reference,
       formatMoney(row.collected),
       formatMoney(row.capital),
       formatMoney(row.interest),
       formatMoney(row.penalty),
+      formatMoney(row.correction),
+      formatMoney(row.breakdownGap),
     ]);
 
     const csv = [headers, ...body].map((line) => line.map(escapeCsv).join(',')).join('\n');
@@ -411,6 +534,9 @@ export default function MicrofinanceCollectionReportPage() {
       head: [[
         'Date & Time',
         'Loan Code',
+        'Product',
+        'Route',
+        'Center',
         'Customer No',
         'Customer',
         'Field Officer',
@@ -420,10 +546,14 @@ export default function MicrofinanceCollectionReportPage() {
         'Capital',
         'Interest',
         'Penalty',
+        'Gap',
       ]],
       body: filteredRows.map((row) => [
         formatDateTime(row.date),
         row.loanCode,
+        row.productName,
+        row.routeName,
+        row.centerName,
         row.customerNo,
         row.customerName,
         row.fieldOfficer,
@@ -433,6 +563,7 @@ export default function MicrofinanceCollectionReportPage() {
         formatMoney(row.capital),
         formatMoney(row.interest),
         formatMoney(row.penalty),
+        formatMoney(row.breakdownGap),
       ]),
       styles: {
         fontSize: 8,
@@ -551,7 +682,7 @@ export default function MicrofinanceCollectionReportPage() {
                 ×
               </button>
 </WidgetCloseGate>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full lg:w-auto">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 w-full lg:w-auto">
                 <div>
                   <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">From Date</label>
                   <input
@@ -570,6 +701,71 @@ export default function MicrofinanceCollectionReportPage() {
                     className="mt-1 w-full px-3 py-2.5 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
                   />
                 </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Route</label>
+                  <select
+                    value={routeFilter}
+                    onChange={(e) => setRouteFilter(e.target.value)}
+                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                  >
+                    <option value="all">All Routes</option>
+                    {routeOptions.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Center</label>
+                  <select
+                    value={centerFilter}
+                    onChange={(e) => setCenterFilter(e.target.value)}
+                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                  >
+                    <option value="all">All Centers</option>
+                    {centerOptions.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Product</label>
+                  <select
+                    value={productFilter}
+                    onChange={(e) => setProductFilter(e.target.value)}
+                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                  >
+                    <option value="all">All Products</option>
+                    {productOptions.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Officer</label>
+                  <select
+                    value={officerFilter}
+                    onChange={(e) => setOfficerFilter(e.target.value)}
+                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                  >
+                    <option value="all">All Officers</option>
+                    {officerOptions.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Payment Type</label>
+                  <select
+                    value={paymentTypeFilter}
+                    onChange={(e) => setPaymentTypeFilter(e.target.value)}
+                    className="mt-1 w-full px-3 py-2.5 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                  >
+                    <option value="all">All Payment Types</option>
+                    {paymentTypeOptions.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full sm:w-auto">
@@ -578,6 +774,11 @@ export default function MicrofinanceCollectionReportPage() {
                   onClick={() => {
                     setFromDate('');
                     setToDate('');
+                    setRouteFilter('all');
+                    setCenterFilter('all');
+                    setProductFilter('all');
+                    setOfficerFilter('all');
+                    setPaymentTypeFilter('all');
                   }}
                   className="px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold"
                 >
@@ -609,6 +810,29 @@ export default function MicrofinanceCollectionReportPage() {
           <div className="mt-3 rounded-xl border border-cyan-100 bg-gradient-to-r from-cyan-50/80 via-sky-50/70 to-emerald-50/70 px-3 py-2 text-xs sm:text-sm text-slate-600">
             Showing <span className="font-bold text-slate-800">{filteredRows.length}</span> transaction(s)
             {fromDate || toDate ? ` for ${fromDate || 'Start'} to ${toDate || 'End'}` : ' for all dates'}.
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            <div className="rounded-xl border border-cyan-100 bg-white p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Portfolio Mix</p>
+              <p className="mt-1 text-sm font-semibold text-slate-900">{summary.productCount} product segment(s)</p>
+            </div>
+            <div className="rounded-xl border border-cyan-100 bg-white p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Geographic Coverage</p>
+              <p className="mt-1 text-sm font-semibold text-slate-900">{summary.routeCount} routes / {summary.centerCount} centers</p>
+            </div>
+            <div className="rounded-xl border border-cyan-100 bg-white p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Transaction Integrity Gap</p>
+              <p className={`mt-1 text-sm font-semibold ${Math.abs(summary.totalBreakdownGap) > 0.02 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                {formatMoney(summary.totalBreakdownGap)}
+              </p>
+            </div>
+            <div className="rounded-xl border border-cyan-100 bg-white p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Data Accuracy Flags</p>
+              <p className={`mt-1 text-sm font-semibold ${summary.qualityIssueCount > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                {summary.qualityIssueCount} row(s)
+              </p>
+            </div>
           </div>
 
           {filteredRows.length === 0 ? (
@@ -648,6 +872,12 @@ export default function MicrofinanceCollectionReportPage() {
                       <p className="text-slate-500">Loan Code</p>
                       <p className="font-semibold text-slate-900 text-right">{row.loanCode}</p>
 
+                      <p className="text-slate-500">Product</p>
+                      <p className="font-semibold text-slate-900 text-right">{row.productName}</p>
+
+                      <p className="text-slate-500">Route / Center</p>
+                      <p className="font-semibold text-slate-900 text-right">{row.routeName} / {row.centerName}</p>
+
                       <p className="text-slate-500">Customer No</p>
                       <p className="font-semibold text-slate-900 text-right">{row.customerNo}</p>
 
@@ -656,6 +886,9 @@ export default function MicrofinanceCollectionReportPage() {
 
                       <p className="text-slate-500">Officer</p>
                       <p className="text-slate-800 text-right">{row.fieldOfficer}</p>
+
+                      <p className="text-slate-500">Loan Status</p>
+                      <p className="text-slate-800 text-right capitalize">{row.loanStatus.replace(/_/g, ' ')}</p>
 
                       <p className="text-slate-500">Payment</p>
                       <p className="capitalize text-slate-800 text-right">{row.paymentType}</p>
@@ -681,6 +914,14 @@ export default function MicrofinanceCollectionReportPage() {
                         <p className="text-[11px] uppercase tracking-wide text-slate-500">Penalty</p>
                         <p className="font-semibold text-rose-700">{formatMoney(row.penalty)}</p>
                       </div>
+                      <div>
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500">Correction</p>
+                        <p className="font-semibold text-slate-900">{formatMoney(row.correction)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500">Gap</p>
+                        <p className={`font-semibold ${Math.abs(row.breakdownGap) > 0.02 ? 'text-rose-700' : 'text-emerald-700'}`}>{formatMoney(row.breakdownGap)}</p>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -693,15 +934,21 @@ export default function MicrofinanceCollectionReportPage() {
                     <tr>
                       <th className="px-3 py-2 font-semibold">Date & Time</th>
                       <th className="px-3 py-2 font-semibold">Loan Code</th>
+                      <th className="px-3 py-2 font-semibold">Product</th>
+                      <th className="px-3 py-2 font-semibold">Route</th>
+                      <th className="px-3 py-2 font-semibold">Center</th>
                       <th className="px-3 py-2 font-semibold">Customer No</th>
                       <th className="px-3 py-2 font-semibold">Customer</th>
                       <th className="px-3 py-2 font-semibold">Field Officer</th>
+                      <th className="px-3 py-2 font-semibold">Loan Status</th>
                       <th className="px-3 py-2 font-semibold">Payment Type</th>
                       <th className="px-3 py-2 font-semibold">Reference</th>
                       <th className="px-3 py-2 font-semibold">Collected</th>
                       <th className="px-3 py-2 font-semibold">Capital</th>
                       <th className="px-3 py-2 font-semibold">Interest</th>
                       <th className="px-3 py-2 font-semibold">Penalty</th>
+                      <th className="px-3 py-2 font-semibold">Correction</th>
+                      <th className="px-3 py-2 font-semibold">Gap</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -709,15 +956,21 @@ export default function MicrofinanceCollectionReportPage() {
                       <tr key={row.id} className="border-b border-cyan-100 last:border-b-0 hover:bg-cyan-50/40 transition-colors">
                         <td className="px-3 py-2">{formatDateTime(row.date)}</td>
                         <td className="px-3 py-2 font-semibold text-slate-900">{row.loanCode}</td>
+                        <td className="px-3 py-2">{row.productName}</td>
+                        <td className="px-3 py-2">{row.routeName}</td>
+                        <td className="px-3 py-2">{row.centerName}</td>
                         <td className="px-3 py-2">{row.customerNo}</td>
                         <td className="px-3 py-2">{row.customerName}</td>
                         <td className="px-3 py-2">{row.fieldOfficer}</td>
+                        <td className="px-3 py-2 capitalize">{row.loanStatus.replace(/_/g, ' ')}</td>
                         <td className="px-3 py-2 capitalize">{row.paymentType}</td>
                         <td className="px-3 py-2">{row.reference}</td>
                         <td className="px-3 py-2 font-semibold text-emerald-700">{formatMoney(row.collected)}</td>
                         <td className="px-3 py-2">{formatMoney(row.capital)}</td>
                         <td className="px-3 py-2">{formatMoney(row.interest)}</td>
                         <td className="px-3 py-2">{formatMoney(row.penalty)}</td>
+                        <td className="px-3 py-2">{formatMoney(row.correction)}</td>
+                        <td className={`px-3 py-2 font-semibold ${Math.abs(row.breakdownGap) > 0.02 ? 'text-rose-700' : 'text-emerald-700'}`}>{formatMoney(row.breakdownGap)}</td>
                       </tr>
                     ))}
                   </tbody>

@@ -84,7 +84,7 @@ class LoanCollectionController extends Controller
         }
 
         $newBalance = round((float) ($wallet->current_balance ?? 0) + $amountDelta, 2);
-        $wallet->current_balance = $newBalance;
+        $wallet->current_balance = number_format($newBalance, 2, '.', '');
         $wallet->save();
     }
 
@@ -225,7 +225,10 @@ class LoanCollectionController extends Controller
 
         $query = MicrofinanceLoanCollection::query()
             ->with([
-                'loanRequest:id,customer_no,customer_name,field_officer',
+                'loanRequest:id,customer_no,customer_name,field_officer,mf_route_id,mf_center_id,mf_group_id,loan_scope,refund_option,status,loan_amount,installment_amount,refundable_amount',
+                'loanRequest.route:id,name,code',
+                'loanRequest.center:id,name,code,meeting_day,mf_route_id',
+                'loanRequest.group:id,name,code,mf_center_id,mf_route_id',
                 'deletedByUser:id,name,email',
             ])
             ->orderByDesc('id');

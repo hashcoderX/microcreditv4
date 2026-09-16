@@ -649,11 +649,6 @@ export default function MicrofinanceCustomersPage() {
   const startIndex = (safePage - 1) * pageSize;
   const paginatedCustomers = filteredCustomers.slice(startIndex, startIndex + pageSize);
 
-  const activeCount = useMemo(
-    () => customers.filter((c) => (c.status || '').toLowerCase() === 'active').length,
-    [customers]
-  );
-
   const averageCompletionScore = useMemo(() => {
     if (customers.length === 0) return 0;
     const total = customers.reduce((sum, customer) => sum + getProfileCompletionScore(customer), 0);
@@ -673,13 +668,6 @@ export default function MicrofinanceCustomersPage() {
       value: String(customers.length),
       valueClass: 'text-amber-600',
       borderClass: 'border-amber-100',
-    },
-    {
-      key: 'mf_customers_widget_active_customers',
-      label: 'Active Customers',
-      value: String(activeCount),
-      valueClass: 'text-cyan-600',
-      borderClass: 'border-cyan-100',
     },
     {
       key: 'mf_customers_widget_showing_range',

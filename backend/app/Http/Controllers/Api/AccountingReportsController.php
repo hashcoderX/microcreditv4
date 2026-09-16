@@ -82,6 +82,45 @@ class AccountingReportsController extends Controller
         return round($value, 2);
     }
 
+    private function daysOverdueFromDate(?string $dueDate): int
+    {
+        $raw = trim((string) $dueDate);
+        if ($raw === '') {
+            return 0;
+        }
+
+        try {
+            $date = Carbon::parse($raw)->startOfDay();
+        } catch (\Throwable) {
+            return 0;
+        }
+
+        $today = Carbon::today();
+        if ($date->greaterThan($today)) {
+            return 0;
+        }
+
+        return $date->diffInDays($today);
+    }
+
+    private function agingBucket(int $daysOverdue): string
+    {
+        if ($daysOverdue <= 0) {
+            return 'current';
+        }
+        if ($daysOverdue <= 30) {
+            return '1-30';
+        }
+        if ($daysOverdue <= 60) {
+            return '31-60';
+        }
+        if ($daysOverdue <= 90) {
+            return '61-90';
+        }
+
+        return '90+';
+    }
+
     private function userName(?int $userId): string
     {
         if (!$userId) {
@@ -137,18 +176,24 @@ class AccountingReportsController extends Controller
             $financeRows = Finance::query()
                 ->with('customer:id,customer_code,first_name,last_name')
                 ->where('branch_id', $branchId)
-                ->where('status', 'active')
+                ->whereIn('status', ['active', 'approved', 'released', 'arrears'])
                 ->where('balance_amount', '>', 0)
                 ->orderByDesc('balance_amount')
                 ->get();
 
             foreach ($financeRows as $finance) {
+                $dueDate = $finance->due_date ? (string) $finance->due_date : null;
+                $daysOverdue = $this->daysOverdueFromDate($dueDate);
                 $rows[] = [
                     'product' => 'finance',
                     'product_label' => 'Finance',
                     'reference' => 'FIN-' . $finance->id,
                     'customer' => $this->customerLabel($finance->customer),
                     'customer_id' => (int) ($finance->customer_id ?? 0),
+                    'status' => (string) ($finance->status ?? ''),
+                    'due_date' => $dueDate,
+                    'days_overdue' => $daysOverdue,
+                    'aging_bucket' => $this->agingBucket($daysOverdue),
                     'outstanding' => $this->roundMoney((float) ($finance->balance_amount ?? 0)),
                 ];
             }
@@ -157,18 +202,24 @@ class AccountingReportsController extends Controller
         if ($productFilter === '' || $productFilter === 'microfinance') {
             $mfRows = MicrofinanceLoanRequest::query()
                 ->where('branch_id', $branchId)
-                ->whereIn('status', ['released', 'approved'])
+                ->whereIn('status', ['released', 'approved', 'hold', 'closed'])
                 ->where('loan_balance', '>', 0)
                 ->orderByDesc('loan_balance')
                 ->get();
 
             foreach ($mfRows as $loan) {
+                $dueDate = $loan->due_date ? (string) $loan->due_date : null;
+                $daysOverdue = $this->daysOverdueFromDate($dueDate);
                 $rows[] = [
                     'product' => 'microfinance',
                     'product_label' => 'Micro Credit',
                     'reference' => (string) ($loan->loan_code ?: ('MF-' . $loan->id)),
                     'customer' => trim((string) ($loan->customer_name ?: $loan->customer_no ?: 'Customer')),
                     'customer_id' => 0,
+                    'status' => (string) ($loan->status ?? ''),
+                    'due_date' => $dueDate,
+                    'days_overdue' => $daysOverdue,
+                    'aging_bucket' => $this->agingBucket($daysOverdue),
                     'outstanding' => $this->roundMoney((float) ($loan->loan_balance ?? 0)),
                 ];
             }
@@ -178,18 +229,24 @@ class AccountingReportsController extends Controller
             $instantRows = LoanRequest::query()
                 ->where('branch_id', $branchId)
                 ->whereIn('status', ['approved', 'closed'])
-                ->selectRaw('loan_requests.*, GREATEST(principal - COALESCE(total_collected, 0), 0) as outstanding_amount')
+                ->selectRaw('loan_requests.*, GREATEST(total_payable - COALESCE(total_collected, 0), 0) as outstanding_amount')
                 ->having('outstanding_amount', '>', 0)
                 ->orderByDesc('outstanding_amount')
                 ->get();
 
             foreach ($instantRows as $loan) {
+                $dueDate = $loan->next_due_date ? (string) $loan->next_due_date : ($loan->due_date ? (string) $loan->due_date : null);
+                $daysOverdue = $this->daysOverdueFromDate($dueDate);
                 $rows[] = [
                     'product' => 'instant',
                     'product_label' => 'Instant Loan',
                     'reference' => (string) ($loan->request_no ?: ('IL-' . $loan->id)),
                     'customer' => trim((string) ($loan->customer_full_name ?: $loan->customer_no ?: 'Customer')),
                     'customer_id' => 0,
+                    'status' => (string) ($loan->status ?? ''),
+                    'due_date' => $dueDate,
+                    'days_overdue' => $daysOverdue,
+                    'aging_bucket' => $this->agingBucket($daysOverdue),
                     'outstanding' => $this->roundMoney((float) ($loan->outstanding_amount ?? 0)),
                 ];
             }
@@ -205,10 +262,12 @@ class AccountingReportsController extends Controller
                     'm.id'
                 )
                 ->where('m.branch_id', $branchId)
-                ->whereIn('m.status', ['approved', 'active', 'released'])
+                ->whereIn('m.status', ['approved', 'active', 'arrears', 'released'])
                 ->selectRaw(
-                    'm.id, m.mortgage_no, m.customer_id, c.customer_code, c.first_name, c.last_name, '
-                    . 'GREATEST(COALESCE(m.approved_amount, 0) - COALESCE(mp.paid, 0), 0) as outstanding_amount'
+                    'm.id, m.customer_id, m.status, m.due_date, c.customer_code, c.first_name, c.last_name, '
+                    . 'CASE WHEN COALESCE(m.due_amount, 0) > 0 '
+                    . 'THEN GREATEST(COALESCE(m.due_amount, 0), 0) '
+                    . 'ELSE GREATEST(COALESCE(m.approved_amount, 0) - COALESCE(mp.paid, 0), 0) END as outstanding_amount'
                 )
                 ->having('outstanding_amount', '>', 0)
                 ->orderByDesc('outstanding_amount')
@@ -225,9 +284,13 @@ class AccountingReportsController extends Controller
                 $rows[] = [
                     'product' => 'mortgage',
                     'product_label' => 'Mortgage',
-                    'reference' => (string) ($loan->mortgage_no ?? $loan->id),
+                    'reference' => 'MORT-' . (string) ($loan->id ?? 0),
                     'customer' => $this->customerLabel($customer),
                     'customer_id' => (int) ($loan->customer_id ?? 0),
+                    'status' => (string) ($loan->status ?? ''),
+                    'due_date' => !empty($loan->due_date) ? (string) $loan->due_date : null,
+                    'days_overdue' => $this->daysOverdueFromDate(!empty($loan->due_date) ? (string) $loan->due_date : null),
+                    'aging_bucket' => $this->agingBucket($this->daysOverdueFromDate(!empty($loan->due_date) ? (string) $loan->due_date : null)),
                     'outstanding' => $this->roundMoney((float) ($loan->outstanding_amount ?? 0)),
                 ];
             }
@@ -235,14 +298,30 @@ class AccountingReportsController extends Controller
 
         usort($rows, static fn (array $a, array $b) => $b['outstanding'] <=> $a['outstanding']);
 
+        $totalOutstanding = $this->roundMoney((float) collect($rows)->sum('outstanding'));
+        $overdueRows = collect($rows)->filter(fn (array $row) => (int) ($row['days_overdue'] ?? 0) > 0);
+
         $summary = [
             'accounts_count' => count($rows),
-            'total_outstanding' => $this->roundMoney((float) collect($rows)->sum('outstanding')),
+            'total_outstanding' => $totalOutstanding,
+            'average_outstanding' => count($rows) > 0 ? $this->roundMoney($totalOutstanding / count($rows)) : 0,
+            'overdue_accounts_count' => $overdueRows->count(),
+            'overdue_outstanding' => $this->roundMoney((float) $overdueRows->sum('outstanding')),
             'by_product' => collect($rows)
                 ->groupBy('product')
                 ->map(fn ($group, $product) => [
                     'product' => $product,
                     'product_label' => (string) ($group->first()['product_label'] ?? $product),
+                    'accounts_count' => $group->count(),
+                    'total_outstanding' => $this->roundMoney((float) $group->sum('outstanding')),
+                    'overdue_accounts_count' => (int) $group->filter(fn (array $row) => (int) ($row['days_overdue'] ?? 0) > 0)->count(),
+                ])
+                ->values()
+                ->all(),
+            'by_aging_bucket' => collect($rows)
+                ->groupBy('aging_bucket')
+                ->map(fn ($group, $bucket) => [
+                    'bucket' => (string) $bucket,
                     'accounts_count' => $group->count(),
                     'total_outstanding' => $this->roundMoney((float) $group->sum('outstanding')),
                 ])
@@ -272,6 +351,10 @@ class AccountingReportsController extends Controller
             'to_date' => ['nullable', 'date'],
             'branch_id' => ['nullable', 'integer', 'exists:companies,id'],
             'company_id' => ['nullable', 'integer', 'exists:companies,id'],
+            'product_type' => ['nullable', 'string', 'max:100'],
+            'route_id' => ['nullable', 'integer', 'exists:mf_routes,id'],
+            'center_id' => ['nullable', 'integer', 'exists:mf_centers,id'],
+            'officer' => ['nullable', 'string', 'max:150'],
         ]);
 
         $branchId = (int) ($validated['branch_id'] ?? $validated['company_id'] ?? 0);
@@ -291,58 +374,112 @@ class AccountingReportsController extends Controller
         $company = Company::query()->findOrFail($branchId);
         $fromDate = $validated['from_date'] ?? Carbon::today()->startOfMonth()->toDateString();
         $toDate = $validated['to_date'] ?? Carbon::today()->toDateString();
+        $productFilter = strtolower(trim((string) ($validated['product_type'] ?? '')));
+        $routeIdFilter = (int) ($validated['route_id'] ?? 0);
+        $centerIdFilter = (int) ($validated['center_id'] ?? 0);
+        $officerFilter = trim((string) ($validated['officer'] ?? ''));
+        $officerFilterLower = strtolower($officerFilter);
 
-        $financeInterest = (float) FinanceCollection::query()
-            ->join('finances', 'finances.id', '=', 'finance_collections.finance_id')
-            ->where('finances.branch_id', $branchId)
-            ->whereDate('finance_collections.payment_date', '>=', $fromDate)
-            ->whereDate('finance_collections.payment_date', '<=', $toDate)
-            ->sum('finance_collections.interest_paid');
+        $financeInterest = 0.0;
+        if ($productFilter === '' || $productFilter === 'finance') {
+            $financeInterest = (float) FinanceCollection::query()
+                ->join('finances', 'finances.id', '=', 'finance_collections.finance_id')
+                ->where('finances.branch_id', $branchId)
+                ->whereDate('finance_collections.payment_date', '>=', $fromDate)
+                ->whereDate('finance_collections.payment_date', '<=', $toDate)
+                ->sum('finance_collections.interest_paid');
+        }
 
-        $mfInterest = (float) DB::table('mf_loan_collections')
-            ->join('mf_loan_requests', 'mf_loan_requests.id', '=', 'mf_loan_collections.mf_loan_request_id')
-            ->where('mf_loan_requests.branch_id', $branchId)
-            ->whereDate('mf_loan_collections.collection_date', '>=', $fromDate)
-            ->whereDate('mf_loan_collections.collection_date', '<=', $toDate)
-            ->sum('mf_loan_collections.interest_amount');
+        $mfInterest = 0.0;
+        $mfPenalty = 0.0;
+        $mfBreakdownRows = [];
+        if ($productFilter === '' || $productFilter === 'microfinance') {
+            $mfBase = DB::table('mf_loan_collections as collections')
+                ->join('mf_loan_requests as loans', 'loans.id', '=', 'collections.mf_loan_request_id')
+                ->where('loans.branch_id', $branchId)
+                ->whereDate('collections.collection_date', '>=', $fromDate)
+                ->whereDate('collections.collection_date', '<=', $toDate)
+                ->when($routeIdFilter > 0, fn ($query) => $query->where('loans.mf_route_id', $routeIdFilter))
+                ->when($centerIdFilter > 0, fn ($query) => $query->where('loans.mf_center_id', $centerIdFilter))
+                ->when($officerFilterLower !== '', fn ($query) => $query->whereRaw('LOWER(COALESCE(loans.field_officer, "")) = ?', [$officerFilterLower]));
 
-        $mfPenalty = (float) DB::table('mf_loan_collections')
-            ->join('mf_loan_requests', 'mf_loan_requests.id', '=', 'mf_loan_collections.mf_loan_request_id')
-            ->where('mf_loan_requests.branch_id', $branchId)
-            ->whereDate('mf_loan_collections.collection_date', '>=', $fromDate)
-            ->whereDate('mf_loan_collections.collection_date', '<=', $toDate)
-            ->sum('mf_loan_collections.penalty_amount');
+            $mfInterest = (float) (clone $mfBase)->sum('collections.interest_amount');
+            $mfPenalty = (float) (clone $mfBase)->sum('collections.penalty_amount');
 
-        $mortgageInterest = (float) DB::table('mortgage_payments')
-            ->where('branch_id', $branchId)
-            ->whereDate('paid_date', '>=', $fromDate)
-            ->whereDate('paid_date', '<=', $toDate)
-            ->sum('interest_amount');
+            $mfBreakdownRows = (clone $mfBase)
+                ->leftJoin('mf_routes as routes', 'routes.id', '=', 'loans.mf_route_id')
+                ->leftJoin('mf_centers as centers', 'centers.id', '=', 'loans.mf_center_id')
+                ->selectRaw('COALESCE(routes.id, 0) as route_id')
+                ->selectRaw('COALESCE(routes.name, "Unassigned Route") as route_name')
+                ->selectRaw('COALESCE(centers.id, 0) as center_id')
+                ->selectRaw('COALESCE(centers.name, "Unassigned Center") as center_name')
+                ->selectRaw('COALESCE(loans.field_officer, "Unassigned") as officer')
+                ->selectRaw('COUNT(*) as transactions_count')
+                ->selectRaw('ROUND(COALESCE(SUM(collections.interest_amount), 0), 2) as interest_income')
+                ->selectRaw('ROUND(COALESCE(SUM(collections.penalty_amount), 0), 2) as penalty_income')
+                ->selectRaw('ROUND(COALESCE(SUM(collections.interest_amount), 0) + COALESCE(SUM(collections.penalty_amount), 0), 2) as total_income')
+                ->groupBy('route_id', 'route_name', 'center_id', 'center_name', 'officer')
+                ->orderByDesc('total_income')
+                ->get()
+                ->map(fn ($row) => [
+                    'route_id' => (int) ($row->route_id ?? 0),
+                    'route_name' => (string) ($row->route_name ?? 'Unassigned Route'),
+                    'center_id' => (int) ($row->center_id ?? 0),
+                    'center_name' => (string) ($row->center_name ?? 'Unassigned Center'),
+                    'officer' => (string) ($row->officer ?? 'Unassigned'),
+                    'transactions_count' => (int) ($row->transactions_count ?? 0),
+                    'interest_income' => $this->roundMoney((float) ($row->interest_income ?? 0)),
+                    'penalty_income' => $this->roundMoney((float) ($row->penalty_income ?? 0)),
+                    'total_income' => $this->roundMoney((float) ($row->total_income ?? 0)),
+                ])
+                ->values()
+                ->all();
+        }
 
-        $mortgageProfit = (float) DB::table('mortgage_payments')
-            ->where('branch_id', $branchId)
-            ->whereDate('paid_date', '>=', $fromDate)
-            ->whereDate('paid_date', '<=', $toDate)
-            ->sum('profit_amount');
+        $mortgageInterest = 0.0;
+        $mortgageProfit = 0.0;
+        if ($productFilter === '' || $productFilter === 'mortgage') {
+            $mortgageInterest = (float) DB::table('mortgage_payments')
+                ->where('branch_id', $branchId)
+                ->whereDate('paid_date', '>=', $fromDate)
+                ->whereDate('paid_date', '<=', $toDate)
+                ->sum('interest_amount');
 
-        $instantInterest = (float) DB::table('loan_request_collections')
-            ->join('loan_requests', 'loan_requests.id', '=', 'loan_request_collections.loan_request_id')
-            ->where('loan_requests.branch_id', $branchId)
-            ->whereDate('loan_request_collections.collection_date', '>=', $fromDate)
-            ->whereDate('loan_request_collections.collection_date', '<=', $toDate)
-            ->selectRaw(
-                'COALESCE(SUM(loan_request_collections.collected_amount * CASE WHEN loan_requests.total_payable > 0 '
-                . 'THEN GREATEST(loan_requests.total_payable - loan_requests.principal, 0) / loan_requests.total_payable '
-                . 'ELSE 0 END), 0) as total'
-            )
-            ->value('total');
+            $mortgageProfit = (float) DB::table('mortgage_payments')
+                ->where('branch_id', $branchId)
+                ->whereDate('paid_date', '>=', $fromDate)
+                ->whereDate('paid_date', '<=', $toDate)
+                ->sum('profit_amount');
+        }
 
-        $products = [
-            ['product' => 'finance', 'label' => 'Finance', 'interest_income' => $this->roundMoney($financeInterest), 'penalty_income' => 0.0],
-            ['product' => 'microfinance', 'label' => 'Micro Credit', 'interest_income' => $this->roundMoney($mfInterest), 'penalty_income' => $this->roundMoney($mfPenalty)],
-            ['product' => 'mortgage', 'label' => 'Mortgage', 'interest_income' => $this->roundMoney($mortgageInterest + $mortgageProfit), 'penalty_income' => 0.0],
-            ['product' => 'instant', 'label' => 'Instant Loan', 'interest_income' => $this->roundMoney($instantInterest), 'penalty_income' => 0.0],
-        ];
+        $instantInterest = 0.0;
+        if ($productFilter === '' || $productFilter === 'instant') {
+            $instantInterest = (float) DB::table('loan_request_collections')
+                ->join('loan_requests', 'loan_requests.id', '=', 'loan_request_collections.loan_request_id')
+                ->where('loan_requests.branch_id', $branchId)
+                ->whereDate('loan_request_collections.collection_date', '>=', $fromDate)
+                ->whereDate('loan_request_collections.collection_date', '<=', $toDate)
+                ->selectRaw(
+                    'COALESCE(SUM(loan_request_collections.collected_amount * CASE WHEN loan_requests.total_payable > 0 '
+                    . 'THEN GREATEST(loan_requests.total_payable - loan_requests.principal, 0) / loan_requests.total_payable '
+                    . 'ELSE 0 END), 0) as total'
+                )
+                ->value('total');
+        }
+
+        $products = [];
+        if ($productFilter === '' || $productFilter === 'finance') {
+            $products[] = ['product' => 'finance', 'label' => 'Finance', 'interest_income' => $this->roundMoney($financeInterest), 'penalty_income' => 0.0];
+        }
+        if ($productFilter === '' || $productFilter === 'microfinance') {
+            $products[] = ['product' => 'microfinance', 'label' => 'Micro Credit', 'interest_income' => $this->roundMoney($mfInterest), 'penalty_income' => $this->roundMoney($mfPenalty)];
+        }
+        if ($productFilter === '' || $productFilter === 'mortgage') {
+            $products[] = ['product' => 'mortgage', 'label' => 'Mortgage', 'interest_income' => $this->roundMoney($mortgageInterest + $mortgageProfit), 'penalty_income' => 0.0];
+        }
+        if ($productFilter === '' || $productFilter === 'instant') {
+            $products[] = ['product' => 'instant', 'label' => 'Instant Loan', 'interest_income' => $this->roundMoney($instantInterest), 'penalty_income' => 0.0];
+        }
 
         $totalInterest = $this->roundMoney(collect($products)->sum('interest_income'));
         $totalPenalty = $this->roundMoney(collect($products)->sum('penalty_income'));
@@ -357,6 +494,10 @@ class AccountingReportsController extends Controller
                 'from_date' => $fromDate,
                 'to_date' => $toDate,
                 'branch_id' => $branchId,
+                'product_type' => $productFilter !== '' ? $productFilter : null,
+                'route_id' => $routeIdFilter > 0 ? $routeIdFilter : null,
+                'center_id' => $centerIdFilter > 0 ? $centerIdFilter : null,
+                'officer' => $officerFilter !== '' ? $officerFilter : null,
             ],
             'summary' => [
                 'total_interest_income' => $totalInterest,
@@ -364,6 +505,7 @@ class AccountingReportsController extends Controller
                 'grand_total' => $this->roundMoney($totalInterest + $totalPenalty),
             ],
             'products' => $products,
+            'microfinance_breakdown' => $mfBreakdownRows,
             'branches' => [[
                 'branch_id' => $company->id,
                 'branch_name' => $company->name,
@@ -382,6 +524,8 @@ class AccountingReportsController extends Controller
             'branch_id' => ['nullable', 'integer', 'exists:companies,id'],
             'company_id' => ['nullable', 'integer', 'exists:companies,id'],
             'product_type' => ['nullable', 'string', 'max:100'],
+            'route_id' => ['nullable', 'integer', 'exists:mf_routes,id'],
+            'center_id' => ['nullable', 'integer', 'exists:mf_centers,id'],
         ]);
 
         $branchId = (int) ($validated['branch_id'] ?? $validated['company_id'] ?? 0);
@@ -402,6 +546,8 @@ class AccountingReportsController extends Controller
         $fromDate = $validated['from_date'] ?? Carbon::today()->startOfMonth()->toDateString();
         $toDate = $validated['to_date'] ?? Carbon::today()->toDateString();
         $productFilter = strtolower(trim((string) ($validated['product_type'] ?? '')));
+        $routeIdFilter = (int) ($validated['route_id'] ?? 0);
+        $centerIdFilter = (int) ($validated['center_id'] ?? 0);
         $rows = [];
 
         if ($productFilter === '' || $productFilter === 'finance') {
@@ -422,6 +568,10 @@ class AccountingReportsController extends Controller
                     'customer' => $this->customerLabel($finance->customer),
                     'amount' => $this->roundMoney((float) ($finance->financed_amount ?? 0)),
                     'officer' => $this->userName((int) ($finance->created_by ?? 0)),
+                    'route_id' => null,
+                    'route_name' => 'N/A',
+                    'center_id' => null,
+                    'center_name' => 'N/A',
                     'branch_name' => $company->name,
                 ];
             }
@@ -429,10 +579,16 @@ class AccountingReportsController extends Controller
 
         if ($productFilter === '' || $productFilter === 'microfinance') {
             $mfRows = MicrofinanceLoanRequest::query()
+                ->with([
+                    'route:id,name',
+                    'center:id,name,mf_route_id',
+                ])
                 ->where('branch_id', $branchId)
                 ->whereIn('status', ['released', 'approved'])
                 ->whereDate('loan_request_date', '>=', $fromDate)
                 ->whereDate('loan_request_date', '<=', $toDate)
+                ->when($routeIdFilter > 0, fn ($query) => $query->where('mf_route_id', $routeIdFilter))
+                ->when($centerIdFilter > 0, fn ($query) => $query->where('mf_center_id', $centerIdFilter))
                 ->orderByDesc('loan_request_date')
                 ->get();
 
@@ -445,6 +601,10 @@ class AccountingReportsController extends Controller
                     'customer' => trim((string) ($loan->customer_name ?: $loan->customer_no ?: 'Customer')),
                     'amount' => $this->roundMoney((float) ($loan->loan_amount ?? 0)),
                     'officer' => trim((string) ($loan->field_officer ?? '')),
+                    'route_id' => $loan->mf_route_id ? (int) $loan->mf_route_id : null,
+                    'route_name' => trim((string) optional($loan->route)->name) ?: 'Unassigned Route',
+                    'center_id' => $loan->mf_center_id ? (int) $loan->mf_center_id : null,
+                    'center_name' => trim((string) optional($loan->center)->name) ?: 'Unassigned Center',
                     'branch_name' => $company->name,
                 ];
             }
@@ -468,6 +628,10 @@ class AccountingReportsController extends Controller
                     'customer' => trim((string) ($loan->customer_full_name ?: $loan->customer_no ?: 'Customer')),
                     'amount' => $this->roundMoney((float) ($loan->principal ?? 0)),
                     'officer' => $this->userName((int) ($loan->created_by ?? 0)),
+                    'route_id' => null,
+                    'route_name' => 'N/A',
+                    'center_id' => null,
+                    'center_name' => 'N/A',
                     'branch_name' => $company->name,
                 ];
             }
@@ -492,9 +656,21 @@ class AccountingReportsController extends Controller
                     'customer' => $this->customerLabel($mortgage->customer),
                     'amount' => $this->roundMoney((float) ($mortgage->approved_amount ?? 0)),
                     'officer' => $this->userName((int) ($mortgage->approved_by ?? $mortgage->created_by ?? 0)),
+                    'route_id' => null,
+                    'route_name' => 'N/A',
+                    'center_id' => null,
+                    'center_name' => 'N/A',
                     'branch_name' => $company->name,
                 ];
             }
+        }
+
+        if ($routeIdFilter > 0) {
+            $rows = array_values(array_filter($rows, static fn (array $row) => (int) ($row['route_id'] ?? 0) === $routeIdFilter));
+        }
+
+        if ($centerIdFilter > 0) {
+            $rows = array_values(array_filter($rows, static fn (array $row) => (int) ($row['center_id'] ?? 0) === $centerIdFilter));
         }
 
         usort($rows, static fn (array $a, array $b) => strcmp((string) ($b['date'] ?? ''), (string) ($a['date'] ?? '')));
@@ -510,6 +686,8 @@ class AccountingReportsController extends Controller
                 'to_date' => $toDate,
                 'branch_id' => $branchId,
                 'product_type' => $validated['product_type'] ?? null,
+                'route_id' => $routeIdFilter > 0 ? $routeIdFilter : null,
+                'center_id' => $centerIdFilter > 0 ? $centerIdFilter : null,
             ],
             'summary' => [
                 'disbursement_count' => count($rows),

@@ -18,6 +18,7 @@ type LoanRow = {
   field_officer?: string | null;
   loan_amount?: number | string | null;
   refundable_amount?: number | string | null;
+  loan_balance?: number | string | null;
   due_date?: string | null;
   branch_id?: number | string | null;
 };
@@ -201,6 +202,9 @@ export default function MicrofinanceActiveMembersReportPage() {
             const loanId = Number(loan.id || 0);
             const refundableAmount = Number(loan.refundable_amount || 0);
             const collectedAmount = paidByLoan.get(loanId) || 0;
+            const balanceFromLoan = Number(loan.loan_balance || 0);
+            const calculatedPending = Math.max(refundableAmount - collectedAmount, 0);
+            const pendingAmount = Math.max(balanceFromLoan, calculatedPending, 0);
 
             return {
               loanId,
@@ -213,10 +217,11 @@ export default function MicrofinanceActiveMembersReportPage() {
               loanAmount: Number(loan.loan_amount || 0),
               refundableAmount,
               collectedAmount,
-              pendingAmount: Math.max(refundableAmount - collectedAmount, 0),
+              pendingAmount,
               dueDate: String(loan.due_date || '').slice(0, 10) || '-',
             } as ActiveMemberRow;
           })
+          .filter((row) => row.pendingAmount > 0.009)
           .sort((a, b) => b.pendingAmount - a.pendingAmount);
 
         setRows(mapped);
@@ -284,7 +289,7 @@ export default function MicrofinanceActiveMembersReportPage() {
   const summaryCards = [
     {
       key: 'mf_active_members_widget_summary_member_count',
-      label: 'Active Members',
+      label: 'Active Members (Outstanding)',
       value: String(summary.memberCount),
       valueClass: 'text-slate-900',
     },
