@@ -84,6 +84,8 @@ type DashboardStatsCache = {
 const MF_DASHBOARD_WIDGET_CACHE_KEY = 'mf_dashboard_widget_hidden_keys';
 const MF_DASHBOARD_STATS_CACHE_KEY = 'mf_dashboard_stats_cache_v1';
 const MF_DASHBOARD_STATS_CACHE_TTL_MS = 2 * 60 * 1000;
+const MF_DASHBOARD_STATS_NETWORK_COOLDOWN_MS = 30 * 1000;
+const MF_DASHBOARD_NOTIFICATION_CACHE_KEY = 'mf_dashboard_notification_count_v1';
 
 export default function MicrofinanceDashboard() {
   const [token, setToken] = useState('');
@@ -294,9 +296,25 @@ export default function MicrofinanceDashboard() {
         params: { limit: 4 },
       });
 
-      setActionCenterTotalCount(Number(response.data?.action_center_total || 0));
+      const nextCount = Number(response.data?.action_center_total || 0);
+      setActionCenterTotalCount(nextCount);
+      localStorage.setItem(
+        MF_DASHBOARD_NOTIFICATION_CACHE_KEY,
+        JSON.stringify({ cachedAt: new Date().toISOString(), count: nextCount })
+      );
     } catch {
-      setActionCenterTotalCount(0);
+      const cachedRaw = localStorage.getItem(MF_DASHBOARD_NOTIFICATION_CACHE_KEY);
+      if (!cachedRaw) {
+        setActionCenterTotalCount(0);
+        return;
+      }
+
+      try {
+        const cached = JSON.parse(cachedRaw) as { count?: number };
+        setActionCenterTotalCount(Number(cached.count || 0));
+      } catch {
+        setActionCenterTotalCount(0);
+      }
     }
   };
 
@@ -306,6 +324,16 @@ export default function MicrofinanceDashboard() {
       router.push('/');
     } else {
       setToken(storedToken);
+      const cachedNotificationRaw = localStorage.getItem(MF_DASHBOARD_NOTIFICATION_CACHE_KEY);
+      if (cachedNotificationRaw) {
+        try {
+          const cached = JSON.parse(cachedNotificationRaw) as { count?: number };
+          setActionCenterTotalCount(Number(cached.count || 0));
+        } catch {
+          setActionCenterTotalCount(0);
+        }
+      }
+
       const cachedWidgetKeysRaw = localStorage.getItem(MF_DASHBOARD_WIDGET_CACHE_KEY);
       if (cachedWidgetKeysRaw) {
         try {
@@ -618,15 +646,17 @@ export default function MicrofinanceDashboard() {
     if (!token) return;
 
     const loadDashboardStats = async () => {
-      let hasFreshCache = false;
+      let hasUsableCache = false;
+      let cacheAgeMs = Number.POSITIVE_INFINITY;
       const cachedRaw = localStorage.getItem(MF_DASHBOARD_STATS_CACHE_KEY);
       if (cachedRaw) {
         try {
           const cached = JSON.parse(cachedRaw) as DashboardStatsCache;
           const cachedAtMs = new Date(String(cached.cachedAt || '')).getTime();
+          if (Number.isFinite(cachedAtMs)) {
+            cacheAgeMs = Date.now() - cachedAtMs;
+          }
           if (
-            Number.isFinite(cachedAtMs) &&
-            Date.now() - cachedAtMs <= MF_DASHBOARD_STATS_CACHE_TTL_MS &&
             cached?.stats &&
             cached?.summaryStats &&
             Array.isArray(cached?.chargesByOfficer)
@@ -634,14 +664,20 @@ export default function MicrofinanceDashboard() {
             setStats(cached.stats);
             setSummaryStats(cached.summaryStats);
             setChargesByOfficer(cached.chargesByOfficer);
-            hasFreshCache = true;
+            hasUsableCache = true;
           }
         } catch {
           // Ignore parse errors and continue with network fetch.
         }
       }
 
-      setStatsLoading(!hasFreshCache);
+      setStatsLoading(!hasUsableCache);
+
+      if (hasUsableCache && cacheAgeMs <= MF_DASHBOARD_STATS_NETWORK_COOLDOWN_MS) {
+        setStatsLoading(false);
+        return;
+      }
+
       try {
         const [loanRes, collectionRes] = await Promise.all([
           axios.get('/api/microfinance/loan-requests', {
@@ -903,23 +939,25 @@ export default function MicrofinanceDashboard() {
           } satisfies DashboardStatsCache)
         );
       } catch {
-        setStats({
-          activeLoans: 0,
-          totalCollections: 0,
-          pendingPayments: 0,
-          defaultRate: 0,
-        });
-        setSummaryStats({
-          totalOutstandingAmount: 0,
-          assetValueTotal: 0,
-          todayCollection: 0,
-          monthCollection: 0,
-          imagineProfit: 0,
-          todayProfit: 0,
-          monthProfit: 0,
-        });
-        setChargesByOfficer([]);
-        setSelectedChargeOfficer('all');
+        if (!hasUsableCache) {
+          setStats({
+            activeLoans: 0,
+            totalCollections: 0,
+            pendingPayments: 0,
+            defaultRate: 0,
+          });
+          setSummaryStats({
+            totalOutstandingAmount: 0,
+            assetValueTotal: 0,
+            todayCollection: 0,
+            monthCollection: 0,
+            imagineProfit: 0,
+            todayProfit: 0,
+            monthProfit: 0,
+          });
+          setChargesByOfficer([]);
+          setSelectedChargeOfficer('all');
+        }
       } finally {
         setStatsLoading(false);
       }

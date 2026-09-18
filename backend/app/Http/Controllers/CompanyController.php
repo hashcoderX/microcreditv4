@@ -117,6 +117,59 @@ class CompanyController extends Controller
             );
         }
 
+        private function getCustomerProfileMinCompletionPercent(): int
+        {
+            if (!Schema::hasTable('system_settings')) {
+                return 30;
+            }
+
+            $value = DB::table('system_settings')
+                ->where('key', 'customer_profile_min_completion_percent')
+                ->value('value');
+
+            $normalized = (int) ($value ?? 30);
+            if ($normalized < 0) {
+                return 0;
+            }
+            if ($normalized > 100) {
+                return 100;
+            }
+
+            return $normalized;
+        }
+
+        private function setCustomerProfileMinCompletionPercent(int $percent): void
+        {
+            $safePercent = max(0, min(100, $percent));
+
+            DB::table('system_settings')->updateOrInsert(
+                ['key' => 'customer_profile_min_completion_percent'],
+                [
+                    'value' => (string) $safePercent,
+                    'updated_at' => now(),
+                    'created_at' => now(),
+                ]
+            );
+        }
+
+        private function storagePublicPath(): string
+        {
+            return public_path('storage');
+        }
+
+        private function storageSourcePath(): string
+        {
+            return storage_path('app/public');
+        }
+
+        private function isStorageLinkReady(): bool
+        {
+            $publicPath = $this->storagePublicPath();
+
+            // On Linux this is usually a symlink, on Windows it can be a directory junction.
+            return is_link($publicPath) || is_dir($publicPath);
+        }
+
         public function getSystemStatus(Request $request)
         {
             $user = $request->user();
@@ -151,6 +204,93 @@ class CompanyController extends Controller
                 'message' => $isOnline ? 'System is now online.' : 'System is now offline for non-admin users.',
                 'is_online' => $isOnline,
             ]);
+        }
+
+        public function getCustomerProfileCompletionSetting(Request $request)
+        {
+            return response()->json([
+                'min_completion_percent' => $this->getCustomerProfileMinCompletionPercent(),
+            ]);
+        }
+
+        public function updateCustomerProfileCompletionSetting(Request $request)
+        {
+            $user = $request->user();
+            if (!$user || !$user->isSystemAdmin()) {
+                return response()->json([
+                    'message' => 'Only admins can update customer profile completion settings.'
+                ], 403);
+            }
+
+            $validated = $request->validate([
+                'min_completion_percent' => 'required|integer|min:0|max:100',
+            ]);
+
+            $percent = (int) $validated['min_completion_percent'];
+            $this->setCustomerProfileMinCompletionPercent($percent);
+
+            return response()->json([
+                'message' => 'Customer profile completion requirement updated.',
+                'min_completion_percent' => $this->getCustomerProfileMinCompletionPercent(),
+            ]);
+        }
+
+        public function getStorageLinkStatus(Request $request)
+        {
+            $user = $request->user();
+            if (!$user || !$user->isSystemAdmin()) {
+                return response()->json([
+                    'message' => 'Only admins can view storage link status.'
+                ], 403);
+            }
+
+            return response()->json([
+                'linked' => $this->isStorageLinkReady(),
+                'public_path' => $this->storagePublicPath(),
+                'source_path' => $this->storageSourcePath(),
+            ]);
+        }
+
+        public function createStorageLink(Request $request)
+        {
+            $user = $request->user();
+            if (!$user || !$user->isSystemAdmin()) {
+                return response()->json([
+                    'message' => 'Only admins can create storage links.'
+                ], 403);
+            }
+
+            if (!is_dir($this->storageSourcePath())) {
+                return response()->json([
+                    'message' => 'Storage source directory does not exist.',
+                    'linked' => false,
+                    'public_path' => $this->storagePublicPath(),
+                    'source_path' => $this->storageSourcePath(),
+                ], 422);
+            }
+
+            try {
+                Artisan::call('storage:link');
+            } catch (Throwable $exception) {
+                return response()->json([
+                    'message' => 'Failed to run storage link command.',
+                    'error' => $exception->getMessage(),
+                    'linked' => $this->isStorageLinkReady(),
+                ], 500);
+            }
+
+            $linked = $this->isStorageLinkReady();
+            $output = trim((string) Artisan::output());
+
+            return response()->json([
+                'message' => $linked
+                    ? ($output !== '' ? $output : 'Storage link is ready.')
+                    : 'Storage link command completed but link is still unavailable.',
+                'linked' => $linked,
+                'public_path' => $this->storagePublicPath(),
+                'source_path' => $this->storageSourcePath(),
+                'artisan_output' => $output,
+            ], $linked ? 200 : 422);
         }
 
         public function getSmsGatewayConfig(Request $request)

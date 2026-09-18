@@ -488,6 +488,14 @@ export default function CompanySettingsPage() {
   const [systemOnline, setSystemOnline] = useState(true);
   const [systemStatusLoading, setSystemStatusLoading] = useState(false);
   const [updatingSystemStatus, setUpdatingSystemStatus] = useState(false);
+  const [storageLinkLoading, setStorageLinkLoading] = useState(false);
+  const [storageLinkCreating, setStorageLinkCreating] = useState(false);
+  const [storageLinkReady, setStorageLinkReady] = useState(false);
+  const [storageLinkPublicPath, setStorageLinkPublicPath] = useState('');
+  const [storageLinkSourcePath, setStorageLinkSourcePath] = useState('');
+  const [profileCompletionThreshold, setProfileCompletionThreshold] = useState(30);
+  const [profileCompletionLoading, setProfileCompletionLoading] = useState(false);
+  const [profileCompletionSaving, setProfileCompletionSaving] = useState(false);
   const [smsConfigLoading, setSmsConfigLoading] = useState(false);
   const [smsConfigSaving, setSmsConfigSaving] = useState(false);
   const [smsTesting, setSmsTesting] = useState(false);
@@ -753,10 +761,92 @@ export default function CompanySettingsPage() {
   useEffect(() => {
     if (!token) return;
     fetchSystemStatus(token);
+    fetchStorageLinkStatus(token);
+    fetchCustomerProfileCompletionSetting(token);
     fetchSmsGatewayConfig(token);
     fetchWhatsappGatewayConfig(token);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  const fetchStorageLinkStatus = async (authToken: string) => {
+    setStorageLinkLoading(true);
+    try {
+      const response = await axios.get(`/api/system/storage-link`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+
+      setStorageLinkReady(Boolean(response.data?.linked));
+      setStorageLinkPublicPath(String(response.data?.public_path || ''));
+      setStorageLinkSourcePath(String(response.data?.source_path || ''));
+    } catch {
+      // Ignore for non-admin users or unavailable endpoint.
+    } finally {
+      setStorageLinkLoading(false);
+    }
+  };
+
+  const handleCreateStorageLink = async () => {
+    if (!token) return;
+
+    setStorageLinkCreating(true);
+    setNotice(null);
+    try {
+      const response = await axios.post(
+        `/api/system/storage-link`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      setStorageLinkReady(Boolean(response.data?.linked));
+      setStorageLinkPublicPath(String(response.data?.public_path || ''));
+      setStorageLinkSourcePath(String(response.data?.source_path || ''));
+      setNotice({ type: 'success', text: response.data?.message || 'Storage link created successfully.' });
+    } catch (error: any) {
+      setNotice({ type: 'error', text: error?.response?.data?.message || 'Failed to create storage link.' });
+    } finally {
+      setStorageLinkCreating(false);
+    }
+  };
+
+  const fetchCustomerProfileCompletionSetting = async (authToken: string) => {
+    setProfileCompletionLoading(true);
+    try {
+      const response = await axios.get(`/api/system/customer-profile-completion`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+
+      const value = Number(response.data?.min_completion_percent ?? 30);
+      setProfileCompletionThreshold(Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 30);
+    } catch {
+      // Ignore for non-admin users or unavailable endpoint.
+    } finally {
+      setProfileCompletionLoading(false);
+    }
+  };
+
+  const handleSaveCustomerProfileCompletionSetting = async () => {
+    if (!token) return;
+
+    const normalized = Math.max(0, Math.min(100, Math.round(Number(profileCompletionThreshold) || 0)));
+    setProfileCompletionSaving(true);
+    setNotice(null);
+
+    try {
+      const response = await axios.post(
+        `/api/system/customer-profile-completion`,
+        { min_completion_percent: normalized },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const saved = Number(response.data?.min_completion_percent ?? normalized);
+      setProfileCompletionThreshold(Number.isFinite(saved) ? Math.max(0, Math.min(100, Math.round(saved))) : normalized);
+      setNotice({ type: 'success', text: response.data?.message || 'Profile completion threshold saved.' });
+    } catch (error: any) {
+      setNotice({ type: 'error', text: error?.response?.data?.message || 'Failed to save profile completion threshold.' });
+    } finally {
+      setProfileCompletionSaving(false);
+    }
+  };
 
   useEffect(() => {
     if (!notice) {
@@ -2262,6 +2352,95 @@ export default function CompanySettingsPage() {
                               ? 'Set system offline'
                               : 'Set system online'}
                         </button>
+                      </div>
+
+                      <div className="rounded-2xl border border-violet-100 bg-white p-5 shadow-sm">
+                        <div className="flex items-center gap-2 mb-3">
+                          <Settings className="h-5 w-5 text-violet-700" />
+                          <h3 className="font-bold text-slate-900">Loan profile completion control</h3>
+                        </div>
+                        <p className="text-sm text-slate-600">
+                          Set minimum customer profile completion (%) required to continue from Step 3 in microfinance loan requests.
+                        </p>
+                        <div className="mt-4 flex items-end gap-2">
+                          <div className="flex-1">
+                            <label className={labelClass}>Minimum completion percent</label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              step={1}
+                              value={profileCompletionThreshold}
+                              onChange={(e) => {
+                                const next = Number(e.target.value || 0);
+                                setProfileCompletionThreshold(Number.isFinite(next) ? Math.max(0, Math.min(100, next)) : 0);
+                              }}
+                              className={inputClass}
+                              placeholder="e.g. 30"
+                              disabled={profileCompletionLoading || profileCompletionSaving}
+                            />
+                            <p className="mt-1 text-xs text-slate-500">
+                              Example: 5 for permissive companies, 70 for stricter credit policy.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleSaveCustomerProfileCompletionSetting}
+                            disabled={profileCompletionLoading || profileCompletionSaving}
+                            className="inline-flex h-[42px] items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 px-4 text-sm font-bold text-white disabled:opacity-60"
+                          >
+                            <Save className="h-4 w-4" />
+                            {profileCompletionSaving ? 'Saving…' : 'Save'}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-sky-100 bg-white p-5 shadow-sm">
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                          <div className="flex items-center gap-2">
+                            <Globe className="h-5 w-5 text-sky-700" />
+                            <h3 className="font-bold text-slate-900">Public storage link</h3>
+                          </div>
+                          <span
+                            className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                              storageLinkReady ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                            }`}
+                          >
+                            {storageLinkLoading ? 'Checking…' : storageLinkReady ? 'Linked' : 'Not linked'}
+                          </span>
+                        </div>
+                        <p className="text-sm text-slate-600">
+                          If uploaded images are not loading, create the storage link to map public storage files.
+                        </p>
+                        {(storageLinkPublicPath || storageLinkSourcePath) && (
+                          <div className="mt-3 rounded-xl border border-sky-100 bg-sky-50/40 p-3 text-xs text-slate-700 space-y-1">
+                            <p><span className="font-semibold text-slate-800">Public path:</span> {storageLinkPublicPath || '-'}</p>
+                            <p><span className="font-semibold text-slate-800">Source path:</span> {storageLinkSourcePath || '-'}</p>
+                          </div>
+                        )}
+                        <div className="mt-4 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={handleCreateStorageLink}
+                            disabled={storageLinkCreating}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-sky-600 to-cyan-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                            {storageLinkCreating ? 'Linking…' : 'Create/Refresh Storage Link'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!token) return;
+                              void fetchStorageLinkStatus(token);
+                            }}
+                            disabled={storageLinkLoading}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                          >
+                            <RefreshCw className="h-4 w-4" />
+                            Recheck
+                          </button>
+                        </div>
                       </div>
 
                       <div className="rounded-2xl border border-emerald-100 bg-white p-5 shadow-sm">

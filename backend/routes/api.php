@@ -168,6 +168,10 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
 
     Route::get('system/status', [CompanyController::class, 'getSystemStatus']);
     Route::post('system/status', [CompanyController::class, 'updateSystemStatus']);
+    Route::get('system/storage-link', [CompanyController::class, 'getStorageLinkStatus']);
+    Route::post('system/storage-link', [CompanyController::class, 'createStorageLink']);
+    Route::get('system/customer-profile-completion', [CompanyController::class, 'getCustomerProfileCompletionSetting']);
+    Route::post('system/customer-profile-completion', [CompanyController::class, 'updateCustomerProfileCompletionSetting']);
     Route::get('system/sms-gateway', [CompanyController::class, 'getSmsGatewayConfig']);
     Route::post('system/sms-gateway', [CompanyController::class, 'updateSmsGatewayConfig']);
     Route::post('system/sms-gateway/test', [CompanyController::class, 'testSmsGateway']);

@@ -203,8 +203,7 @@ type AuthUser = {
 
 const API_BASE = getApiBaseUrl();
 const INTEREST_RATE_MAX_DECIMALS = 7;
-const STEP3_CONTINUE_MIN_COMPLETION = 30;
-const LOAN_REQUEST_MIN_COMPLETION = 30;
+const DEFAULT_PROFILE_COMPLETION_MIN = 30;
 const EVALUATION_PAYLOAD_VERSION = 2;
 
 const sanitizeInterestRateInput = (value: string) => {
@@ -353,6 +352,7 @@ const compressImageIfNeeded = async (file: File, maxBytes = CUSTOMER_PHOTO_MAX_B
 export default function RequestLoanPage() {
   const router = useRouter();
   const [token, setToken] = useState('');
+  const [minProfileCompletionPercent, setMinProfileCompletionPercent] = useState(DEFAULT_PROFILE_COMPLETION_MIN);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
@@ -1258,6 +1258,24 @@ export default function RequestLoanPage() {
       setAuthUser(null);
     }
   }, [router]);
+
+  useEffect(() => {
+    if (!token) return;
+
+    const loadCustomerProfileCompletionSetting = async () => {
+      try {
+        const response = await axios.get(`${API_BASE}/system/customer-profile-completion`, { headers });
+        const value = Number(response.data?.min_completion_percent ?? DEFAULT_PROFILE_COMPLETION_MIN);
+        setMinProfileCompletionPercent(
+          Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : DEFAULT_PROFILE_COMPLETION_MIN
+        );
+      } catch {
+        setMinProfileCompletionPercent(DEFAULT_PROFILE_COMPLETION_MIN);
+      }
+    };
+
+    void loadCustomerProfileCompletionSetting();
+  }, [token, headers]);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -2808,7 +2826,7 @@ export default function RequestLoanPage() {
     activeStep === 3 &&
     (
       !selectedCustomer ||
-      (customerProfileCompletionScore < STEP3_CONTINUE_MIN_COMPLETION && !hasSpecialLoanPermission)
+      (customerProfileCompletionScore < minProfileCompletionPercent && !hasSpecialLoanPermission)
     );
 
   const showRequestedLoanPreview = !hiddenWidgetKeys.has(`${widgetPrefix}requested_loan_preview`);
@@ -3441,17 +3459,17 @@ export default function RequestLoanPage() {
                   </div>
                   {selectedCustomer ? (
                     <div className="md:col-span-3 space-y-3">
-                      <div className={`rounded-xl border p-3 text-sm ${customerProfileCompletionScore >= LOAN_REQUEST_MIN_COMPLETION ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
+                      <div className={`rounded-xl border p-3 text-sm ${customerProfileCompletionScore >= minProfileCompletionPercent ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
                         <p className="font-semibold uppercase tracking-wide">Step 3 Attention</p>
                         <p className="mt-1">
                           Profile completion: <span className="font-bold">{customerProfileCompletionScore}%</span>
                         </p>
                         <p className="mt-1 text-xs">
-                          {customerProfileCompletionScore >= LOAN_REQUEST_MIN_COMPLETION
-                            ? `Customer meets ${LOAN_REQUEST_MIN_COMPLETION}% requirement and is eligible for loan request.`
+                          {customerProfileCompletionScore >= minProfileCompletionPercent
+                            ? `Customer meets ${minProfileCompletionPercent}% requirement and is eligible for loan request.`
                             : hasSpecialLoanPermission
-                              ? `Customer is below ${STEP3_CONTINUE_MIN_COMPLETION}%. You can proceed only with special-permission confirmation.`
-                              : `Customer is below ${STEP3_CONTINUE_MIN_COMPLETION}%. Complete profile details to continue.`}
+                              ? `Customer is below ${minProfileCompletionPercent}%. You can proceed only with special-permission confirmation.`
+                              : `Customer is below ${minProfileCompletionPercent}%. Complete profile details to continue.`}
                         </p>
                       </div>
                       <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-4">
