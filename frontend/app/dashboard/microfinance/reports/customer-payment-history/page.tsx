@@ -11,8 +11,15 @@ type IssuedLoanRow = {
   customerNo: string;
   customerName: string;
   fieldOfficer: string;
+  routeName: string;
+  centerName: string;
+  groupName: string;
   status: string;
   issueAmount: number;
+  refundableAmount: number;
+  totalPaidAmount: number;
+  outstandingAmount: number;
+  lastPayDate: string;
   issueDate: string;
 };
 
@@ -44,6 +51,25 @@ type HistoryRow = {
   paymentType: string;
   reference: string;
 };
+
+type JsPdfCtor = new (options?: { orientation?: 'portrait' | 'landscape'; unit?: string; format?: string }) => {
+  setFontSize: (size: number) => void;
+  text: (text: string, x: number, y: number) => void;
+  save: (fileName: string) => void;
+  lastAutoTable?: { finalY?: number };
+};
+
+type JsPdfAutoTable = (
+  doc: InstanceType<JsPdfCtor>,
+  options: {
+    startY?: number;
+    head: string[][];
+    body: Array<Array<string | number>>;
+    styles?: Record<string, unknown>;
+    headStyles?: Record<string, unknown>;
+    columnStyles?: Record<number, Record<string, unknown>>;
+  }
+) => void;
 
 const API_BASE = getApiBaseUrl();
 const ISSUED_STATUSES = new Set(['approved', 'released']);
@@ -110,6 +136,8 @@ export default function CustomerPaymentHistoryReportPage() {
   const [historySearch, setHistorySearch] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const headers = useMemo(
     () => ({
@@ -150,8 +178,18 @@ export default function CustomerPaymentHistoryReportPage() {
               customerNo: String(loan.customer_no || '-'),
               customerName: String(loan.customer_name || '-'),
               fieldOfficer: String(loan.field_officer || 'Unassigned'),
+              routeName: String(loan.route?.name || loan.route_name || '-'),
+              centerName: String(loan.center?.name || '-'),
+              groupName: String(loan.group?.name || '-'),
               status: String(loan.status || '-'),
               issueAmount: Number(loan.net_disbursed_amount || loan.loan_amount || 0),
+              refundableAmount: Number(loan.refundable_amount || 0),
+              totalPaidAmount: Number(loan.total_paid_amount || loan.collections_sum_collected_amount || 0),
+              outstandingAmount: Math.max(
+                Number(loan.refundable_amount || 0) - Number(loan.total_paid_amount || loan.collections_sum_collected_amount || 0),
+                0
+              ),
+              lastPayDate: String(loan.last_pay_date || ''),
               issueDate: String(loan.loan_request_date || loan.created_at || ''),
             };
           })
@@ -258,6 +296,158 @@ export default function CustomerPaymentHistoryReportPage() {
       { transactions: 0, collected: 0, capital: 0, interest: 0, penalty: 0 }
     );
   }, [filteredHistory]);
+
+  const exportHistoryCsv = useCallback(() => {
+    if (!selectedLoan || filteredHistory.length === 0) return;
+
+    setExportingCsv(true);
+    try {
+      const escapeCsv = (value: string | number) => {
+        const text = String(value ?? '');
+        if (/[",\n]/.test(text)) {
+          return `"${text.replace(/"/g, '""')}"`;
+        }
+        return text;
+      };
+
+      const header = [
+        'Loan Code',
+        'Customer No',
+        'Customer Name',
+        'Field Officer',
+        'Route',
+        'Center',
+        'Group',
+        'Date Time',
+        'Pay Type',
+        'Reference',
+        'Collected',
+        'Capital',
+        'Interest',
+        'Penalty',
+      ];
+
+      const rows = filteredHistory.map((row) => [
+        selectedLoan.loanCode,
+        selectedLoan.customerNo,
+        selectedLoan.customerName,
+        selectedLoan.fieldOfficer,
+        selectedLoan.routeName,
+        selectedLoan.centerName,
+        selectedLoan.groupName,
+        formatDateTime(row.date),
+        row.paymentType,
+        row.reference,
+        formatMoney(row.collected),
+        formatMoney(row.capital),
+        formatMoney(row.interest),
+        formatMoney(row.penalty),
+      ]);
+
+      const summaryRow = [
+        'TOTAL',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        formatMoney(historySummary.collected),
+        formatMoney(historySummary.capital),
+        formatMoney(historySummary.interest),
+        formatMoney(historySummary.penalty),
+      ];
+
+      const csv = [header, ...rows, summaryRow].map((line) => line.map(escapeCsv).join(',')).join('\n');
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const fileDate = new Date().toISOString().slice(0, 10);
+      link.href = url;
+      link.download = `payment-history-${selectedLoan.loanCode || selectedLoan.id}-${fileDate}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } finally {
+      setExportingCsv(false);
+    }
+  }, [selectedLoan, filteredHistory, historySummary]);
+
+  const exportHistoryPdf = useCallback(async () => {
+    if (!selectedLoan || filteredHistory.length === 0) return;
+
+    setExportingPdf(true);
+    try {
+      const [{ jsPDF }, autoTableModule] = await Promise.all([import('jspdf'), import('jspdf-autotable')]);
+      const autoTable = (autoTableModule.default || autoTableModule) as JsPdfAutoTable;
+      const doc = new (jsPDF as unknown as JsPdfCtor)({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+
+      doc.setFontSize(14);
+      doc.text('Customer Payment History Report', 36, 34);
+      doc.setFontSize(10);
+      doc.text(
+        `Loan: ${selectedLoan.loanCode} | Customer: ${selectedLoan.customerNo} - ${selectedLoan.customerName}`,
+        36,
+        52
+      );
+      doc.text(
+        `Route: ${selectedLoan.routeName} | Center: ${selectedLoan.centerName} | Group: ${selectedLoan.groupName}`,
+        36,
+        66
+      );
+
+      autoTable(doc as InstanceType<JsPdfCtor>, {
+        startY: 78,
+        head: [[
+          'Date & Time',
+          'Pay Type',
+          'Reference',
+          'Collected',
+          'Capital',
+          'Interest',
+          'Penalty',
+        ]],
+        body: filteredHistory.map((row) => [
+          formatDateTime(row.date),
+          row.paymentType,
+          row.reference,
+          formatMoney(row.collected),
+          formatMoney(row.capital),
+          formatMoney(row.interest),
+          formatMoney(row.penalty),
+        ]),
+        styles: { fontSize: 8, cellPadding: 4 },
+        headStyles: { fillColor: [139, 92, 246] },
+        columnStyles: {
+          0: { cellWidth: 120 },
+          1: { cellWidth: 70 },
+          2: { cellWidth: 150 },
+          3: { halign: 'right' },
+          4: { halign: 'right' },
+          5: { halign: 'right' },
+          6: { halign: 'right' },
+        },
+      });
+
+      const tableEndY = Number(doc.lastAutoTable?.finalY || 90);
+      doc.setFontSize(10);
+      doc.text(`Transactions: ${historySummary.transactions}`, 36, tableEndY + 18);
+      doc.text(`Collected: ${formatMoney(historySummary.collected)}`, 180, tableEndY + 18);
+      doc.text(`Capital: ${formatMoney(historySummary.capital)}`, 300, tableEndY + 18);
+      doc.text(`Interest: ${formatMoney(historySummary.interest)}`, 410, tableEndY + 18);
+      doc.text(`Penalty: ${formatMoney(historySummary.penalty)}`, 520, tableEndY + 18);
+
+      const fileDate = new Date().toISOString().slice(0, 10);
+      doc.save(`payment-history-${selectedLoan.loanCode || selectedLoan.id}-${fileDate}.pdf`);
+    } finally {
+      setExportingPdf(false);
+    }
+  }, [selectedLoan, filteredHistory, historySummary]);
 
   const chartData = useMemo(() => {
     const componentRows = [
@@ -373,9 +563,16 @@ export default function CustomerPaymentHistoryReportPage() {
                     <th className="px-3 py-2 font-semibold">Customer No</th>
                     <th className="px-3 py-2 font-semibold">Customer</th>
                     <th className="px-3 py-2 font-semibold">Field Officer</th>
+                    <th className="px-3 py-2 font-semibold">Route</th>
+                    <th className="px-3 py-2 font-semibold">Center</th>
+                    <th className="px-3 py-2 font-semibold">Group</th>
                     <th className="px-3 py-2 font-semibold">Status</th>
                     <th className="px-3 py-2 font-semibold">Issue Date</th>
                     <th className="px-3 py-2 font-semibold">Issue Amount</th>
+                    <th className="px-3 py-2 font-semibold">Refundable</th>
+                    <th className="px-3 py-2 font-semibold">Total Paid</th>
+                    <th className="px-3 py-2 font-semibold">Outstanding</th>
+                    <th className="px-3 py-2 font-semibold">Last Payment</th>
                     <th className="px-3 py-2 font-semibold">Action</th>
                   </tr>
                 </thead>
@@ -395,9 +592,16 @@ export default function CustomerPaymentHistoryReportPage() {
                         <td className="px-3 py-2">{loan.customerNo}</td>
                         <td className="px-3 py-2">{loan.customerName}</td>
                         <td className="px-3 py-2">{loan.fieldOfficer}</td>
+                        <td className="px-3 py-2">{loan.routeName}</td>
+                        <td className="px-3 py-2">{loan.centerName}</td>
+                        <td className="px-3 py-2">{loan.groupName}</td>
                         <td className="px-3 py-2 capitalize">{loan.status}</td>
                         <td className="px-3 py-2">{formatDisplayDate(loan.issueDate)}</td>
                         <td className="px-3 py-2 font-semibold text-cyan-700">{formatMoney(loan.issueAmount)}</td>
+                        <td className="px-3 py-2 font-semibold text-indigo-700">{formatMoney(loan.refundableAmount)}</td>
+                        <td className="px-3 py-2 font-semibold text-emerald-700">{formatMoney(loan.totalPaidAmount)}</td>
+                        <td className="px-3 py-2 font-semibold text-rose-700">{formatMoney(loan.outstandingAmount)}</td>
+                        <td className="px-3 py-2">{formatDisplayDate(loan.lastPayDate)}</td>
                         <td className="px-3 py-2">
                           <button
                             type="button"
@@ -431,6 +635,26 @@ export default function CustomerPaymentHistoryReportPage() {
                 <p className="mt-1 text-sm text-slate-600">Click a loan row or Payment History button to load payments.</p>
               )}
             </div>
+            {selectedLoan && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={exportHistoryCsv}
+                  disabled={historyLoading || filteredHistory.length === 0 || exportingCsv}
+                  className="rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-xs font-semibold text-cyan-800 hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {exportingCsv ? 'Exporting CSV...' : 'Download CSV'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void exportHistoryPdf()}
+                  disabled={historyLoading || filteredHistory.length === 0 || exportingPdf}
+                  className="rounded-lg border border-fuchsia-200 bg-fuchsia-50 px-3 py-2 text-xs font-semibold text-fuchsia-800 hover:bg-fuchsia-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {exportingPdf ? 'Exporting PDF...' : 'Download PDF'}
+                </button>
+              </div>
+            )}
           </div>
 
           {selectedLoan && (

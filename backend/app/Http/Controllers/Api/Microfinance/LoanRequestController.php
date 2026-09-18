@@ -2360,6 +2360,7 @@ class LoanRequestController extends Controller
 
         $query = MicrofinanceLoanRequest::with($relations)
             ->withMax('collections as last_pay_date', 'collection_date')
+            ->withSum('collections as total_paid_amount', 'collected_amount')
             ->orderBy('id', 'desc');
 
         if ($status) {

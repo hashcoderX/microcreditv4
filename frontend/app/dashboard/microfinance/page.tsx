@@ -61,6 +61,30 @@ type ChargeByOfficerRow = {
   loanCount: number;
 };
 
+type DashboardStatsCache = {
+  cachedAt: string;
+  stats: {
+    activeLoans: number;
+    totalCollections: number;
+    pendingPayments: number;
+    defaultRate: number;
+  };
+  summaryStats: {
+    totalOutstandingAmount: number;
+    assetValueTotal: number;
+    todayCollection: number;
+    monthCollection: number;
+    imagineProfit: number;
+    todayProfit: number;
+    monthProfit: number;
+  };
+  chargesByOfficer: ChargeByOfficerRow[];
+};
+
+const MF_DASHBOARD_WIDGET_CACHE_KEY = 'mf_dashboard_widget_hidden_keys';
+const MF_DASHBOARD_STATS_CACHE_KEY = 'mf_dashboard_stats_cache_v1';
+const MF_DASHBOARD_STATS_CACHE_TTL_MS = 2 * 60 * 1000;
+
 export default function MicrofinanceDashboard() {
   const [token, setToken] = useState('');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -211,8 +235,19 @@ export default function MicrofinanceDashboard() {
         }
       }
       setHiddenWidgetKeys(nextHidden);
+      localStorage.setItem(MF_DASHBOARD_WIDGET_CACHE_KEY, JSON.stringify(Array.from(nextHidden.values())));
     } catch {
-      setHiddenWidgetKeys(new Set());
+      const cachedRaw = localStorage.getItem(MF_DASHBOARD_WIDGET_CACHE_KEY);
+      if (cachedRaw) {
+        try {
+          const cachedKeys = JSON.parse(cachedRaw) as string[];
+          setHiddenWidgetKeys(new Set(Array.isArray(cachedKeys) ? cachedKeys : []));
+        } catch {
+          setHiddenWidgetKeys(new Set());
+        }
+      } else {
+        setHiddenWidgetKeys(new Set());
+      }
     } finally {
       setLoadingWidgets(false);
     }
@@ -271,6 +306,18 @@ export default function MicrofinanceDashboard() {
       router.push('/');
     } else {
       setToken(storedToken);
+      const cachedWidgetKeysRaw = localStorage.getItem(MF_DASHBOARD_WIDGET_CACHE_KEY);
+      if (cachedWidgetKeysRaw) {
+        try {
+          const cachedWidgetKeys = JSON.parse(cachedWidgetKeysRaw) as string[];
+          if (Array.isArray(cachedWidgetKeys)) {
+            setHiddenWidgetKeys(new Set(cachedWidgetKeys));
+          }
+          setLoadingWidgets(false);
+        } catch {
+          setLoadingWidgets(true);
+        }
+      }
       void fetchWidgetPreferences(storedToken);
       void fetchNotificationPreview(storedToken);
       const storedUser = localStorage.getItem('auth_user');
@@ -571,13 +618,39 @@ export default function MicrofinanceDashboard() {
     if (!token) return;
 
     const loadDashboardStats = async () => {
-      setStatsLoading(true);
+      let hasFreshCache = false;
+      const cachedRaw = localStorage.getItem(MF_DASHBOARD_STATS_CACHE_KEY);
+      if (cachedRaw) {
+        try {
+          const cached = JSON.parse(cachedRaw) as DashboardStatsCache;
+          const cachedAtMs = new Date(String(cached.cachedAt || '')).getTime();
+          if (
+            Number.isFinite(cachedAtMs) &&
+            Date.now() - cachedAtMs <= MF_DASHBOARD_STATS_CACHE_TTL_MS &&
+            cached?.stats &&
+            cached?.summaryStats &&
+            Array.isArray(cached?.chargesByOfficer)
+          ) {
+            setStats(cached.stats);
+            setSummaryStats(cached.summaryStats);
+            setChargesByOfficer(cached.chargesByOfficer);
+            hasFreshCache = true;
+          }
+        } catch {
+          // Ignore parse errors and continue with network fetch.
+        }
+      }
+
+      setStatsLoading(!hasFreshCache);
       try {
         const [loanRes, collectionRes] = await Promise.all([
           axios.get('/api/microfinance/loan-requests', {
             headers: {
               Authorization: `Bearer ${token}`,
               Accept: 'application/json',
+            },
+            params: {
+              compact: 1,
             },
           }),
           axios.get('/api/microfinance/collections', {
@@ -806,6 +879,29 @@ export default function MicrofinanceDashboard() {
           todayProfit,
           monthProfit,
         });
+
+        localStorage.setItem(
+          MF_DASHBOARD_STATS_CACHE_KEY,
+          JSON.stringify({
+            cachedAt: new Date().toISOString(),
+            stats: {
+              activeLoans: activeLoans.length,
+              totalCollections,
+              pendingPayments,
+              defaultRate,
+            },
+            summaryStats: {
+              totalOutstandingAmount,
+              assetValueTotal,
+              todayCollection,
+              monthCollection,
+              imagineProfit,
+              todayProfit,
+              monthProfit,
+            },
+            chargesByOfficer: nextChargeRows,
+          } satisfies DashboardStatsCache)
+        );
       } catch {
         setStats({
           activeLoans: 0,
@@ -920,7 +1016,7 @@ export default function MicrofinanceDashboard() {
 
   const visibleQuickStatsCards = quickStatsCards.filter((stat) => !hiddenWidgetKeys.has(stat.key));
 
-  if (!token || loadingWidgets) {
+  if (!token) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
