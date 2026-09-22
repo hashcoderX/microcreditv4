@@ -20,6 +20,7 @@ class MicrofinanceLoanProduct extends Model
         'insurance_charge_percentage',
         'interest_rate',
         'interest_type',
+        'interest_calculation_scheme',
         'terms_count',
         'refund_option',
         'assumed_month_days',

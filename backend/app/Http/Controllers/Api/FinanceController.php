@@ -491,14 +491,6 @@ class FinanceController extends Controller
         $responsibleOfficers = Employee::query()
             ->with(['designation:id,name'])
             ->where('branch_id', $branchId)
-            ->whereHas('designation', function ($query) {
-                $query->where(function ($designationQuery) {
-                    $designationQuery
-                        ->whereRaw('LOWER(name) LIKE ?', ['%credit officer%'])
-                        ->orWhereRaw('LOWER(name) LIKE ?', ['%collection officer%'])
-                        ->orWhereRaw('LOWER(name) LIKE ?', ['%loan officer%']);
-                });
-            })
             ->orderBy('first_name')
             ->orderBy('last_name')
             ->get()

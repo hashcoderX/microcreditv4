@@ -31,6 +31,7 @@ type MFLoanProduct = {
   insurance_charge_percentage?: number | string | null;
   interest_rate: number;
   interest_type: 'flat' | 'reducing';
+  interest_calculation_scheme?: 'day' | 'week' | 'month' | 'year';
   terms_count: number;
   refund_option: 'day' | 'week' | 'month';
   assumed_month_days?: number;
@@ -244,6 +245,20 @@ const finalizeInterestRate = (value: string) => {
 
   return `${whole || '0'}.${trimmedFraction}`;
 };
+
+const resolveUnitDays = (
+  unit: 'day' | 'week' | 'month' | 'year',
+  assumedMonthDays: number
+) => {
+  if (unit === 'day') return 1;
+  const safeMonthDays = Math.max(Number(assumedMonthDays || 30), 1);
+  // Business rule: 1 month = 4 weeks. Derive week length from configured month days.
+  if (unit === 'week') return safeMonthDays / 4;
+  if (unit === 'month') return safeMonthDays;
+  return safeMonthDays * 12;
+};
+
+const toTitleCase = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 
 const resolveLoanAmountFromProduct = (product: MFLoanProduct): string => {
   const directCandidates = [product.loan_amount, product.amount, product.principal_amount];
@@ -531,6 +546,7 @@ export default function RequestLoanPage() {
     refund_option: 'month',
     assumed_month_days: 30,
     interest_type: 'flat',
+    interest_calculation_scheme: 'month' as 'day' | 'week' | 'month' | 'year',
     interest_rate: '',
     terms_count: '',
     refundable_amount: '',
@@ -995,13 +1011,17 @@ export default function RequestLoanPage() {
   }, [approvalEmployees, loggedInBranchId, loggedInBranchName]);
 
   const primaryOfficerOptions = useMemo(
-    () => (form.loan_scope === 'direct_loan' ? recoveryTeamOptions : fieldOfficers),
-    [form.loan_scope, recoveryTeamOptions, fieldOfficers]
+    () => (form.loan_scope === 'direct_loan' ? (approvalEmployees.length > 0 ? approvalEmployees : recoveryTeamOptions) : fieldOfficers),
+    [form.loan_scope, approvalEmployees, recoveryTeamOptions, fieldOfficers]
   );
 
   const requestedLoanEditOfficerOptions = useMemo(
-    () => (requestedLoanEditModal.form.loan_scope === 'direct_loan' ? recoveryTeamOptions : fieldOfficers),
-    [requestedLoanEditModal.form.loan_scope, recoveryTeamOptions, fieldOfficers]
+    () => (
+      requestedLoanEditModal.form.loan_scope === 'direct_loan'
+        ? (approvalEmployees.length > 0 ? approvalEmployees : recoveryTeamOptions)
+        : fieldOfficers
+    ),
+    [requestedLoanEditModal.form.loan_scope, approvalEmployees, recoveryTeamOptions, fieldOfficers]
   );
 
   const hasSpecialLoanPermission = useMemo(() => {
@@ -1192,6 +1212,7 @@ export default function RequestLoanPage() {
         loan_amount: resolvedLoanAmountText,
         interest_rate: finalizeInterestRate(String(selected.interest_rate ?? '')) || '0',
         interest_type: selected.interest_type || 'flat',
+        interest_calculation_scheme: selected.interest_calculation_scheme || 'month',
         terms_count: String(selected.terms_count ?? ''),
         refund_option: selected.refund_option || 'month',
         assumed_month_days: Number(selected.assumed_month_days || 30),
@@ -1459,28 +1480,35 @@ export default function RequestLoanPage() {
     const termCount = Number(form.terms_count || 0);
     const assumedMonthDays = Math.max(Number(form.assumed_month_days || 30), 1);
     const rateDecimal = interest / 100;
+    const installmentUnitDays = resolveUnitDays(
+      form.refund_option as 'day' | 'week' | 'month',
+      assumedMonthDays
+    );
+    const schemeUnitDays = resolveUnitDays(
+      form.interest_calculation_scheme as 'day' | 'week' | 'month' | 'year',
+      assumedMonthDays
+    );
+    const effectiveRatePerInstallment = schemeUnitDays > 0
+      ? rateDecimal * (installmentUnitDays / schemeUnitDays)
+      : 0;
     let refundable = 0;
     let installment = 0;
 
     if (form.interest_type === 'reducing') {
-      // Treat entered product rate as total for the full loan term.
-      const periodicRate = termCount > 0 ? rateDecimal / termCount : 0;
+      const periodicRate = effectiveRatePerInstallment;
 
       if (termCount > 0) {
         if (periodicRate > 0) {
           const factor = Math.pow(1 + periodicRate, termCount);
-          installment = (amount * periodicRate * factor) / (factor - 1);
+          installment = factor === 1 ? amount / termCount : (amount * periodicRate * factor) / (factor - 1);
         } else {
           installment = amount / termCount;
         }
         refundable = installment * termCount;
       }
     } else {
-      // Flat interest: for daily products, rate is applied by month-equivalent cycles.
-      const effectiveTermMultiplier = form.refund_option === 'day'
-        ? termCount / assumedMonthDays
-        : 1;
-      refundable = amount + amount * rateDecimal * effectiveTermMultiplier;
+      const totalInterestMultiplier = effectiveRatePerInstallment * termCount;
+      refundable = amount + amount * totalInterestMultiplier;
       installment = termCount > 0 ? refundable / termCount : 0;
     }
 
@@ -1489,7 +1517,15 @@ export default function RequestLoanPage() {
       refundable_amount: refundable ? refundable.toFixed(2) : '',
       installment_amount: installment ? installment.toFixed(2) : '',
     }));
-  }, [form.loan_amount, form.interest_rate, form.terms_count, form.interest_type, form.refund_option, form.assumed_month_days]);
+  }, [
+    form.loan_amount,
+    form.interest_rate,
+    form.terms_count,
+    form.interest_type,
+    form.refund_option,
+    form.interest_calculation_scheme,
+    form.assumed_month_days,
+  ]);
 
   useEffect(() => {
     if (!token) return;
@@ -1570,6 +1606,7 @@ export default function RequestLoanPage() {
   const selectedCenter = centers.find((c) => c.id === form.mf_center_id);
   const selectedGroup = groups.find((g) => g.id === form.mf_group_id);
   const termUnitLabel = form.refund_option === 'day' ? 'Days' : form.refund_option === 'week' ? 'Weeks' : 'Months';
+  const interestSchemeLabel = toTitleCase(form.interest_calculation_scheme);
   const activeGuarantorCount = guarantors.filter((g) => g.name.trim() !== '').length;
   const totalCharges =
     Number(form.document_charges || 0) +
@@ -4389,7 +4426,7 @@ export default function RequestLoanPage() {
                             .filter((product) => Boolean(product.is_active))
                             .map((product) => (
                               <option key={product.id} value={product.id}>
-                                {product.name} - {finalizeInterestRate(String(product.interest_rate || 0))}% ({product.interest_type}) / {product.terms_count} {product.refund_option}
+                                {product.name} - {finalizeInterestRate(String(product.interest_rate || 0))}% ({product.interest_type}, {product.interest_calculation_scheme || 'month'}) / {product.terms_count} {product.refund_option}
                               </option>
                             ))}
                         </select>
@@ -4398,7 +4435,7 @@ export default function RequestLoanPage() {
                         {selectedLoanProduct ? (
                           <div className="space-y-1">
                             <p><span className="font-semibold text-slate-900">Selected:</span> {selectedLoanProduct.name}</p>
-                            <p><span className="font-semibold text-slate-900">Rate:</span> {finalizeInterestRate(String(selectedLoanProduct.interest_rate || 0))}% ({selectedLoanProduct.interest_type})</p>
+                            <p><span className="font-semibold text-slate-900">Rate:</span> {finalizeInterestRate(String(selectedLoanProduct.interest_rate || 0))}% ({selectedLoanProduct.interest_type}, {selectedLoanProduct.interest_calculation_scheme || 'month'})</p>
                             <p><span className="font-semibold text-slate-900">Terms:</span> {selectedLoanProduct.terms_count} ({selectedLoanProduct.refund_option}{selectedLoanProduct.refund_option === 'month' ? `, ${Number(selectedLoanProduct.assumed_month_days || 30)} days` : ''})</p>
                             <p>
                               <span className="font-semibold text-slate-900">Loan Range:</span>{' '}
@@ -4473,6 +4510,25 @@ export default function RequestLoanPage() {
                             required
                           />
                           <p className="text-[11px] text-slate-500 mt-1">Up to {INTEREST_RATE_MAX_DECIMALS} decimal places</p>
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Interest Calculation Scheme *</label>
+                          <select
+                            className="input"
+                            value={form.interest_calculation_scheme}
+                            onChange={(e) =>
+                              setForm((p) => ({
+                                ...p,
+                                interest_calculation_scheme: e.target.value as 'day' | 'week' | 'month' | 'year',
+                              }))
+                            }
+                            required
+                          >
+                            <option value="day">Day</option>
+                            <option value="week">Week</option>
+                            <option value="month">Month</option>
+                            <option value="year">Year</option>
+                          </select>
                         </div>
                         <div>
                           <label className="fieldLabel">Interest Type *</label>
@@ -4600,6 +4656,19 @@ export default function RequestLoanPage() {
                           />
                         </div>
                         <div>
+                          <label className="fieldLabel">Interest Calculation Scheme</label>
+                          <select
+                            className="input bg-slate-100"
+                            value={form.interest_calculation_scheme}
+                            disabled
+                          >
+                            <option value="day">Day</option>
+                            <option value="week">Week</option>
+                            <option value="month">Month</option>
+                            <option value="year">Year</option>
+                          </select>
+                        </div>
+                        <div>
                           <label className="fieldLabel">Interest Type</label>
                           <select
                             className="input bg-slate-100"
@@ -4620,6 +4689,7 @@ export default function RequestLoanPage() {
                             value={form.terms_count || ''}
                             onChange={(e) => setForm((p) => ({ ...p, terms_count: e.target.value }))}
                           />
+                          <p className="text-[11px] text-slate-500 mt-1">Interest applies per {interestSchemeLabel.toLowerCase()} period.</p>
                         </div>
                         <div>
                           <label className="fieldLabel">Refundable Amount</label>

@@ -64,6 +64,7 @@ type MFLoanProduct = {
   insurance_charge_percentage?: number | string | null;
   interest_rate: number;
   interest_type: 'flat' | 'reducing';
+  interest_calculation_scheme?: 'day' | 'week' | 'month' | 'year';
   terms_count: number;
   refund_option: 'day' | 'week' | 'month';
   assumed_month_days?: number;
@@ -132,6 +133,7 @@ export default function MicrofinanceSettingsPage() {
     insurance_charge_percentage: '',
     interest_rate: '',
     interest_type: 'flat' as 'flat' | 'reducing',
+    interest_calculation_scheme: 'month' as 'day' | 'week' | 'month' | 'year',
     terms_count: '',
     refund_option: 'month' as 'day' | 'week' | 'month',
     assumed_month_days: '30',
@@ -306,6 +308,7 @@ export default function MicrofinanceSettingsPage() {
       insurance_charge_percentage: '',
       interest_rate: '',
       interest_type: 'flat',
+      interest_calculation_scheme: 'month',
       terms_count: '',
       refund_option: 'month',
       assumed_month_days: '30',
@@ -412,6 +415,7 @@ export default function MicrofinanceSettingsPage() {
           loanProductForm.insurance_charge_percentage === '' ? null : Number(loanProductForm.insurance_charge_percentage),
         interest_rate: loanProductForm.interest_rate.trim(),
         interest_type: loanProductForm.interest_type,
+        interest_calculation_scheme: loanProductForm.interest_calculation_scheme,
         terms_count: Number(loanProductForm.terms_count || 0),
         refund_option: loanProductForm.refund_option,
         assumed_month_days: Number(loanProductForm.assumed_month_days || 30),
@@ -1179,6 +1183,26 @@ export default function MicrofinanceSettingsPage() {
                 </select>
               </div>
               <div className="space-y-1.5">
+                <label htmlFor="loan_product_interest_calculation_scheme" className={fieldLabelClass}>Interest Calculation Scheme *</label>
+                <select
+                  id="loan_product_interest_calculation_scheme"
+                  value={loanProductForm.interest_calculation_scheme}
+                  onChange={(e) =>
+                    setLoanProductForm({
+                      ...loanProductForm,
+                      interest_calculation_scheme: e.target.value as 'day' | 'week' | 'month' | 'year',
+                    })
+                  }
+                  className={inputClass}
+                  required
+                >
+                  <option value="day">Day</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="year">Year</option>
+                </select>
+              </div>
+              <div className="space-y-1.5">
                 <label htmlFor="loan_product_terms_count" className={fieldLabelClass}>Repayment Terms Count *</label>
                 <input
                   id="loan_product_terms_count"
@@ -1252,7 +1276,7 @@ export default function MicrofinanceSettingsPage() {
                     <div>
                       <p className="font-semibold text-slate-900">{item.name}</p>
                       <p className="text-xs text-slate-500 mt-1">
-                        Interest: {formatRate(item.interest_rate)}% ({item.interest_type}) • Terms: {item.terms_count} • Refund: {item.refund_option}
+                        Interest: {formatRate(item.interest_rate)}% ({item.interest_type}, {item.interest_calculation_scheme || 'month'}) • Terms: {item.terms_count} • Refund: {item.refund_option}
                         {item.refund_option === 'month' ? ` (${Number(item.assumed_month_days || 30)} days)` : ''}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
@@ -1291,6 +1315,7 @@ export default function MicrofinanceSettingsPage() {
                                 : String(item.insurance_charge_percentage),
                             interest_rate: String(item.interest_rate ?? ''),
                             interest_type: item.interest_type,
+                            interest_calculation_scheme: item.interest_calculation_scheme || 'month',
                             terms_count: String(item.terms_count ?? ''),
                             refund_option: item.refund_option,
                             assumed_month_days: String(item.assumed_month_days ?? 30),
