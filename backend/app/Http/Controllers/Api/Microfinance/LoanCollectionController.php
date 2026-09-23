@@ -358,6 +358,17 @@ class LoanCollectionController extends Controller
         $interestPerInstallment = max($installmentAmount - $principalPerInstallment, 0);
 
         $collectedAmount = (float)$validated['collected_amount'];
+        $totalCollectedAmount = (float) MicrofinanceLoanCollection::query()
+            ->where('mf_loan_request_id', $loanRequest->id)
+            ->sum('collected_amount');
+        $outstandingAmount = max((float) $loanRequest->refundable_amount - $totalCollectedAmount, 0);
+
+        if ($collectedAmount - $outstandingAmount > 0.0001) {
+            return response()->json([
+                'message' => 'Collected amount cannot be greater than outstanding amount.',
+                'outstanding_amount' => round($outstandingAmount, 2),
+            ], 422);
+        }
 
         $collectionDate = new \DateTimeImmutable((string)$validated['collection_date']);
         $dueCursor = !empty($loanRequest->due_date)

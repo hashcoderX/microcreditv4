@@ -1433,6 +1433,8 @@ export default function CollectionManagementPage() {
   const openCollectModal = (loan: LoanRow) => {
     const graceDays = Number(loan.penalty_grace_days ?? 2);
     const penaltyRate = Number(loan.penalty_rate ?? 0);
+    const outstanding = getOutstandingBalance(loan);
+    const suggestedAmount = Math.min(Number(loan.installment_amount || 0), outstanding);
 
     setCollectModal({
       open: true,
@@ -1440,7 +1442,7 @@ export default function CollectionManagementPage() {
       loanCode: getFinderLoanCode(loan),
       customerName: loan.customer_name,
       customerNo: loan.customer_no || '',
-      amount: Number(loan.installment_amount || 0).toFixed(2),
+      amount: suggestedAmount > 0 ? suggestedAmount.toFixed(2) : '',
       paymentType: 'cash',
       paymentReference: '',
       installmentAmount: Number(loan.installment_amount || 0),
@@ -1688,6 +1690,16 @@ export default function CollectionManagementPage() {
 
     if (!selectedRows.length) {
       setNoticeModal({ open: true, title: 'Validation', message: 'Select at least one member with a valid amount.' });
+      return;
+    }
+
+    const overpaidMember = selectedRows.find((member) => member.amountNumber - Number(member.outstandingAmount || 0) > 0.0001);
+    if (overpaidMember) {
+      setNoticeModal({
+        open: true,
+        title: 'Validation',
+        message: `Amount for ${overpaidMember.customerName} cannot be greater than outstanding amount.`,
+      });
       return;
     }
 
@@ -1942,8 +1954,25 @@ export default function CollectionManagementPage() {
       return;
     }
 
-    if (!collectModal.amount || Number(collectModal.amount) <= 0) {
+    const amountNumber = Number(collectModal.amount);
+    if (!collectModal.amount || !Number.isFinite(amountNumber) || amountNumber <= 0) {
       setNoticeModal({ open: true, title: 'Validation', message: 'Please enter a valid collection amount.' });
+      return;
+    }
+
+    const activeLoan = loans.find((loan) => loan.id === collectModal.loanId);
+    if (!activeLoan) {
+      setNoticeModal({ open: true, title: 'Error', message: 'Loan details are not available.' });
+      return;
+    }
+
+    const outstandingAmount = getOutstandingBalance(activeLoan);
+    if (amountNumber - outstandingAmount > 0.0001) {
+      setNoticeModal({
+        open: true,
+        title: 'Validation',
+        message: 'Collection amount cannot be greater than outstanding amount.',
+      });
       return;
     }
 
@@ -1972,7 +2001,7 @@ export default function CollectionManagementPage() {
           loanCode: collectModal.loanCode,
           customerName: collectModal.customerName,
           collectionDate: collectModal.date,
-          collectedAmount: Number(collectModal.amount),
+          collectedAmount: amountNumber,
           paymentType: collectModal.paymentType,
           paymentReference: collectModal.paymentReference || undefined,
           note: collectModal.note || undefined,
@@ -1981,7 +2010,7 @@ export default function CollectionManagementPage() {
         const optimisticCollection = normalizeCollectionRow({
           id: -Date.now(),
           mf_loan_request_id: collectModal.loanId,
-          collected_amount: Number(collectModal.amount),
+          collected_amount: amountNumber,
           collection_date: collectModal.date,
         });
 
@@ -2019,7 +2048,7 @@ export default function CollectionManagementPage() {
         {
           loan_request_id: collectModal.loanId,
           collection_date: collectModal.date,
-          collected_amount: Number(collectModal.amount),
+          collected_amount: amountNumber,
           payment_type: collectModal.paymentType,
           payment_reference: collectModal.paymentReference || undefined,
           note: collectModal.note || undefined,
