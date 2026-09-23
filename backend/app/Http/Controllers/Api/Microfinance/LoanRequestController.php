@@ -32,9 +32,31 @@ use Illuminate\Support\Str;
 
 class LoanRequestController extends Controller
 {
-    private const LOAN_REQUEST_MIN_PROFILE_COMPLETION = 30;
+    private const DEFAULT_LOAN_REQUEST_MIN_PROFILE_COMPLETION = 30;
     private const LOAN_REQUEST_MIN_DOCUMENT_COMPLETION = 0;
     private const WORKFLOW_FINAL_STEP = 14;
+
+    private function getLoanRequestMinProfileCompletionPercent(): int
+    {
+        if (!Schema::hasTable('system_settings')) {
+            return self::DEFAULT_LOAN_REQUEST_MIN_PROFILE_COMPLETION;
+        }
+
+        $value = DB::table('system_settings')
+            ->where('key', 'customer_profile_min_completion_percent')
+            ->value('value');
+
+        $normalized = (int) ($value ?? self::DEFAULT_LOAN_REQUEST_MIN_PROFILE_COMPLETION);
+        if ($normalized < 0) {
+            return 0;
+        }
+
+        if ($normalized > 100) {
+            return 100;
+        }
+
+        return $normalized;
+    }
 
     /**
      * @var array<int, string>
@@ -3215,6 +3237,8 @@ class LoanRequestController extends Controller
             'terms_count' => 'required|integer|min:1',
             'refundable_amount' => 'required|numeric|min:0',
             'installment_amount' => 'required|numeric|min:0',
+            'loan_balance' => 'nullable|numeric|min:0',
+            'arrears_balance' => 'nullable|numeric',
             'document_charges' => 'nullable|numeric|min:0',
             'stamp_charges' => 'nullable|numeric|min:0',
             'insurance_charges' => 'nullable|numeric|min:0',
@@ -3290,10 +3314,13 @@ class LoanRequestController extends Controller
 
         $profileCompletionScore = $this->calculateCustomerProfileCompletionScore($customerRecord);
         $documentCompletionScore = $this->calculateCustomerDocumentCompletionScore($customerRecord);
+        $minProfileCompletionPercent = $this->getLoanRequestMinProfileCompletionPercent();
+        $minDocumentCompletionPercent = self::LOAN_REQUEST_MIN_DOCUMENT_COMPLETION;
+
         if (
             (
-                $profileCompletionScore < self::LOAN_REQUEST_MIN_PROFILE_COMPLETION
-                || $documentCompletionScore < self::LOAN_REQUEST_MIN_DOCUMENT_COMPLETION
+                $profileCompletionScore < $minProfileCompletionPercent
+                || $documentCompletionScore < $minDocumentCompletionPercent
             )
             && !$this->hasSpecialLoanRequestPermission($request->user())
         ) {
@@ -3301,9 +3328,9 @@ class LoanRequestController extends Controller
                 'message' => sprintf(
                     'Loan request blocked. Customer profile completion is %d%% (required %d%%) and document completion is %d%% (required %d%%) unless you have special permission.',
                     $profileCompletionScore,
-                    self::LOAN_REQUEST_MIN_PROFILE_COMPLETION,
+                    $minProfileCompletionPercent,
                     $documentCompletionScore,
-                    self::LOAN_REQUEST_MIN_DOCUMENT_COMPLETION
+                    $minDocumentCompletionPercent
                 ),
             ], 403);
         }
@@ -3692,6 +3719,17 @@ class LoanRequestController extends Controller
                 : $loanAmount,
             'loan_request_date' => $validated['loan_request_date'] ?? $loanRequest->loan_request_date,
         ];
+
+        // Outstanding and arrears balances are sensitive and editable by Super Admin only.
+        if (method_exists($request->user(), 'isSystemAdmin') && $request->user()->isSystemAdmin()) {
+            if (array_key_exists('loan_balance', $validated)) {
+                $updatePayload['loan_balance'] = $validated['loan_balance'];
+            }
+            if (array_key_exists('arrears_balance', $validated)) {
+                $updatePayload['arrears_balance'] = $validated['arrears_balance'];
+            }
+        }
+
         if ($hasBankNameColumn) {
             $updatePayload['bank_name'] = array_key_exists('bank_name', $validated) ? ($validated['bank_name'] ?? null) : $loanRequest->bank_name;
         }

@@ -42,6 +42,9 @@ type AuthUser = {
   id: number;
   name?: string;
   email?: string;
+  branch_id?: number | null;
+  branch?: { id?: number | null; name?: string | null } | null;
+  employee?: { id?: number | null; branch_id?: number | null } | null;
   designation?: { id?: number; name?: string } | null;
   roles?: Array<{ id?: number; name?: string }>;
 };
@@ -314,6 +317,16 @@ function extractApiErrorMessage(error: unknown, fallback: string): string {
 
   const firstValidationMessage = validationMessages[0];
   return String(firstValidationMessage || responseData?.message || fallback);
+}
+
+function resolveAuthBranchId(user: AuthUser | null): number | undefined {
+  const candidates = [
+    Number(user?.branch_id || 0),
+    Number(user?.employee?.branch_id || 0),
+    Number(user?.branch?.id || 0),
+  ].filter((value) => Number.isFinite(value) && value > 0);
+
+  return candidates[0] || undefined;
 }
 
 export default function IssueFinancePage() {
@@ -1096,10 +1109,11 @@ export default function IssueFinancePage() {
     };
 
     run();
-  }, [token]);
+  }, [token, authUser]);
 
   const fetchAssignmentOptions = async (authToken: string, customerReference?: string) => {
     try {
+      const branchId = resolveAuthBranchId(authUser);
       const response = await axios.get('/api/finances/assignment-options', {
         headers: {
           Authorization: `Bearer ${authToken}`,
@@ -1107,6 +1121,7 @@ export default function IssueFinancePage() {
         },
         params: {
           customer_no: (customerReference || '').trim() || undefined,
+          branch_id: branchId,
         },
       });
 

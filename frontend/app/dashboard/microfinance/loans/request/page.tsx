@@ -206,6 +206,19 @@ const API_BASE = getApiBaseUrl();
 const INTEREST_RATE_MAX_DECIMALS = 7;
 const DEFAULT_PROFILE_COMPLETION_MIN = 30;
 const EVALUATION_PAYLOAD_VERSION = 2;
+const LOAN_REQUEST_MASTER_CACHE_KEY = 'mf_loan_request_master_cache_v1';
+const LOAN_REQUEST_CACHE_NETWORK_COOLDOWN_MS = 30 * 1000;
+
+type LoanRequestMasterCache = {
+  savedAt: number;
+  routes: MFRoute[];
+  centers: MFCenter[];
+  groups: MFGroup[];
+  loanProducts: MFLoanProduct[];
+  employees: ManagerOption[];
+  customers: ExistingCustomer[];
+  loanRequests: ExistingLoanRequest[];
+};
 
 const sanitizeInterestRateInput = (value: string) => {
   const normalized = value.replace(/,/g, '.').trim();
@@ -259,6 +272,24 @@ const resolveUnitDays = (
 };
 
 const toTitleCase = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+
+const normalizeText = (value: string) =>
+  String(value || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const isRecoveryDesignation = (designation: string) => {
+  const normalized = normalizeText(designation);
+  return normalized.includes('recovery manager') || normalized.includes('recovery officer');
+};
+
+const isBranchManagerDesignation = (designation: string) => {
+  const normalized = normalizeText(designation);
+  return normalized.includes('branch manager');
+};
 
 const resolveLoanAmountFromProduct = (product: MFLoanProduct): string => {
   const directCandidates = [product.loan_amount, product.amount, product.principal_amount];
@@ -664,19 +695,6 @@ export default function RequestLoanPage() {
   );
   const progressPercent = (activeStep / steps.length) * 100;
 
-  const normalizeText = (value: string) =>
-    String(value || '')
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-  const isRecoveryDesignation = (designation: string) => {
-    const normalized = normalizeText(designation);
-    return normalized.includes('recovery manager') || normalized.includes('recovery officer');
-  };
-
   const incomeGenerationActivityOptions = [
     'Trading',
     'Services',
@@ -954,7 +972,7 @@ export default function RequestLoanPage() {
   const approvalBranchManagers = useMemo(() => {
     const managerSource = managers.length > 0
       ? managers
-      : approvalEmployees.filter((employee) => normalizeText(employee.designation).includes('manager'));
+      : approvalEmployees.filter((employee) => isBranchManagerDesignation(String(employee.designation || '')));
 
     if (managerSource.length === 0) {
       return [] as ManagerOption[];
@@ -1081,7 +1099,9 @@ export default function RequestLoanPage() {
         ? managerOptions.find((manager) => normalizeName(manager.name) === reportingPerson)
         : undefined;
 
-    const preferredManager = managerFromReporting || managerOptions[0];
+    const preferredManager = form.loan_scope === 'route_loan'
+      ? managerOptions[0]
+      : (managerFromReporting || managerOptions[0]);
     const preferredManagerId = Number(preferredManager.id || 0);
     if (preferredManagerId <= 0) return;
 
@@ -1099,7 +1119,7 @@ export default function RequestLoanPage() {
         manager_name: preferredManager.name,
       };
     });
-  }, [managerOptions, approvalEmployees, authUser]);
+  }, [managerOptions, approvalEmployees, authUser, form.loan_scope]);
 
   useEffect(() => {
     if (!requestedLoanEditModal.open) return;
@@ -1340,63 +1360,20 @@ export default function RequestLoanPage() {
     if (!token) return;
 
     const loadMasterData = async () => {
-      setManagersLoading(true);
-      try {
-        const [routeRes, centerRes, groupRes, loanProductRes, employeeRes, customerRes, loanRequestRes] = await Promise.all([
-          axios.get(`${API_BASE}/microfinance/settings/routes`, { headers }),
-          axios.get(`${API_BASE}/microfinance/settings/centers`, { headers }),
-          axios.get(`${API_BASE}/microfinance/settings/groups`, { headers }),
-          axios.get(`${API_BASE}/microfinance/settings/loan-products`, { headers }),
-          axios.get(`${API_BASE}/hr/employees`, { headers }),
-          axios.get(`${API_BASE}/customers`, { headers, params: { per_page: 1000 } }),
-          axios.get(`${API_BASE}/microfinance/loan-requests`, { headers }),
-        ]);
+      let hydratedFromCache = false;
+      let cachedSnapshot: LoanRequestMasterCache | null = null;
 
-        setRoutes(routeRes.data || []);
-        setCenters(centerRes.data || []);
-        setGroups(groupRes.data || []);
-        setLoanProducts(Array.isArray(loanProductRes.data) ? loanProductRes.data : []);
-
-        const employeeRows = Array.isArray(employeeRes.data?.data) ? employeeRes.data.data : [];
-        const mappedEmployees: ManagerOption[] = employeeRows
-          .map((emp: unknown) => {
-            const row = emp && typeof emp === 'object' ? (emp as Record<string, unknown>) : {};
-            const designation =
-              row.designation && typeof row.designation === 'object'
-                ? (row.designation as Record<string, unknown>)
-                : {};
-            const branch = row.branch && typeof row.branch === 'object' ? (row.branch as Record<string, unknown>) : {};
-            const user = row.user && typeof row.user === 'object' ? (row.user as Record<string, unknown>) : {};
-
-            const firstName = String(row.first_name || '');
-            const lastName = String(row.last_name || '');
-            const fullName = `${firstName} ${lastName}`.trim();
-            const branchName = String(branch.name || row.branch_name || '').trim();
-
-            return {
-              id: Number(row.id || 0),
-              name: fullName || String(row.email || ''),
-              designation: String(designation.name || ''),
-              branch: branchName,
-              branch_id: Number(branch.id || row.branch_id || 0),
-              user_id: Number(user.id || 0),
-              reporting_person: String(row.reporting_person || '').trim(),
-            };
-          })
-          .filter((emp: ManagerOption) => emp.id > 0 && emp.name);
-
+      const applyEmployeeState = (mappedEmployees: ManagerOption[]) => {
         const managerOnly = mappedEmployees.filter((emp) =>
-          normalizeText(String(emp.designation || '')).includes('manager')
+          isBranchManagerDesignation(String(emp.designation || ''))
         );
         const officerOnly = mappedEmployees.filter((emp) => /officer/i.test(emp.designation));
         setManagers(managerOnly);
         setFieldOfficers(officerOnly.length > 0 ? officerOnly : mappedEmployees);
         setApprovalEmployees(mappedEmployees);
+      };
 
-        const customerRows = Array.isArray(customerRes.data?.data) ? customerRes.data.data : [];
-        setCustomers(customerRows);
-
-        const loanRequestRows: ExistingLoanRequest[] = Array.isArray(loanRequestRes.data) ? loanRequestRes.data : [];
+      const applyLoanRequestDerivedState = (loanRequestRows: ExistingLoanRequest[]) => {
         const nicknameMap = loanRequestRows.reduce<Record<string, string>>((acc, request) => {
           const customerNo = normalizeCustomerNo(String(request.customer_no || ''));
           const nickName = String(request.nick_name || '').trim();
@@ -1464,8 +1441,145 @@ export default function RequestLoanPage() {
         setBranchScopedCenterIds(Array.from(scopedCenterIdSet));
         setRequestedLoansRaw(loanRequestRows);
         setRequestedLoanPreviews(previewRows);
+      };
+
+      const parseListResponse = <T,>(payload: unknown): T[] => {
+        if (Array.isArray(payload)) return payload as T[];
+        if (
+          payload &&
+          typeof payload === 'object' &&
+          'data' in (payload as Record<string, unknown>) &&
+          Array.isArray((payload as { data?: unknown[] }).data)
+        ) {
+          return ((payload as { data?: unknown[] }).data || []) as T[];
+        }
+        return [];
+      };
+
+      try {
+        const rawCache = localStorage.getItem(LOAN_REQUEST_MASTER_CACHE_KEY);
+        if (rawCache) {
+          const parsed = JSON.parse(rawCache) as LoanRequestMasterCache;
+          if (parsed && typeof parsed.savedAt === 'number') {
+            cachedSnapshot = parsed;
+            hydratedFromCache = true;
+            setRoutes(Array.isArray(parsed.routes) ? parsed.routes : []);
+            setCenters(Array.isArray(parsed.centers) ? parsed.centers : []);
+            setGroups(Array.isArray(parsed.groups) ? parsed.groups : []);
+            setLoanProducts(Array.isArray(parsed.loanProducts) ? parsed.loanProducts : []);
+            applyEmployeeState(Array.isArray(parsed.employees) ? parsed.employees : []);
+            setCustomers(Array.isArray(parsed.customers) ? parsed.customers : []);
+            applyLoanRequestDerivedState(Array.isArray(parsed.loanRequests) ? parsed.loanRequests : []);
+          }
+        }
       } catch {
-        openModal('Failed to load route/center/group data.', 'Error');
+        cachedSnapshot = null;
+      }
+
+      const cacheAge = cachedSnapshot ? Date.now() - cachedSnapshot.savedAt : Number.POSITIVE_INFINITY;
+      const shouldSkipNetwork = hydratedFromCache && cacheAge < LOAN_REQUEST_CACHE_NETWORK_COOLDOWN_MS;
+
+      if (!hydratedFromCache) {
+        setManagersLoading(true);
+      }
+
+      if (shouldSkipNetwork) {
+        setManagersLoading(false);
+        return;
+      }
+
+      try {
+        const [routeRes, centerRes, groupRes, loanProductRes, employeeRes] = await Promise.all([
+          axios.get(`${API_BASE}/microfinance/settings/routes`, { headers }),
+          axios.get(`${API_BASE}/microfinance/settings/centers`, { headers }),
+          axios.get(`${API_BASE}/microfinance/settings/groups`, { headers }),
+          axios.get(`${API_BASE}/microfinance/settings/loan-products`, { headers }),
+          axios.get(`${API_BASE}/hr/employees`, { headers }),
+        ]);
+
+        const routeRows = parseListResponse<MFRoute>(routeRes.data);
+        const centerRows = parseListResponse<MFCenter>(centerRes.data);
+        const groupRows = parseListResponse<MFGroup>(groupRes.data);
+
+        setRoutes(routeRows);
+        setCenters(centerRows);
+        setGroups(groupRows);
+
+        const productRows = parseListResponse<MFLoanProduct>(loanProductRes.data);
+        setLoanProducts(productRows);
+
+        const employeeRows = Array.isArray(employeeRes.data?.data) ? employeeRes.data.data : [];
+        const mappedEmployees: ManagerOption[] = employeeRows
+          .map((emp: unknown) => {
+            const row = emp && typeof emp === 'object' ? (emp as Record<string, unknown>) : {};
+            const designation =
+              row.designation && typeof row.designation === 'object'
+                ? (row.designation as Record<string, unknown>)
+                : {};
+            const branch = row.branch && typeof row.branch === 'object' ? (row.branch as Record<string, unknown>) : {};
+            const user = row.user && typeof row.user === 'object' ? (row.user as Record<string, unknown>) : {};
+
+            const firstName = String(row.first_name || '');
+            const lastName = String(row.last_name || '');
+            const fullName = `${firstName} ${lastName}`.trim();
+            const branchName = String(branch.name || row.branch_name || '').trim();
+
+            return {
+              id: Number(row.id || 0),
+              name: fullName || String(row.email || ''),
+              designation: String(designation.name || ''),
+              branch: branchName,
+              branch_id: Number(branch.id || row.branch_id || 0),
+              user_id: Number(user.id || 0),
+              reporting_person: String(row.reporting_person || '').trim(),
+            };
+          })
+          .filter((emp: ManagerOption) => emp.id > 0 && emp.name);
+
+        applyEmployeeState(mappedEmployees);
+
+        const nextBaseCache: LoanRequestMasterCache = {
+          savedAt: Date.now(),
+          routes: routeRows,
+          centers: centerRows,
+          groups: groupRows,
+          loanProducts: productRows,
+          employees: mappedEmployees,
+          customers: Array.isArray(cachedSnapshot?.customers) ? cachedSnapshot.customers : [],
+          loanRequests: Array.isArray(cachedSnapshot?.loanRequests) ? cachedSnapshot.loanRequests : [],
+        };
+
+        localStorage.setItem(LOAN_REQUEST_MASTER_CACHE_KEY, JSON.stringify(nextBaseCache));
+
+        void (async () => {
+          try {
+            const [customerRes, loanRequestRes] = await Promise.all([
+              axios.get(`${API_BASE}/customers`, { headers, params: { per_page: 1000 } }),
+              axios.get(`${API_BASE}/microfinance/loan-requests`, { headers }),
+            ]);
+
+            const customerRows = parseListResponse<ExistingCustomer>(customerRes.data);
+            const loanRequestRows = parseListResponse<ExistingLoanRequest>(loanRequestRes.data);
+
+            setCustomers(customerRows);
+            applyLoanRequestDerivedState(loanRequestRows);
+
+            const nextFullCache: LoanRequestMasterCache = {
+              ...nextBaseCache,
+              savedAt: Date.now(),
+              customers: customerRows,
+              loanRequests: loanRequestRows,
+            };
+
+            localStorage.setItem(LOAN_REQUEST_MASTER_CACHE_KEY, JSON.stringify(nextFullCache));
+          } catch {
+            // Keep cached data when deferred calls fail.
+          }
+        })();
+      } catch {
+        if (!hydratedFromCache) {
+          openModal('Failed to load route/center/group data.', 'Error');
+        }
       } finally {
         setManagersLoading(false);
       }

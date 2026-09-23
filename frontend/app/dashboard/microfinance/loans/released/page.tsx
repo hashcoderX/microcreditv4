@@ -42,6 +42,8 @@ type LoanRequest = {
   loan_amount: string | number;
   refundable_amount: string | number;
   installment_amount: string | number;
+  loan_balance?: string | number | null;
+  arrears_balance?: string | number | null;
   document_charges?: string | number;
   stamp_charges?: string | number;
   insurance_charges?: string | number;
@@ -358,6 +360,8 @@ export default function ReleasedLoansPage() {
     terms_count: string;
     refundable_amount: string;
     installment_amount: string;
+    loan_balance: string;
+    arrears_balance: string;
     document_charges: string;
     stamp_charges: string;
     insurance_charges: string;
@@ -388,6 +392,8 @@ export default function ReleasedLoansPage() {
     terms_count: '',
     refundable_amount: '',
     installment_amount: '',
+    loan_balance: '',
+    arrears_balance: '',
     document_charges: '',
     stamp_charges: '',
     insurance_charges: '',
@@ -585,6 +591,14 @@ export default function ReleasedLoansPage() {
       return;
     }
 
+    const refundableAmount = Number(loan.refundable_amount || 0);
+    const totalPaidAmount = Number((loan as LoanRequest & { total_paid_amount?: string | number | null }).total_paid_amount || 0);
+    const computedOutstanding = Number.isFinite(refundableAmount) && Number.isFinite(totalPaidAmount)
+      ? Math.max(refundableAmount - totalPaidAmount, 0)
+      : Number(loan.loan_amount || 0);
+
+    const resolvedLoanBalance = loan.loan_balance ?? computedOutstanding;
+
     setEditModal({
       open: true,
       loanId: loan.id,
@@ -607,6 +621,8 @@ export default function ReleasedLoansPage() {
       terms_count: String(loan.terms_count || ''),
       refundable_amount: String(loan.refundable_amount || ''),
       installment_amount: String(loan.installment_amount || ''),
+      loan_balance: String(resolvedLoanBalance ?? ''),
+      arrears_balance: String(loan.arrears_balance ?? ''),
       document_charges: String(loan.document_charges || ''),
       stamp_charges: String(loan.stamp_charges || ''),
       insurance_charges: String(loan.insurance_charges || ''),
@@ -665,6 +681,8 @@ export default function ReleasedLoansPage() {
         terms_count: Number(editModal.terms_count || 0),
         refundable_amount: Number(editModal.refundable_amount || 0),
         installment_amount: Number(editModal.installment_amount || 0),
+        loan_balance: editModal.loan_balance === '' ? null : Number(editModal.loan_balance),
+        arrears_balance: editModal.arrears_balance === '' ? null : Number(editModal.arrears_balance),
         document_charges: Number(editModal.document_charges || 0),
         stamp_charges: Number(editModal.stamp_charges || 0),
         insurance_charges: Number(editModal.insurance_charges || 0),
@@ -2763,6 +2781,34 @@ export default function ReleasedLoansPage() {
                       ).toFixed(2)}
                     </div>
                   </div>
+
+                  {isSuperAdmin && (
+                    <>
+                      <div>
+                        <label className={editLabelClass} htmlFor="edit-loan-balance">Outstanding Balance</label>
+                        <input
+                          id="edit-loan-balance"
+                          className={editFieldClass}
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={editModal.loan_balance}
+                          onChange={(e) => updateEditField('loan_balance', e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className={editLabelClass} htmlFor="edit-arrears-balance">Arrears Balance</label>
+                        <input
+                          id="edit-arrears-balance"
+                          className={editFieldClass}
+                          type="number"
+                          step="0.01"
+                          value={editModal.arrears_balance}
+                          onChange={(e) => updateEditField('arrears_balance', e.target.value)}
+                        />
+                      </div>
+                    </>
+                  )}
 
                   <div>
                     <label className={editLabelClass} htmlFor="edit-document-charges">Document Charges</label>
