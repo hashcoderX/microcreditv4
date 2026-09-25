@@ -613,10 +613,14 @@ class CustomerController extends Controller
 
         if (ctype_digit($normalized) && strlen($normalized) <= 5) {
             $serial = str_pad($normalized, 5, '0', STR_PAD_LEFT);
-            return (clone $customerQuery)
+            $bySerial = (clone $customerQuery)
                 ->where('customer_code', 'like', '%-' . $serial)
                 ->orderByDesc('id')
                 ->first();
+
+            if ($bySerial) {
+                return $bySerial;
+            }
         }
 
         $byCode = (clone $customerQuery)

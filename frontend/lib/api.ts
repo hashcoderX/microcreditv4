@@ -26,7 +26,7 @@ export function resolveStorageAssetUrl(pathOrUrl: string): string {
     try {
       const parsed = new URL(raw);
       if (parsed.pathname.startsWith('/storage/') || parsed.pathname.startsWith('/media/')) {
-        return parsed.pathname;
+        return `${parsed.pathname}${parsed.search}${parsed.hash}`;
       }
     } catch {
       // Fall through to path normalization.

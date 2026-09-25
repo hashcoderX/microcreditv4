@@ -2768,20 +2768,6 @@ class LoanRequestController extends Controller
             $employeeQuery->where('branch_id', $viewerBranchId);
         }
 
-        if (!$isSystemAdmin && $this->isExecutiveLoanRequester($user)) {
-            $reportingApprover = $this->resolveReportingApproverEmployee($user);
-            if (!$reportingApprover) {
-                return response()->json([
-                    'data' => [],
-                    'message' => 'Reporting person approver is not configured for this executive account.',
-                ]);
-            }
-
-            return response()->json([
-                'data' => [$this->toApprovalCandidatePayload($reportingApprover)],
-            ]);
-        }
-
         $rows = $employeeQuery->get();
 
         $candidates = [];
@@ -2826,12 +2812,6 @@ class LoanRequestController extends Controller
         if (!$approvalUser || !$this->hasLoanApprovalAccess($approvalUser)) {
             return response()->json([
                 'message' => 'Selected employee does not have loan approval access.'
-            ], 422);
-        }
-
-        if (!$this->canAssignToRequestedApprover($user, $approvalEmployee)) {
-            return response()->json([
-                'message' => 'Executive users can submit approval only to their configured reporting person.'
             ], 422);
         }
 
@@ -3415,12 +3395,6 @@ class LoanRequestController extends Controller
         if (!$approvalUser || !$this->hasLoanApprovalAccess($approvalUser)) {
             return response()->json([
                 'message' => 'Selected approval person does not have loan approval access.'
-            ], 422);
-        }
-
-        if (!$this->canAssignToRequestedApprover($request->user(), $approvalEmployee)) {
-            return response()->json([
-                'message' => 'Executive users can submit loan requests only to their configured reporting person.'
             ], 422);
         }
 
