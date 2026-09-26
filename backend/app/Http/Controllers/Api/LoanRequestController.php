@@ -13,6 +13,7 @@ use App\Models\SavingsAccount;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
@@ -22,6 +23,35 @@ use ZipArchive;
 
 class LoanRequestController extends Controller
 {
+    private const CACHE_VERSION_KEY = 'loan_requests:version';
+    private const LIST_CACHE_TTL_SECONDS = 20;
+    private const DETAIL_CACHE_TTL_SECONDS = 30;
+    private const SUMMARY_CACHE_TTL_SECONDS = 20;
+
+    private function cacheScopeKey(Request $request): string
+    {
+        if ($this->isAdminUser($request->user())) {
+            return 'admin';
+        }
+
+        $branchId = $this->currentUserBranchId($request);
+        return $branchId !== null ? 'branch_' . $branchId : 'user_' . (int) ($request->user()?->id ?? 0);
+    }
+
+    private function cacheVersion(): int
+    {
+        return max((int) Cache::get(self::CACHE_VERSION_KEY, 1), 1);
+    }
+
+    private function bumpCacheVersion(): void
+    {
+        if (!Cache::has(self::CACHE_VERSION_KEY)) {
+            Cache::forever(self::CACHE_VERSION_KEY, 1);
+        }
+
+        Cache::increment(self::CACHE_VERSION_KEY);
+    }
+
     private function resolveCustomerDisplayName(Customer $customer): string
     {
         $details = is_array($customer->additional_details) ? $customer->additional_details : [];
@@ -207,26 +237,41 @@ class LoanRequestController extends Controller
     public function index(Request $request): JsonResponse
     {
         $perPage = (int) $request->get('per_page', 20);
+        $status = trim((string) $request->get('status', ''));
+        $approvalLevel = (int) $request->get('approval_level', 0);
+        $search = trim((string) $request->get('q', ''));
+        $page = max((int) $request->get('page', 1), 1);
 
-        $query = LoanRequest::query()->withCount('documents')->orderByDesc('id');
+        $cacheKey = implode(':', [
+            'loan_requests',
+            'index',
+            'v' . $this->cacheVersion(),
+            $this->cacheScopeKey($request),
+            'page_' . $page,
+            'pp_' . max($perPage, 1),
+            'status_' . ($status !== '' ? $status : 'all'),
+            'approval_' . ($approvalLevel > 0 ? $approvalLevel : 'all'),
+            'q_' . md5(mb_strtolower($search)),
+        ]);
 
-        if (!$this->isAdminUser($request->user())) {
-            $branchId = $this->currentUserBranchId($request);
-            if ($branchId !== null) {
-                $query->where('branch_id', $branchId);
+        $payload = Cache::remember($cacheKey, now()->addSeconds(self::LIST_CACHE_TTL_SECONDS), function () use ($request, $perPage, $status, $approvalLevel, $search) {
+            $query = LoanRequest::query()->withCount('documents')->orderByDesc('id');
+
+            if (!$this->isAdminUser($request->user())) {
+                $branchId = $this->currentUserBranchId($request);
+                if ($branchId !== null) {
+                    $query->where('branch_id', $branchId);
+                }
             }
-        }
 
-        if ($request->filled('status')) {
-            $query->where('status', (string) $request->get('status'));
-        }
+            if ($status !== '') {
+                $query->where('status', $status);
+            }
 
-        if ($request->filled('approval_level')) {
-            $query->where('approval_level', (int) $request->get('approval_level'));
-        }
+            if ($approvalLevel > 0) {
+                $query->where('approval_level', $approvalLevel);
+            }
 
-        if ($request->filled('q')) {
-            $search = trim((string) $request->get('q'));
             if ($search !== '') {
                 $like = '%' . $search . '%';
                 $query->where(function ($builder) use ($like) {
@@ -236,23 +281,76 @@ class LoanRequestController extends Controller
                         ->orWhere('loan_product', 'like', $like);
                 });
             }
-        }
 
-        return response()->json($query->paginate($perPage));
+            return $query->paginate($perPage)->toArray();
+        });
+
+        return response()->json($payload);
     }
 
     public function show(Request $request, int $id): JsonResponse
     {
-        $query = LoanRequest::with('documents');
+        $cacheKey = implode(':', [
+            'loan_requests',
+            'show',
+            'v' . $this->cacheVersion(),
+            $this->cacheScopeKey($request),
+            'id_' . $id,
+        ]);
 
-        if (!$this->isAdminUser($request->user())) {
-            $branchId = $this->currentUserBranchId($request);
-            if ($branchId !== null) {
-                $query->where('branch_id', $branchId);
+        $payload = Cache::remember($cacheKey, now()->addSeconds(self::DETAIL_CACHE_TTL_SECONDS), function () use ($request, $id) {
+            $query = LoanRequest::with('documents');
+
+            if (!$this->isAdminUser($request->user())) {
+                $branchId = $this->currentUserBranchId($request);
+                if ($branchId !== null) {
+                    $query->where('branch_id', $branchId);
+                }
             }
-        }
 
-        return response()->json($query->findOrFail($id));
+            return $query->findOrFail($id)->toArray();
+        });
+
+        return response()->json($payload);
+    }
+
+    public function summary(Request $request): JsonResponse
+    {
+        $cacheKey = implode(':', [
+            'loan_requests',
+            'summary',
+            'v' . $this->cacheVersion(),
+            $this->cacheScopeKey($request),
+        ]);
+
+        $payload = Cache::remember($cacheKey, now()->addSeconds(self::SUMMARY_CACHE_TTL_SECONDS), function () use ($request) {
+            $query = LoanRequest::query();
+
+            if (!$this->isAdminUser($request->user())) {
+                $branchId = $this->currentUserBranchId($request);
+                if ($branchId !== null) {
+                    $query->where('branch_id', $branchId);
+                }
+            }
+
+            $summary = (clone $query)
+                ->selectRaw('COUNT(*) AS total')
+                ->selectRaw("SUM(CASE WHEN status = 'pending_approval' THEN 1 ELSE 0 END) AS pending")
+                ->selectRaw("SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved")
+                ->selectRaw("SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected")
+                ->first();
+
+            return [
+                'total' => (int) ($summary->total ?? 0),
+                'pending' => (int) ($summary->pending ?? 0),
+                'approved' => (int) ($summary->approved ?? 0),
+                'rejected' => (int) ($summary->rejected ?? 0),
+            ];
+        });
+
+        return response()->json([
+            'data' => $payload,
+        ]);
     }
 
     public function store(Request $request): JsonResponse
@@ -426,6 +524,8 @@ class LoanRequestController extends Controller
             }
         }
 
+        $this->bumpCacheVersion();
+
         $loanRequest->load('documents');
 
         return response()->json([
@@ -498,6 +598,8 @@ class LoanRequestController extends Controller
         if ($validated['action'] === 'approve' && $loanRequest->status === 'approved') {
             $documentMessage = $this->generateLoanAgreementIfTemplateExists($loanRequest, $request->user()?->id);
         }
+
+        $this->bumpCacheVersion();
 
         return response()->json([
             'message' => 'Loan request status updated successfully.',

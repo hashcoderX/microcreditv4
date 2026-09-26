@@ -322,6 +322,9 @@ const getDocumentCompletionScore = (customer: Customer): number => {
 };
 
 const API_BASE = getApiBaseUrl();
+const CUSTOMER_CACHE_TTL_MS = 1000 * 60 * 30;
+const CUSTOMER_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 24;
+const BRANCH_CACHE_KEY = 'mf_customers_branches_cache_v1';
 
 const extractAxiosErrorMessage = (error: unknown, fallback: string): string => {
   if (!axios.isAxiosError(error)) {
@@ -498,6 +501,11 @@ export default function MicrofinanceCustomersPage() {
 
   const designationName = String(authUser?.designation?.name || '').toLowerCase();
   const isFieldOfficer = designationName.includes('field') && designationName.includes('officer');
+  const customerCacheKey = useMemo(() => {
+    const scopedBranchId = Number(authUser?.branch_id || 0);
+    const scope = isFieldOfficer && scopedBranchId > 0 ? `branch_${scopedBranchId}` : 'all';
+    return `mf_customers_cache_v2_${scope}`;
+  }, [isFieldOfficer, authUser?.branch_id]);
 
   const fetchNotificationPreview = useCallback(async (authToken: string) => {
     try {
@@ -1110,8 +1118,38 @@ export default function MicrofinanceCustomersPage() {
     }
   };
 
-  const loadCustomers = useCallback(async () => {
-    setLoading(true);
+  const hydrateCustomersFromCache = useCallback(() => {
+    try {
+      const cachedRaw = localStorage.getItem(customerCacheKey);
+      if (!cachedRaw) return false;
+
+      const parsed = JSON.parse(cachedRaw) as { rows?: unknown; savedAt?: unknown };
+      const cachedRows = Array.isArray(parsed?.rows) ? (parsed.rows as Customer[]) : [];
+      const savedAt = Number(parsed?.savedAt || 0);
+
+      if (cachedRows.length === 0) {
+        return false;
+      }
+
+      if (!Number.isFinite(savedAt) || Date.now() - savedAt > CUSTOMER_CACHE_MAX_AGE_MS) {
+        localStorage.removeItem(customerCacheKey);
+        return false;
+      }
+
+      setCustomers(cachedRows);
+      setLoading(false);
+      return Date.now() - savedAt <= CUSTOMER_CACHE_TTL_MS;
+    } catch {
+      return false;
+    }
+  }, [customerCacheKey]);
+
+  const loadCustomers = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) {
+      setLoading(true);
+    }
+
     try {
       const response = await axios.get(`${API_BASE}/customers`, {
         headers,
@@ -1133,14 +1171,58 @@ export default function MicrofinanceCustomersPage() {
           : rows;
 
       setCustomers(scopedRows);
+
+      try {
+        localStorage.setItem(
+          customerCacheKey,
+          JSON.stringify({
+            rows: scopedRows,
+            savedAt: Date.now(),
+          })
+        );
+      } catch {
+        // Ignore cache write failures (e.g. quota/private mode).
+      }
     } catch {
       setCustomers([]);
+      try {
+        localStorage.removeItem(customerCacheKey);
+      } catch {
+        // Ignore cache cleanup failures.
+      }
     } finally {
+      if (silent) {
+        return;
+      }
       setLoading(false);
     }
-  }, [headers, isFieldOfficer, authUser?.branch_id]);
+  }, [headers, isFieldOfficer, authUser?.branch_id, customerCacheKey]);
 
   const loadBranches = useCallback(async () => {
+    try {
+      const cachedRaw = localStorage.getItem(BRANCH_CACHE_KEY);
+      if (cachedRaw) {
+        const cachedRows = JSON.parse(cachedRaw) as unknown;
+        if (Array.isArray(cachedRows)) {
+          const cachedMapped = cachedRows
+            .map((row: unknown) => {
+              const item = row && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+              return {
+                id: Number(item.id || 0),
+                name: String(item.name || '').trim(),
+              };
+            })
+            .filter((branch: BranchOption) => branch.id > 0 && branch.name !== '');
+
+          if (cachedMapped.length > 0) {
+            setBranches(cachedMapped);
+          }
+        }
+      }
+    } catch {
+      // Ignore cache read failures.
+    }
+
     try {
       const response = await axios.get(`${API_BASE}/companies`, {
         headers,
@@ -1163,6 +1245,12 @@ export default function MicrofinanceCustomersPage() {
         .filter((branch: BranchOption) => branch.id > 0 && branch.name !== '');
 
       setBranches(mapped);
+
+      try {
+        localStorage.setItem(BRANCH_CACHE_KEY, JSON.stringify(mapped));
+      } catch {
+        // Ignore cache write failures.
+      }
     } catch {
       setBranches([]);
     }
@@ -1170,9 +1258,11 @@ export default function MicrofinanceCustomersPage() {
 
   useEffect(() => {
     if (!token) return;
-    void loadCustomers();
+
+    const cacheFresh = hydrateCustomersFromCache();
+    void loadCustomers({ silent: cacheFresh });
     void loadBranches();
-  }, [token, loadCustomers, loadBranches]);
+  }, [token, loadCustomers, loadBranches, hydrateCustomersFromCache]);
 
   const openProfileModal = async (customerId: number) => {
     setProfileLoading(true);

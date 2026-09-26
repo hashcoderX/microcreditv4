@@ -379,6 +379,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     // Loan Requests (step-by-step loan module)
     Route::apiResource('loan-products', LoanModuleProductController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
     Route::get('loan-requests', [LoanRequestController::class, 'index']);
+    Route::get('loan-requests/summary', [LoanRequestController::class, 'summary']);
     Route::post('loan-requests', [LoanRequestController::class, 'store']);
     Route::get('loan-requests/{id}', [LoanRequestController::class, 'show']);
     Route::post('loan-requests/{id}/status', [LoanRequestController::class, 'updateStatus']);

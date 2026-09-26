@@ -3,7 +3,7 @@
 import axios from "axios";
 import { getApiBaseUrl, getBackendOrigin } from "@/lib/api";
 import { WidgetCloseGate } from "@/lib/useWidgetsFixed";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -193,6 +193,8 @@ export default function LoanRequestsPage() {
     message: "",
     type: "success",
   });
+  const requestsAbortRef = useRef<AbortController | null>(null);
+  const statsAbortRef = useRef<AbortController | null>(null);
   const router = useRouter();
 
   const openAlertModal = (type: AlertModalState["type"], title: string, message: string) => {
@@ -272,44 +274,47 @@ export default function LoanRequestsPage() {
   };
 
   const fetchStats = useCallback(async (authToken: string) => {
+    statsAbortRef.current?.abort();
+    const controller = new AbortController();
+    statsAbortRef.current = controller;
+
     setStatsLoading(true);
-    const headers = {
-      Authorization: `Bearer ${authToken}`,
-      Accept: "application/json",
-    };
 
     try {
-      const [allRes, pendingRes, approvedRes, rejectedRes] = await Promise.all([
-        axios.get(`${apiBase}/loan-requests`, { headers, params: { per_page: 1, page: 1 } }),
-        axios.get(`${apiBase}/loan-requests`, {
-          headers,
-          params: { per_page: 1, page: 1, status: "pending_approval" },
-        }),
-        axios.get(`${apiBase}/loan-requests`, {
-          headers,
-          params: { per_page: 1, page: 1, status: "approved" },
-        }),
-        axios.get(`${apiBase}/loan-requests`, {
-          headers,
-          params: { per_page: 1, page: 1, status: "rejected" },
-        }),
-      ]);
+      const response = await axios.get(`${apiBase}/loan-requests/summary`, {
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: "application/json",
+        },
+      });
+
+      const payload = response.data?.data ?? response.data;
 
       setStats({
-        total: Number(allRes.data?.total ?? 0),
-        pending: Number(pendingRes.data?.total ?? 0),
-        approved: Number(approvedRes.data?.total ?? 0),
-        rejected: Number(rejectedRes.data?.total ?? 0),
+        total: Number(payload?.total ?? 0),
+        pending: Number(payload?.pending ?? 0),
+        approved: Number(payload?.approved ?? 0),
+        rejected: Number(payload?.rejected ?? 0),
       });
-    } catch {
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.code === "ERR_CANCELED") {
+        return;
+      }
       // Keep previous stats on failure.
     } finally {
-      setStatsLoading(false);
+      if (!controller.signal.aborted) {
+        setStatsLoading(false);
+      }
     }
   }, [apiBase]);
 
   const fetchRequests = useCallback(
     async (authToken: string, pageToLoad: number, pageSize: number, filter: StatusFilter, search: string) => {
+      requestsAbortRef.current?.abort();
+      const controller = new AbortController();
+      requestsAbortRef.current = controller;
+
       setLoading(true);
       setError("");
       try {
@@ -321,6 +326,7 @@ export default function LoanRequestsPage() {
         if (search.trim()) params.q = search.trim();
 
         const response = await axios.get(`${apiBase}/loan-requests`, {
+          signal: controller.signal,
           headers: {
             Authorization: `Bearer ${authToken}`,
             Accept: "application/json",
@@ -339,13 +345,18 @@ export default function LoanRequestsPage() {
           from: pageData?.from != null ? Number(pageData.from) : null,
           to: pageData?.to != null ? Number(pageData.to) : null,
         });
-      } catch {
+      } catch (err) {
+        if (axios.isAxiosError(err) && err.code === "ERR_CANCELED") {
+          return;
+        }
         const message = "Unable to load loan requests.";
         setError(message);
         setRequests([]);
         openAlertModal("error", "Load Failed", message);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     },
     [apiBase]
@@ -385,6 +396,13 @@ export default function LoanRequestsPage() {
     if (!token) return;
     fetchRequests(token, page, perPage, statusFilter, debouncedSearch);
   }, [token, page, perPage, statusFilter, debouncedSearch, fetchRequests]);
+
+  useEffect(() => {
+    return () => {
+      requestsAbortRef.current?.abort();
+      statsAbortRef.current?.abort();
+    };
+  }, []);
 
   const openReviewModal = async (loanRequestId: number) => {
     if (!token) return;

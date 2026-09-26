@@ -9,10 +9,47 @@ use App\Models\MicrofinanceLoanRequest;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class LoanCollectionController extends Controller
 {
+    private const CACHE_VERSION_KEY = 'mf_collections:version';
+    private const INDEX_CACHE_TTL_SECONDS = 20;
+
+    private function cacheVersion(): int
+    {
+        return max((int) Cache::get(self::CACHE_VERSION_KEY, 1), 1);
+    }
+
+    private function bumpCacheVersion(): void
+    {
+        if (!Cache::has(self::CACHE_VERSION_KEY)) {
+            Cache::forever(self::CACHE_VERSION_KEY, 1);
+        }
+
+        Cache::increment(self::CACHE_VERSION_KEY);
+    }
+
+    private function cacheScopeKey(Request $request, bool $includeDeleted, bool $compact, int $limit, int $loanRequestId): string
+    {
+        $user = $request->user();
+        $scope = $this->isAdminUser($user)
+            ? 'admin'
+            : ('branch_' . ((int) ($user?->branch_id ?? 0)));
+
+        return implode(':', [
+            'mf_collections',
+            'index',
+            'v' . $this->cacheVersion(),
+            $scope,
+            'deleted_' . ($includeDeleted ? '1' : '0'),
+            'compact_' . ($compact ? '1' : '0'),
+            'loan_' . ($loanRequestId > 0 ? $loanRequestId : 'all'),
+            'limit_' . ($limit > 0 ? $limit : 'all'),
+        ]);
+    }
+
     private function buildBaseWalletNo(int $employeeId): string
     {
         return 'EW' . str_pad((string) $employeeId, 6, '0', STR_PAD_LEFT);
@@ -222,6 +259,8 @@ class LoanCollectionController extends Controller
         $includeDeletedRequested = filter_var($request->get('include_deleted', false), FILTER_VALIDATE_BOOLEAN);
         $canViewDeleted = $this->isAdminUser($user) || $this->isManagerUser($user);
         $includeDeleted = $includeDeletedRequested && $canViewDeleted;
+        $compact = filter_var($request->get('compact', false), FILTER_VALIDATE_BOOLEAN);
+        $loanRequestId = (int) $request->get('loan_request_id', 0);
         $limit = (int) $request->get('limit', 0);
         if ($limit < 0) {
             $limit = 0;
@@ -230,54 +269,79 @@ class LoanCollectionController extends Controller
             $limit = 2000;
         }
 
-        $query = MicrofinanceLoanCollection::query()
-            ->with([
-                'loanRequest:id,branch_id,customer_no,customer_name,nic,field_officer,loan_code,mf_route_id,mf_center_id,mf_group_id,loan_scope,refund_option,status,loan_amount,net_disbursed_amount,loan_request_date,created_at,installment_amount,refundable_amount',
-                'loanRequest.route:id,name,code',
-                'loanRequest.center:id,name,code,meeting_day,mf_route_id',
-                'loanRequest.group:id,name,code,mf_center_id,mf_route_id',
-                'deletedByUser:id,name,email',
-            ])
-            ->orderByDesc('id');
+        $cacheKey = $this->cacheScopeKey($request, $includeDeleted, $compact, $limit, $loanRequestId);
 
-        if ($includeDeleted) {
-            $query->withTrashed();
-        }
+        $payload = Cache::remember($cacheKey, now()->addSeconds(self::INDEX_CACHE_TTL_SECONDS), function () use ($request, $includeDeleted, $compact, $limit, $loanRequestId) {
+            $query = MicrofinanceLoanCollection::query()
+                ->orderByDesc('id');
 
-        if ($request->filled('loan_request_id')) {
-            $query->where('mf_loan_request_id', (int)$request->get('loan_request_id'));
-        }
-
-        $branchId = $this->scopedBranchId($request);
-        if ($branchId !== null) {
-            $query->whereHas('loanRequest', function ($loanQuery) use ($branchId) {
-                $loanQuery->where('branch_id', $branchId);
-            });
-        }
-
-        if ($limit > 0) {
-            $query->limit($limit);
-        }
-
-        $collections = $query->get()->map(function (MicrofinanceLoanCollection $collection) {
-            $payload = $collection->toArray();
-            $collectionDate = $collection->collection_date;
-            if ($collectionDate instanceof \DateTimeInterface) {
-                $payload['collection_date'] = $collectionDate->format('Y-m-d');
+            if ($compact) {
+                $query->select(['id', 'mf_loan_request_id', 'collected_amount', 'collection_date']);
             } else {
-                $payload['collection_date'] = $collectionDate ? (string) $collectionDate : null;
+                $query->with([
+                    'loanRequest:id,branch_id,customer_no,customer_name,nic,field_officer,loan_code,mf_route_id,mf_center_id,mf_group_id,loan_scope,refund_option,status,loan_amount,net_disbursed_amount,loan_request_date,created_at,installment_amount,refundable_amount',
+                    'loanRequest.route:id,name,code',
+                    'loanRequest.center:id,name,code,meeting_day,mf_route_id',
+                    'loanRequest.group:id,name,code,mf_center_id,mf_route_id',
+                    'deletedByUser:id,name,email',
+                ]);
             }
-            $interestAmount = (float) ($collection->interest_amount ?? 0);
-            $penaltyAmount = (float) ($collection->penalty_amount ?? 0);
-            $payload['profit_amount'] = round($interestAmount + $penaltyAmount, 2);
-            $payload['is_deleted'] = $collection->trashed();
-            $payload['deleted_by_name'] = $collection->deletedByUser?->name;
-            $payload['deleted_by_email'] = $collection->deletedByUser?->email;
 
-            return $payload;
-        })->values();
+            if ($includeDeleted) {
+                $query->withTrashed();
+            }
 
-        return response()->json($collections);
+            if ($loanRequestId > 0) {
+                $query->where('mf_loan_request_id', $loanRequestId);
+            }
+
+            $branchId = $this->scopedBranchId($request);
+            if ($branchId !== null) {
+                $query->whereHas('loanRequest', function ($loanQuery) use ($branchId) {
+                    $loanQuery->where('branch_id', $branchId);
+                });
+            }
+
+            if ($limit > 0) {
+                $query->limit($limit);
+            }
+
+            if ($compact) {
+                return $query->get()->map(function (MicrofinanceLoanCollection $collection) {
+                    $collectionDate = $collection->collection_date;
+                    if ($collectionDate instanceof \DateTimeInterface) {
+                        $collectionDate = $collectionDate->format('Y-m-d');
+                    }
+
+                    return [
+                        'id' => (int) $collection->id,
+                        'mf_loan_request_id' => (int) $collection->mf_loan_request_id,
+                        'collected_amount' => (float) ($collection->collected_amount ?? 0),
+                        'collection_date' => $collectionDate ? (string) $collectionDate : null,
+                    ];
+                })->values()->all();
+            }
+
+            return $query->get()->map(function (MicrofinanceLoanCollection $collection) {
+                $payload = $collection->toArray();
+                $collectionDate = $collection->collection_date;
+                if ($collectionDate instanceof \DateTimeInterface) {
+                    $payload['collection_date'] = $collectionDate->format('Y-m-d');
+                } else {
+                    $payload['collection_date'] = $collectionDate ? (string) $collectionDate : null;
+                }
+                $interestAmount = (float) ($collection->interest_amount ?? 0);
+                $penaltyAmount = (float) ($collection->penalty_amount ?? 0);
+                $payload['profit_amount'] = round($interestAmount + $penaltyAmount, 2);
+                $payload['is_deleted'] = $collection->trashed();
+                $payload['deleted_by_name'] = $collection->deletedByUser?->name;
+                $payload['deleted_by_email'] = $collection->deletedByUser?->email;
+
+                return $payload;
+            })->values()->all();
+        });
+
+        return response()->json($payload);
     }
 
     public function store(Request $request)
@@ -516,6 +580,8 @@ class LoanCollectionController extends Controller
             ], 500);
         }
 
+        $this->bumpCacheVersion();
+
         $breakdown = [
             'arrears_outstanding_before' => round($arrearsOutstandingBefore, 2),
             'arrears_deducted' => round($arrearsDeducted, 2),
@@ -597,6 +663,8 @@ class LoanCollectionController extends Controller
 
             $this->rebuildLoanStateFromCollections($loanRequest);
         });
+
+        $this->bumpCacheVersion();
 
         return response()->json([
             'message' => 'Invoice deleted successfully. Loan balances and related totals were reversed.',

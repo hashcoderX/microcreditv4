@@ -14,7 +14,7 @@ import {
 } from '@/lib/offline/mfOfflineSync';
 import { useMfOffline } from '@/lib/offline/useMfOffline';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 type LoanRow = {
@@ -256,6 +256,8 @@ export default function CollectionManagementPage() {
     contactNo: '',
     logoUrl: '/media/company/logo',
   });
+  const loadLoansAbortRef = useRef<AbortController | null>(null);
+  const receiptCompanyAbortRef = useRef<AbortController | null>(null);
 
   const fetchWidgetPreferences = useCallback(async (authToken: string) => {
     setLoadingWidgets(true);
@@ -422,6 +424,10 @@ export default function CollectionManagementPage() {
   const loadLoans = useCallback(async () => {
     if (!token) return;
 
+    loadLoansAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadLoansAbortRef.current = controller;
+
     const applyCacheMeta = (available: boolean, cachedAt: string | null) => {
       setCacheMeta({ available, cachedAt });
     };
@@ -462,6 +468,7 @@ export default function CollectionManagementPage() {
     try {
       const [loanResponse, collectionResponse] = await Promise.all([
         axios.get(`${API_BASE}/microfinance/loan-requests`, {
+          signal: controller.signal,
           headers,
           params:
             isFieldOfficer && authUser?.branch_id
@@ -479,8 +486,10 @@ export default function CollectionManagementPage() {
                 },
         }),
         axios.get(`${API_BASE}/microfinance/collections`, {
+          signal: controller.signal,
           headers,
           params: {
+            compact: 1,
             limit: loadProfile === 'fast' ? collectionFetchLimit : undefined,
           },
         }),
@@ -502,7 +511,10 @@ export default function CollectionManagementPage() {
       const cachedAt = new Date().toISOString();
       await cacheMfCollectionData(scopeKey, loanRows, normalizedCollections);
       applyCacheMeta(true, cachedAt);
-    } catch {
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.code === 'ERR_CANCELED') {
+        return;
+      }
       if (!cachedState) {
         setLoans([]);
         setCollections([]);
@@ -510,7 +522,9 @@ export default function CollectionManagementPage() {
       setHasMoreLoanRecords(false);
       setHasMoreCollectionRecords(false);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   }, [token, headers, isFieldOfficer, authUser?.branch_id, authUser?.name, scopeKey, loadProfile, loanFetchLimit, collectionFetchLimit]);
 
@@ -559,8 +573,12 @@ export default function CollectionManagementPage() {
     if (!token) return;
 
     const loadReceiptCompany = async () => {
+      receiptCompanyAbortRef.current?.abort();
+      const controller = new AbortController();
+      receiptCompanyAbortRef.current = controller;
+
       try {
-        const response = await axios.get(`${API_BASE}/companies`, { headers });
+        const response = await axios.get(`${API_BASE}/companies`, { headers, signal: controller.signal });
         const list = Array.isArray(response.data)
           ? response.data
           : Array.isArray(response.data?.data)
@@ -578,7 +596,10 @@ export default function CollectionManagementPage() {
           contactNo: String(matched.phone || ''),
           logoUrl: resolveCompanyLogoUrl(matched),
         });
-      } catch {
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.code === 'ERR_CANCELED') {
+          return;
+        }
         setReceiptCompany((prev) => ({
           ...prev,
           logoUrl: '/media/company/logo',
@@ -593,6 +614,13 @@ export default function CollectionManagementPage() {
     if (!token) return;
     void loadLoans();
   }, [token, loadLoans]);
+
+  useEffect(() => {
+    return () => {
+      loadLoansAbortRef.current?.abort();
+      receiptCompanyAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1728,9 +1756,7 @@ export default function CollectionManagementPage() {
       const successReceipts: CollectionReceipt[] = [];
       let nextCollections = [...collections];
       let nextLoans = [...loans];
-      let failedCount = 0;
-
-      for (const member of selectedRows) {
+      const requestMemberCollection = async (member: (typeof selectedRows)[number]) => {
         try {
           const response = await axios.post(
             `${API_BASE}/microfinance/collections`,
@@ -1745,80 +1771,116 @@ export default function CollectionManagementPage() {
             { headers }
           );
 
-          const savedCollection = response?.data?.data;
-          if (savedCollection?.mf_loan_request_id) {
-            const normalizedCollection = normalizeCollectionRow(savedCollection as Record<string, unknown>);
-            nextCollections = [...nextCollections, normalizedCollection];
-            nextLoans = nextLoans.map((loan) =>
-              loan.id === normalizedCollection.mf_loan_request_id
-                ? { ...loan, last_pay_date: normalizedCollection.collection_date || loan.last_pay_date }
-                : loan
-            );
-          }
-
-          const loanDates = response?.data?.loan_dates;
-          const breakdown = response?.data?.breakdown || {};
-          if (loanDates?.due_date || loanDates?.next_payment_date) {
-            nextLoans = nextLoans.map((loan) => {
-              if (loan.id !== member.loanId) return loan;
-              return {
-                ...loan,
-                due_date: loanDates.due_date || loan.due_date,
-                next_payment_date: loanDates.next_payment_date || loan.next_payment_date,
-                arrears_balance:
-                  typeof breakdown.arrears_outstanding_after !== 'undefined'
-                    ? Number(breakdown.arrears_outstanding_after || 0) - Number(breakdown.extra_payment_after || 0)
-                    : loan.arrears_balance,
-              };
-            });
-          }
-
-          const serverReceipt = response?.data?.receipt as CollectionReceipt | undefined;
-          const activeLoan = nextLoans.find((loan) => loan.id === member.loanId) || loans.find((loan) => loan.id === member.loanId);
-          const totalPaidCumulative = nextCollections
-            .filter((row) => Number(row.mf_loan_request_id || 0) === member.loanId)
-            .reduce((sum, row) => sum + Number(row.collected_amount || 0), 0);
-          const fallbackReceipt: CollectionReceipt = {
-            bill_no: `BILL-MIC-${member.loanId}-${Date.now()}`,
-            product_type: 'microfinance',
-            product_label: 'Micro Credit',
-            reference: member.loanCode,
-            source_id: member.loanId,
-            customer_name: member.customerName,
-            customer_no: member.customerNo || null,
-            loan_product: 'Micro Loan',
-            payment_date: bulkCollectModal.date,
-            payment_type: bulkCollectModal.paymentType,
-            payment_reference: bulkCollectModal.paymentReference || null,
-            paid_amount: member.amountNumber,
-            principal_paid: Number(breakdown.capital_amount ?? 0),
-            interest_paid: Number(breakdown.interest_amount ?? 0),
-            penalty_paid: Number(breakdown.penalty_amount ?? 0),
-            arrears_before: Number(breakdown.arrears_outstanding_before ?? 0),
-            arrears_after: Math.max(
-              Number(breakdown.arrears_outstanding_after ?? 0) - Number(breakdown.extra_payment_after ?? 0),
-              0
-            ),
-            outstanding: Math.max(Number(activeLoan?.refundable_amount || 0) - totalPaidCumulative, 0),
-            total_paid_cumulative: totalPaidCumulative,
-            installment_amount: Number(activeLoan?.installment_amount || member.installmentAmount || 0),
-            next_due_date: loanDates?.due_date || activeLoan?.due_date || member.dueDate || null,
-            note: bulkCollectModal.note || null,
-            collection_id: Number(savedCollection?.id || 0) || null,
-            printed_at: new Date().toISOString(),
+          return {
+            ok: true as const,
+            member,
+            data: response?.data,
           };
-          successReceipts.push(serverReceipt || fallbackReceipt);
-
-          successRows.push({
-            loanCode: member.loanCode,
-            customerNo: member.customerNo,
-            customerName: member.customerName,
-            amount: member.amountNumber,
-            dueDate: member.dueDate,
-          });
         } catch {
-          failedCount += 1;
+          return {
+            ok: false as const,
+            member,
+          };
         }
+      };
+
+      const results: Array<
+        | { ok: true; member: (typeof selectedRows)[number]; data: Record<string, unknown> }
+        | { ok: false; member: (typeof selectedRows)[number] }
+      > = [];
+
+      const concurrency = 6;
+      for (let start = 0; start < selectedRows.length; start += concurrency) {
+        const batch = selectedRows.slice(start, start + concurrency);
+        const batchResults = await Promise.all(batch.map((member) => requestMemberCollection(member)));
+        results.push(...batchResults);
+      }
+
+      let failedCount = 0;
+
+      for (const result of results) {
+        if (!result.ok) {
+          failedCount += 1;
+          continue;
+        }
+
+        const { member } = result;
+        const savedCollection = result.data?.data as Record<string, unknown> | undefined;
+
+        if (savedCollection?.mf_loan_request_id) {
+          const normalizedCollection = normalizeCollectionRow(savedCollection);
+          nextCollections = [...nextCollections, normalizedCollection];
+          nextLoans = nextLoans.map((loan) =>
+            loan.id === normalizedCollection.mf_loan_request_id
+              ? { ...loan, last_pay_date: normalizedCollection.collection_date || loan.last_pay_date }
+              : loan
+          );
+        }
+
+        const loanDates = result.data?.loan_dates as
+          | { due_date?: string; next_payment_date?: string }
+          | undefined;
+        const breakdown = (result.data?.breakdown as Record<string, unknown> | undefined) || {};
+
+        if (loanDates?.due_date || loanDates?.next_payment_date) {
+          nextLoans = nextLoans.map((loan) => {
+            if (loan.id !== member.loanId) return loan;
+            return {
+              ...loan,
+              due_date: loanDates.due_date || loan.due_date,
+              next_payment_date: loanDates.next_payment_date || loan.next_payment_date,
+              arrears_balance:
+                typeof breakdown.arrears_outstanding_after !== 'undefined'
+                  ? Number(breakdown.arrears_outstanding_after || 0) - Number(breakdown.extra_payment_after || 0)
+                  : loan.arrears_balance,
+            };
+          });
+        }
+
+        const serverReceipt = result.data?.receipt as CollectionReceipt | undefined;
+        const activeLoan = nextLoans.find((loan) => loan.id === member.loanId) || loans.find((loan) => loan.id === member.loanId);
+        const totalPaidCumulative = nextCollections
+          .filter((row) => Number(row.mf_loan_request_id || 0) === member.loanId)
+          .reduce((sum, row) => sum + Number(row.collected_amount || 0), 0);
+        const fallbackReceipt: CollectionReceipt = {
+          bill_no: `BILL-MIC-${member.loanId}-${Date.now()}`,
+          product_type: 'microfinance',
+          product_label: 'Micro Credit',
+          reference: member.loanCode,
+          source_id: member.loanId,
+          customer_name: member.customerName,
+          customer_no: member.customerNo || null,
+          loan_product: 'Micro Loan',
+          payment_date: bulkCollectModal.date,
+          payment_type: bulkCollectModal.paymentType,
+          payment_reference: bulkCollectModal.paymentReference || null,
+          paid_amount: member.amountNumber,
+          principal_paid: Number(breakdown.capital_amount ?? 0),
+          interest_paid: Number(breakdown.interest_amount ?? 0),
+          penalty_paid: Number(breakdown.penalty_amount ?? 0),
+          arrears_before: Number(breakdown.arrears_outstanding_before ?? 0),
+          arrears_after: Math.max(
+            Number(breakdown.arrears_outstanding_after ?? 0) - Number(breakdown.extra_payment_after ?? 0),
+            0
+          ),
+          outstanding: Math.max(Number(activeLoan?.refundable_amount || 0) - totalPaidCumulative, 0),
+          total_paid_cumulative: totalPaidCumulative,
+          installment_amount: Number(activeLoan?.installment_amount || member.installmentAmount || 0),
+          next_due_date: loanDates?.due_date || activeLoan?.due_date || member.dueDate || null,
+          note: bulkCollectModal.note || null,
+          collection_id: Number(savedCollection?.id || 0) || null,
+          printed_at: new Date().toISOString(),
+        };
+
+        successReceipts.push(serverReceipt || fallbackReceipt);
+
+        successRows.push({
+          loanCode: member.loanCode,
+          customerNo: member.customerNo,
+          customerName: member.customerName,
+          amount: member.amountNumber,
+          dueDate: member.dueDate,
+        });
       }
 
       if (!successRows.length) {
