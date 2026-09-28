@@ -32,8 +32,8 @@ export default function CashBookReportPage() {
   const [fromDate, setFromDate] = useState(monthStartIso());
   const [toDate, setToDate] = useState(todayIso());
   const [cashAccount, setCashAccount] = useState<{ account_name: string; opening_balance: number; current_balance: number } | null>(null);
-  const [summary, setSummary] = useState({ cash_received: 0, cash_paid: 0, net_movement: 0 });
-  const [lines, setLines] = useState<Array<{ account_name: string; period_debit: number; period_credit: number; closing_balance: number }>>([]);
+  const [summary, setSummary] = useState({ opening_balance: 0, cash_received: 0, cash_paid: 0, net_movement: 0, closing_balance: 0 });
+  const [lines, setLines] = useState<Array<{ date: string; particulars: string; source: string; reference: string; payment_method: string; receipt: number; payment: number; running_balance: number }>>([]);
 
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
@@ -73,9 +73,11 @@ export default function CashBookReportPage() {
       setCashAccount(payload.cash_account || null);
       setLines(Array.isArray(payload.lines) ? payload.lines : []);
       setSummary({
+        opening_balance: toNumber(payload.summary?.opening_balance),
         cash_received: toNumber(payload.summary?.cash_received),
         cash_paid: toNumber(payload.summary?.cash_paid),
         net_movement: toNumber(payload.summary?.net_movement),
+        closing_balance: toNumber(payload.summary?.closing_balance),
       });
       setCurrency(payload.company?.currency || 'LKR');
     } catch (fetchError: any) {
@@ -102,8 +104,8 @@ export default function CashBookReportPage() {
   const exportCsv = () => {
     downloadCsv(
       `cash-book-${selectedCompanyId}.csv`,
-      ['Account', 'Cash Received', 'Cash Paid', 'Closing Balance'],
-      lines.map((line) => [line.account_name, amount(line.period_debit), amount(line.period_credit), amount(line.closing_balance)])
+      ['Date', 'Particulars', 'Reference', 'Payment Method', 'Receipt', 'Payment', 'Running Balance'],
+      lines.map((line) => [line.date, line.particulars, line.reference || '-', line.payment_method || '-', amount(line.receipt), amount(line.payment), amount(line.running_balance)])
     );
   };
 
@@ -121,25 +123,46 @@ export default function CashBookReportPage() {
     >
       {selectedCompany ? <p className="text-xs text-black font-semibold">{selectedCompany.name} · {currency}</p> : null}
       <SummaryCards items={[
-        { label: 'Current Cash', value: `${currency} ${amount(cashAccount?.current_balance || 0)}`, valueClass: 'text-emerald-700' },
+        { label: 'Opening Balance', value: `${currency} ${amount(summary.opening_balance)}`, valueClass: 'text-slate-700' },
         { label: 'Cash Received', value: `${currency} ${amount(summary.cash_received)}`, valueClass: 'text-cyan-700' },
         { label: 'Cash Paid', value: `${currency} ${amount(summary.cash_paid)}`, valueClass: 'text-rose-700' },
-        { label: 'Net Movement', value: `${currency} ${amount(summary.net_movement)}`, valueClass: 'text-violet-700' },
+        { label: 'Closing Balance', value: `${currency} ${amount(summary.closing_balance)}`, valueClass: 'text-emerald-700' },
       ]} />
       <ReportFilters companies={companies} selectedCompanyId={selectedCompanyId} onCompanyChange={setSelectedCompanyId} fromDate={fromDate} toDate={toDate} onFromDateChange={setFromDate} onToDateChange={setToDate} onApply={() => fetchReport()} onReset={() => { const nextFrom = monthStartIso(); const nextTo = todayIso(); setFromDate(nextFrom); setToDate(nextTo); fetchReport({ from_date: nextFrom, to_date: nextTo }); }} loadingCompanies={loadingCompanies} />
-      <ReportTable title="Cash Transactions" countLabel={`${lines.length} lines`} loading={loading} hasData={lines.length > 0} emptyTitle="No cash transactions">
+      <ReportTable title="Cash Book Register" countLabel={`${lines.length} entries`} loading={loading} hasData={lines.length > 0} emptyTitle="No cash transactions">
         <div className="overflow-x-auto rounded-xl border border-violet-100">
           <table className="min-w-full text-xs text-black">
-            <thead className="bg-violet-50/70 text-[10px] font-bold uppercase tracking-wider"><tr><th className="px-3 py-3 text-left">Account</th><th className="px-3 py-3 text-right">Received</th><th className="px-3 py-3 text-right">Paid</th><th className="px-3 py-3 text-right">Balance</th></tr></thead>
+            <thead className="bg-violet-50/70 text-[10px] font-bold uppercase tracking-wider"><tr><th className="px-3 py-3 text-left">Date</th><th className="px-3 py-3 text-left">Particulars</th><th className="px-3 py-3 text-left">Reference</th><th className="px-3 py-3 text-left">Method</th><th className="px-3 py-3 text-right">Receipt</th><th className="px-3 py-3 text-right">Payment</th><th className="px-3 py-3 text-right">Running Balance</th></tr></thead>
             <tbody className="divide-y divide-violet-50 bg-white">
+              <tr className="bg-slate-50/80">
+                <td className="px-3 py-2.5 text-slate-500">{fromDate}</td>
+                <td className="px-3 py-2.5 font-semibold text-slate-700">Opening Balance</td>
+                <td className="px-3 py-2.5 text-slate-500">-</td>
+                <td className="px-3 py-2.5 text-slate-500">-</td>
+                <td className="px-3 py-2.5 text-right tabular-nums text-slate-500">-</td>
+                <td className="px-3 py-2.5 text-right tabular-nums text-slate-500">-</td>
+                <td className="px-3 py-2.5 text-right tabular-nums font-semibold">{amount(summary.opening_balance)}</td>
+              </tr>
               {lines.map((line) => (
-                <tr key={line.account_name} className="hover:bg-violet-50/40">
-                  <td className="px-3 py-2.5 font-semibold">{line.account_name}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-emerald-700">{amount(line.period_debit)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-rose-700">{amount(line.period_credit)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums font-semibold">{amount(line.closing_balance)}</td>
+                <tr key={`${line.source}-${line.reference}-${line.date}-${line.running_balance}`} className="hover:bg-violet-50/40">
+                  <td className="px-3 py-2.5 text-slate-600">{line.date}</td>
+                  <td className="px-3 py-2.5 font-semibold">{line.particulars}</td>
+                  <td className="px-3 py-2.5 text-slate-600">{line.reference || '-'}</td>
+                  <td className="px-3 py-2.5 uppercase text-[10px] text-slate-600">{line.payment_method || '-'}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-emerald-700">{line.receipt > 0 ? amount(line.receipt) : '-'}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-rose-700">{line.payment > 0 ? amount(line.payment) : '-'}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-semibold">{amount(line.running_balance)}</td>
                 </tr>
               ))}
+              <tr className="bg-slate-50/80">
+                <td className="px-3 py-2.5 text-slate-500">{toDate}</td>
+                <td className="px-3 py-2.5 font-bold text-slate-800">Closing Balance</td>
+                <td className="px-3 py-2.5 text-slate-500">-</td>
+                <td className="px-3 py-2.5 text-slate-500">-</td>
+                <td className="px-3 py-2.5 text-right tabular-nums font-bold text-emerald-700">{amount(summary.cash_received)}</td>
+                <td className="px-3 py-2.5 text-right tabular-nums font-bold text-rose-700">{amount(summary.cash_paid)}</td>
+                <td className="px-3 py-2.5 text-right tabular-nums font-bold text-slate-900">{amount(summary.closing_balance)}</td>
+              </tr>
             </tbody>
           </table>
         </div>

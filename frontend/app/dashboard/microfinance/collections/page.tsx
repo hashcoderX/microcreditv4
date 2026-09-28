@@ -223,6 +223,19 @@ export default function CollectionManagementPage() {
     date: new Date().toISOString().split('T')[0],
   });
   const [collectSaving, setCollectSaving] = useState(false);
+  const [qrScanModal, setQrScanModal] = useState<{
+    open: boolean;
+    scanning: boolean;
+    error: string;
+    result: string;
+    target: 'finder' | 'collect';
+  }>({
+    open: false,
+    scanning: false,
+    error: '',
+    result: '',
+    target: 'finder',
+  });
   const [bulkCollectSaving, setBulkCollectSaving] = useState(false);
   const [bulkCollectModal, setBulkCollectModal] = useState<{
     open: boolean;
@@ -275,6 +288,9 @@ export default function CollectionManagementPage() {
   });
   const loadLoansAbortRef = useRef<AbortController | null>(null);
   const receiptCompanyAbortRef = useRef<AbortController | null>(null);
+  const qrVideoRef = useRef<HTMLVideoElement | null>(null);
+  const qrStreamRef = useRef<MediaStream | null>(null);
+  const qrRafRef = useRef<number | null>(null);
 
   const fetchWidgetPreferences = useCallback(async (authToken: string) => {
     setLoadingWidgets(true);
@@ -927,6 +943,228 @@ export default function CollectionManagementPage() {
     return customerNoField || '-';
   };
 
+  const hydrateCollectModalForLoan = useCallback((loan: LoanRow) => {
+    const graceDays = Number(loan.penalty_grace_days ?? 2);
+    const penaltyRate = Number(loan.penalty_rate ?? 0);
+    const outstanding = getOutstandingBalance(loan);
+    const suggestedAmount = Math.min(Number(loan.installment_amount || 0), outstanding);
+
+    setCollectModal((prev) => ({
+      ...prev,
+      open: true,
+      loanId: loan.id,
+      loanCode: getFinderLoanCode(loan),
+      customerName: loan.customer_name,
+      customerNo: loan.customer_no || '',
+      amount: suggestedAmount > 0 ? suggestedAmount.toFixed(2) : '',
+      paymentType: 'cash',
+      paymentReference: '',
+      installmentAmount: Number(loan.installment_amount || 0),
+      refundableAmount: Number(loan.refundable_amount || 0),
+      dueDate: loan.due_date || '',
+      penaltyRate: Number.isFinite(penaltyRate) ? penaltyRate : 0,
+      graceDays: Number.isFinite(graceDays) && graceDays >= 0 ? graceDays : 0,
+      note: '',
+      date: new Date().toISOString().split('T')[0],
+    }));
+  }, [getOutstandingBalance]);
+
+  const stopQrScanner = useCallback(() => {
+    if (qrRafRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(qrRafRef.current);
+      qrRafRef.current = null;
+    }
+    if (qrStreamRef.current) {
+      qrStreamRef.current.getTracks().forEach((track) => track.stop());
+      qrStreamRef.current = null;
+    }
+    if (qrVideoRef.current) {
+      qrVideoRef.current.srcObject = null;
+    }
+    setQrScanModal((prev) => ({ ...prev, scanning: false }));
+  }, []);
+
+  const resolveLoanFromQrPayload = useCallback((rawPayload: string): LoanRow | null => {
+    const payload = String(rawPayload || '').trim();
+    if (!payload) return null;
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(payload) as Record<string, unknown>;
+    } catch {
+      parsed = null;
+    }
+
+    const allLoans = scopedLoans;
+    const normalizedText = payload.toLowerCase();
+
+    if (parsed) {
+      const loanId = Number(parsed.loan_id || parsed.loanId || parsed.id || 0);
+      if (loanId > 0) {
+        const byId = allLoans.find((loan) => Number(loan.id) === loanId);
+        if (byId) return byId;
+      }
+
+      const codeCandidates = [parsed.loan_code, parsed.loanCode, parsed.reference_no, parsed.referenceNo]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean);
+      if (codeCandidates.length > 0) {
+        const byCode = allLoans.find((loan) => {
+          const loanCode = String(loan.loan_code || '').trim();
+          const referenceNo = String(loan.reference_no || '').trim();
+          return codeCandidates.some((candidate) =>
+            candidate.localeCompare(loanCode, undefined, { sensitivity: 'accent' }) === 0 ||
+            candidate.localeCompare(referenceNo, undefined, { sensitivity: 'accent' }) === 0
+          );
+        });
+        if (byCode) return byCode;
+      }
+
+      const customerNo = String(parsed.customer_no || parsed.customerNo || '').trim();
+      if (customerNo) {
+        const byCustomer = allLoans.find(
+          (loan) => String(loan.customer_no || '').trim().toLowerCase() === customerNo.toLowerCase()
+        );
+        if (byCustomer) return byCustomer;
+      }
+    }
+
+    const urlLoanId = Number(new URLSearchParams(payload.split('?')[1] || '').get('loan_id') || 0);
+    if (urlLoanId > 0) {
+      const byUrlId = allLoans.find((loan) => Number(loan.id) === urlLoanId);
+      if (byUrlId) return byUrlId;
+    }
+
+    if (isLoanCodeText(payload)) {
+      const byPlainCode = allLoans.find(
+        (loan) => String(loan.loan_code || '').trim().toLowerCase() === normalizedText
+      );
+      if (byPlainCode) return byPlainCode;
+    }
+
+    const byReference = allLoans.find(
+      (loan) => String(loan.reference_no || '').trim().toLowerCase() === normalizedText
+    );
+    if (byReference) return byReference;
+
+    const byCustomerNo = allLoans.find(
+      (loan) => String(loan.customer_no || '').trim().toLowerCase() === normalizedText
+    );
+    if (byCustomerNo) return byCustomerNo;
+
+    return null;
+  }, [isLoanCodeText, scopedLoans]);
+
+  const applyScannedQrToTarget = useCallback((rawPayload: string) => {
+    const matchedLoan = resolveLoanFromQrPayload(rawPayload);
+    if (!matchedLoan) {
+      setQrScanModal((prev) => ({
+        ...prev,
+        error: 'QR not recognized. Use a loan QR generated by this system.',
+        result: rawPayload,
+      }));
+      return;
+    }
+
+    if (qrScanModal.target === 'finder') {
+      setFinderCustomerNo(String(matchedLoan.customer_no || matchedLoan.customer_code || '').trim());
+      stopQrScanner();
+      setQrScanModal((prev) => ({ ...prev, open: false, error: '', result: rawPayload }));
+      return;
+    }
+
+    const outstanding = getOutstandingBalance(matchedLoan);
+    if (outstanding <= 0) {
+      stopQrScanner();
+      setQrScanModal((prev) => ({ ...prev, open: false, error: '', result: '' }));
+      setNoticeModal({
+        open: true,
+        title: 'No Outstanding Balance',
+        message: `${matchedLoan.customer_name} has no outstanding amount to collect.`,
+      });
+      return;
+    }
+
+    hydrateCollectModalForLoan(matchedLoan);
+    stopQrScanner();
+    setQrScanModal((prev) => ({ ...prev, open: false, error: '', result: rawPayload }));
+  }, [getOutstandingBalance, hydrateCollectModalForLoan, qrScanModal.target, resolveLoanFromQrPayload, stopQrScanner]);
+
+  const startQrScanner = useCallback(async (target: 'finder' | 'collect' = 'finder') => {
+    setQrScanModal({ open: true, scanning: false, error: '', result: '', target });
+
+    if (typeof window === 'undefined') return;
+    const BarcodeDetectorCtor = (
+      window as unknown as {
+        BarcodeDetector?: new (options?: { formats?: string[] }) => {
+          detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>>;
+        };
+      }
+    ).BarcodeDetector;
+
+    if (!BarcodeDetectorCtor) {
+      setQrScanModal((prev) => ({
+        ...prev,
+        error: 'QR scanning is not supported in this browser. Please use a modern Chrome/Edge browser.',
+      }));
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setQrScanModal((prev) => ({ ...prev, error: 'Camera access is unavailable on this device/browser.' }));
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+
+      qrStreamRef.current = stream;
+      if (qrVideoRef.current) {
+        qrVideoRef.current.srcObject = stream;
+        await qrVideoRef.current.play();
+      }
+
+      const detector = new BarcodeDetectorCtor({ formats: ['qr_code'] });
+      setQrScanModal((prev) => ({ ...prev, scanning: true, error: '' }));
+
+      const scanFrame = async () => {
+        if (!qrVideoRef.current) {
+          return;
+        }
+
+        try {
+          const barcodes = await detector.detect(qrVideoRef.current);
+          const first = barcodes.find((code) => String(code.rawValue || '').trim() !== '');
+          if (first?.rawValue) {
+            applyScannedQrToTarget(String(first.rawValue));
+            return;
+          }
+        } catch {
+          setQrScanModal((prev) => ({
+            ...prev,
+            error: 'Unable to read QR right now. Hold camera steady and try again.',
+          }));
+        }
+
+        qrRafRef.current = window.requestAnimationFrame(() => {
+          void scanFrame();
+        });
+      };
+
+      qrRafRef.current = window.requestAnimationFrame(() => {
+        void scanFrame();
+      });
+    } catch {
+      setQrScanModal((prev) => ({
+        ...prev,
+        error: 'Camera permission denied or unavailable. Please allow camera access and retry.',
+      }));
+    }
+  }, [applyScannedQrToTarget]);
+
   const scopeType = activeMode === 'center' ? 'center_loan' : activeMode === 'route' ? 'route_loan' : null;
 
   const commonFinderResults = useMemo(() => {
@@ -1490,28 +1728,7 @@ export default function CollectionManagementPage() {
   }, [activeMode, officeView]);
 
   const openCollectModal = (loan: LoanRow) => {
-    const graceDays = Number(loan.penalty_grace_days ?? 2);
-    const penaltyRate = Number(loan.penalty_rate ?? 0);
-    const outstanding = getOutstandingBalance(loan);
-    const suggestedAmount = Math.min(Number(loan.installment_amount || 0), outstanding);
-
-    setCollectModal({
-      open: true,
-      loanId: loan.id,
-      loanCode: getFinderLoanCode(loan),
-      customerName: loan.customer_name,
-      customerNo: loan.customer_no || '',
-      amount: suggestedAmount > 0 ? suggestedAmount.toFixed(2) : '',
-      paymentType: 'cash',
-      paymentReference: '',
-      installmentAmount: Number(loan.installment_amount || 0),
-      refundableAmount: Number(loan.refundable_amount || 0),
-      dueDate: loan.due_date || '',
-      penaltyRate: Number.isFinite(penaltyRate) ? penaltyRate : 0,
-      graceDays: Number.isFinite(graceDays) && graceDays >= 0 ? graceDays : 0,
-      note: '',
-      date: new Date().toISOString().split('T')[0],
-    });
+    hydrateCollectModalForLoan(loan);
   };
 
   const openLoanDetailsModal = (loan: LoanRow) => {
@@ -1523,6 +1740,8 @@ export default function CollectionManagementPage() {
   };
 
   const closeCollectModal = () => {
+    stopQrScanner();
+    setQrScanModal((prev) => ({ ...prev, open: false, scanning: false, error: '', result: '' }));
     setCollectModal({
       open: false,
       loanId: null,
@@ -1541,6 +1760,12 @@ export default function CollectionManagementPage() {
       date: new Date().toISOString().split('T')[0],
     });
   };
+
+  useEffect(() => {
+    return () => {
+      stopQrScanner();
+    };
+  }, [stopQrScanner]);
 
   const closeBulkCollectModal = () => {
     setBulkCollectModal({
@@ -2578,16 +2803,52 @@ export default function CollectionManagementPage() {
         <div className="bg-white/86 backdrop-blur-xl rounded-3xl border border-cyan-100 shadow-[0_18px_40px_-24px_rgba(14,116,144,0.5)] p-4 md:p-5">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <h2 className="text-lg font-bold text-slate-900">Common Loan Finder</h2>
-            <div className="relative min-w-[280px]">
-              <input
-                className="w-full pl-9 pr-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-black focus:outline-none focus:ring-2 focus:ring-cyan-200"
-                placeholder="Find by Customer No"
-                value={finderCustomerNo}
-                onChange={(e) => setFinderCustomerNo(e.target.value)}
-              />
-              <span className="absolute left-3 top-2.5 text-slate-400 text-sm">⌕</span>
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <button
+                type="button"
+                onClick={() => void startQrScanner('finder')}
+                className="shrink-0 rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-2 text-xs font-semibold text-cyan-800 hover:bg-cyan-100"
+              >
+                Scan QR
+              </button>
+              <div className="relative min-w-[280px] flex-1 sm:flex-none">
+                <input
+                  className="w-full pl-9 pr-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-black focus:outline-none focus:ring-2 focus:ring-cyan-200"
+                  placeholder="Find by Customer No"
+                  value={finderCustomerNo}
+                  onChange={(e) => setFinderCustomerNo(e.target.value)}
+                />
+                <span className="absolute left-3 top-2.5 text-slate-400 text-sm">⌕</span>
+              </div>
             </div>
           </div>
+
+          {qrScanModal.open && qrScanModal.target === 'finder' && (
+            <div className="mt-3 rounded-2xl border border-cyan-200 bg-cyan-50/70 p-3 text-slate-800">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-cyan-900">Scan Loan QR</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopQrScanner();
+                    setQrScanModal((prev) => ({ ...prev, open: false, scanning: false, error: '', result: '' }));
+                  }}
+                  className="text-xs font-semibold text-cyan-700 hover:text-cyan-900"
+                >
+                  Close Scanner
+                </button>
+              </div>
+              <div className="mt-2 overflow-hidden rounded-xl border border-cyan-200 bg-slate-900">
+                <video ref={qrVideoRef} className="h-56 w-full object-cover" playsInline muted autoPlay />
+              </div>
+              <p className="mt-2 text-xs text-slate-600">
+                {qrScanModal.scanning
+                  ? 'Scanning... place the customer loan QR inside the camera view.'
+                  : 'Tap Scan QR to start camera scanning.'}
+              </p>
+              {qrScanModal.error ? <p className="mt-1 text-xs font-semibold text-rose-700">{qrScanModal.error}</p> : null}
+            </div>
+          )}
 
           {!finderCustomerNo.trim() ? (
             <p className="mt-3 text-sm text-slate-500">Type customer number to quickly find any loan and collect installment.</p>
@@ -3520,6 +3781,7 @@ export default function CollectionManagementPage() {
                     <p className="text-[11px] uppercase tracking-[0.18em] text-white/85">Collection Desk</p>
                     <h3 className="text-xl font-extrabold mt-1">Collect Installment</h3>
                     <p className="mt-1 text-sm text-white/90 break-words">{collectModal.customerName} | {collectModal.loanCode}</p>
+                    <p className="mt-1 text-xs text-white/85">Customer No: {collectModal.customerNo || '-'}</p>
                   </div>
                   <button
                     type="button"

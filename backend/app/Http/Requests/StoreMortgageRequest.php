@@ -26,6 +26,10 @@ class StoreMortgageRequest extends FormRequest
             'processing_fee' => ['nullable', 'numeric', 'min:0'],
             'insurance_fee' => ['nullable', 'numeric', 'min:0'],
             'penalty_rate' => ['nullable', 'numeric', 'min:0'],
+            'responsible_manager_user_id' => ['nullable', 'integer', 'exists:users,id'],
+            'responsible_manager_name' => ['nullable', 'string', 'max:120'],
+            'entry_officer_name' => ['nullable', 'string', 'max:120'],
+            'entry_officer_designation' => ['nullable', 'string', 'max:120'],
 
             // Optional nested sections
             'asset' => ['nullable', 'array'],

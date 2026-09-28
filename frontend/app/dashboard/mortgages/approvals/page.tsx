@@ -48,6 +48,8 @@ type MortgageApprovalRow = {
   interest_rate?: number | string | null;
   interest_type?: 'fixed' | 'reducing' | string | null;
   tenure_months?: number | string | null;
+  mortgage_qr_code?: string | null;
+  mortgage_qr_generated_at?: string | null;
   status?: string | null;
   customer?: {
     first_name?: string;
@@ -480,14 +482,38 @@ export default function MortgageApprovals() {
       );
 
       const nextStatus = String(response.data?.status || (type === 'approve' ? 'approved' : 'rejected'));
+      const nextQrCode = String(response.data?.mortgage_qr_code || '').trim() || null;
+      const nextQrGeneratedAt = String(response.data?.mortgage_qr_generated_at || '').trim() || null;
       setRows((prev) =>
-        prev.map((item) => (item.id === row.id ? { ...item, status: nextStatus } : item))
+        prev.map((item) =>
+          item.id === row.id
+            ? {
+                ...item,
+                status: nextStatus,
+                mortgage_qr_code: nextQrCode ?? item.mortgage_qr_code ?? null,
+                mortgage_qr_generated_at: nextQrGeneratedAt ?? item.mortgage_qr_generated_at ?? null,
+              }
+            : item
+        )
       );
       if (detailRow?.id === row.id) {
-        setDetailRow((prev) => (prev ? { ...prev, status: nextStatus } : prev));
+        setDetailRow((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: nextStatus,
+                mortgage_qr_code: nextQrCode ?? prev.mortgage_qr_code ?? null,
+                mortgage_qr_generated_at: nextQrGeneratedAt ?? prev.mortgage_qr_generated_at ?? null,
+              }
+            : prev
+        );
       }
       setActionModalOpen(false);
-      openToast('success', `Mortgage #${row.id} ${type === 'approve' ? 'approved' : 'rejected'} successfully.`);
+      if (type === 'approve' && nextQrCode) {
+        openToast('success', `Mortgage #${row.id} approved. QR generated: ${nextQrCode}`);
+      } else {
+        openToast('success', `Mortgage #${row.id} ${type === 'approve' ? 'approved' : 'rejected'} successfully.`);
+      }
     } catch (error: any) {
       const message =
         error?.response?.data?.message ||
@@ -1208,6 +1234,13 @@ export default function MortgageApprovals() {
                         <p className="text-[11px] uppercase tracking-wide text-slate-500">Refund Amount</p>
                         <p className="font-bold text-emerald-700 mt-1">{formatAmount(refundAmount)}</p>
                       </div>
+                    </div>
+                    <div className="mt-3 rounded-lg border border-cyan-100 bg-white p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-slate-500">Mortgage QR</p>
+                      <p className="mt-1 font-mono text-xs font-bold text-cyan-800 break-all">{detailRow.mortgage_qr_code || '-'}</p>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        Generated: {detailRow.mortgage_qr_generated_at ? formatDate(detailRow.mortgage_qr_generated_at) : '-'}
+                      </p>
                     </div>
                   </div>
 

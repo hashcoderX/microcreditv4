@@ -16,12 +16,91 @@ use Illuminate\Support\Facades\Storage;
 use App\Models\MortgageSchedule;
 use App\Models\MortgagePayment;
 use App\Models\MortgageDocument;
+use App\Models\User;
 use App\Services\SmsGatewayService;
 use App\Services\WhatsappGatewayService;
 use Carbon\Carbon;
+use Illuminate\Support\Str;
 
 class MortgageController extends Controller
 {
+    private function generateUniqueMortgageQrCode(int $mortgageId): string
+    {
+        do {
+            $candidate = sprintf('MQR-%d-%s', $mortgageId, strtoupper(Str::random(10)));
+            $exists = Mortgage::query()
+                ->where('mortgage_qr_code', $candidate)
+                ->exists();
+        } while ($exists);
+
+        return $candidate;
+    }
+
+    private function userHasKeyword(?object $user, array $keywords): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $normalizedKeywords = array_map(
+            static fn (string $keyword) => strtolower(trim($keyword)),
+            $keywords
+        );
+
+        $matchesKeyword = static function (string $value) use ($normalizedKeywords): bool {
+            $normalized = strtolower(trim($value));
+            if ($normalized === '') {
+                return false;
+            }
+
+            foreach ($normalizedKeywords as $keyword) {
+                if ($keyword !== '' && str_contains($normalized, $keyword)) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        if ($matchesKeyword((string) optional($user->designation)->name)) {
+            return true;
+        }
+
+        if (!method_exists($user, 'roles')) {
+            return false;
+        }
+
+        foreach ($user->roles()->pluck('name') as $roleName) {
+            if ($matchesKeyword((string) $roleName)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function resolveBranchManagerForBranch(int $branchId): ?User
+    {
+        if ($branchId <= 0) {
+            return null;
+        }
+
+        return User::query()
+            ->with(['designation:id,name'])
+            ->where('branch_id', $branchId)
+            ->where(function ($query) {
+                $query
+                    ->whereHas('designation', function ($designationQuery) {
+                        $designationQuery->whereRaw('LOWER(name) LIKE ?', ['%branch manager%']);
+                    })
+                    ->orWhereHas('roles', function ($roleQuery) {
+                        $roleQuery->whereRaw('LOWER(name) LIKE ?', ['%branch manager%']);
+                    });
+            })
+            ->orderBy('id')
+            ->first();
+    }
+
     private function sendMortgageApprovalSms(Mortgage $mortgage): void
     {
         try {
@@ -254,6 +333,20 @@ class MortgageController extends Controller
                 }
 
                 $resolvedBranchId = (int) ($user->branch_id ?? $customer->branch_id ?? 1);
+                $entryOfficerName = trim((string) ($validated['entry_officer_name'] ?? $user->name ?? ''));
+                $entryOfficerDesignation = trim((string) ($validated['entry_officer_designation'] ?? optional($user->designation)->name ?? ''));
+
+                $responsibleManagerId = (int) ($validated['responsible_manager_user_id'] ?? 0);
+                $responsibleManagerName = trim((string) ($validated['responsible_manager_name'] ?? ''));
+
+                $creatorIsOfficer = $this->userHasKeyword($user, ['officer']);
+                if ($creatorIsOfficer && ($responsibleManagerId <= 0 || $responsibleManagerName === '')) {
+                    $manager = $this->resolveBranchManagerForBranch($resolvedBranchId);
+                    if ($manager) {
+                        $responsibleManagerId = (int) $manager->id;
+                        $responsibleManagerName = trim((string) ($manager->name ?? ''));
+                    }
+                }
                 
             $mortgage = Mortgage::create([
                 'tenant_id' => (int) ($user->tenant_id ?? 1),
@@ -273,6 +366,10 @@ class MortgageController extends Controller
                 'insurance_fee' => $validated['insurance_fee'] ?? 0,
                 'status' => 'draft',
                 'created_by' => $user->id,
+                'entry_officer_name' => $entryOfficerName !== '' ? $entryOfficerName : null,
+                'entry_officer_designation' => $entryOfficerDesignation !== '' ? $entryOfficerDesignation : null,
+                'responsible_manager_user_id' => $responsibleManagerId > 0 ? $responsibleManagerId : null,
+                'responsible_manager_name' => $responsibleManagerName !== '' ? $responsibleManagerName : null,
             ]);
 
             if (!empty($validated['asset'])) {
@@ -1094,6 +1191,14 @@ class MortgageController extends Controller
             $principal = (float) ($mortgage->approved_amount ?? $mortgage->requested_amount ?? 0);
             $mortgage->setAttribute('due_amount', round(max($principal, 0), 2));
             $mortgage->setAttribute('due_interest_amount', round($this->calculateCurrentInterestDue($mortgage, $principal), 2));
+
+            // Generate exactly one QR identity per mortgage and keep it stable forever.
+            if (trim((string) ($mortgage->mortgage_qr_code ?? '')) === '') {
+                $mortgage->setAttribute('mortgage_qr_code', $this->generateUniqueMortgageQrCode((int) $mortgage->id));
+            }
+            if (empty($mortgage->mortgage_qr_generated_at)) {
+                $mortgage->setAttribute('mortgage_qr_generated_at', now());
+            }
         }
         $mortgage->save();
 
@@ -1107,6 +1212,8 @@ class MortgageController extends Controller
             'due_date' => $mortgage->due_date,
             'due_amount' => $mortgage->due_amount,
             'due_interest_amount' => $mortgage->due_interest_amount,
+            'mortgage_qr_code' => $mortgage->mortgage_qr_code,
+            'mortgage_qr_generated_at' => $mortgage->mortgage_qr_generated_at,
         ]);
     }
 

@@ -3263,7 +3263,9 @@ export default function LoanApprovalsPage() {
 
                     <div className="space-y-1 min-w-0">
                     <h2 className="text-lg font-bold text-gray-900">{loan.customer_name}</h2>
-                    <p className="text-sm text-gray-600">Reference No: {loan.reference_no || loan.loan_code || '-'}</p>
+                    <p className="text-sm text-gray-600">
+                      Reference No: {loan.reference_no || loan.loan_code || '-'} | Customer No: {loan.customer_no || '-'}
+                    </p>
                     {loan.documents_requested && (
                       <p className="inline-flex items-center rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700">
                         Documents Requested

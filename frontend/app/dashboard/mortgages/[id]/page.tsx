@@ -270,14 +270,14 @@ export default function MortgageDetails() {
   const typeMeta = mortgageTypeMeta(String(mortgage?.mortgage_type || 'other'));
   const TypeIcon = typeMeta.icon;
   const statCards = [
-    { key: 'stat_requested', icon: Banknote, label: 'Requested', value: formatAmount(mortgage.requested_amount), tone: 'text-slate-700', bg: 'from-slate-500/10 to-gray-500/5' },
-    { key: 'stat_approved', icon: CheckCircle2, label: 'Approved', value: formatAmount(mortgage.approved_amount), tone: 'text-cyan-700', bg: 'from-cyan-500/10 to-blue-500/5' },
-    { key: 'stat_installment', icon: Wallet, label: 'Installment', value: formatAmount(mortgage.installment_amount ?? monthlyFigures.monthlyInstallment), tone: 'text-indigo-700', bg: 'from-indigo-500/10 to-violet-500/5' },
+    { key: 'stat_requested', icon: Banknote, label: 'Requested', value: formatAmount(mortgage?.requested_amount), tone: 'text-slate-700', bg: 'from-slate-500/10 to-gray-500/5' },
+    { key: 'stat_approved', icon: CheckCircle2, label: 'Approved', value: formatAmount(mortgage?.approved_amount), tone: 'text-cyan-700', bg: 'from-cyan-500/10 to-blue-500/5' },
+    { key: 'stat_installment', icon: Wallet, label: 'Installment', value: formatAmount(mortgage?.installment_amount ?? monthlyFigures.monthlyInstallment), tone: 'text-indigo-700', bg: 'from-indigo-500/10 to-violet-500/5' },
     { key: 'stat_total_interest', icon: PercentCircle, label: 'Total Interest', value: formatAmount(monthlyFigures.totalInterest), tone: 'text-emerald-700', bg: 'from-emerald-500/10 to-green-500/5' },
-    { key: 'stat_due_principal', icon: Landmark, label: 'Due Principal', value: formatAmount(mortgage.due_amount), tone: 'text-slate-800', bg: 'from-slate-400/10 to-zinc-500/5' },
-    { key: 'stat_due_interest', icon: PercentCircle, label: 'Due Interest', value: formatAmount(mortgage.due_interest_amount), tone: 'text-amber-700', bg: 'from-amber-500/10 to-orange-500/5' },
-    { key: 'stat_total_paid', icon: Banknote, label: 'Total Paid', value: formatAmount(mortgage.total_paid_amount), tone: 'text-violet-700', bg: 'from-violet-500/10 to-purple-500/5' },
-    { key: 'stat_tenure', icon: CalendarDays, label: 'Tenure', value: `${mortgage.tenure_months || '—'} mo`, tone: 'text-teal-700', bg: 'from-teal-500/10 to-cyan-500/5' },
+    { key: 'stat_due_principal', icon: Landmark, label: 'Due Principal', value: formatAmount(mortgage?.due_amount), tone: 'text-slate-800', bg: 'from-slate-400/10 to-zinc-500/5' },
+    { key: 'stat_due_interest', icon: PercentCircle, label: 'Due Interest', value: formatAmount(mortgage?.due_interest_amount), tone: 'text-amber-700', bg: 'from-amber-500/10 to-orange-500/5' },
+    { key: 'stat_total_paid', icon: Banknote, label: 'Total Paid', value: formatAmount(mortgage?.total_paid_amount), tone: 'text-violet-700', bg: 'from-violet-500/10 to-purple-500/5' },
+    { key: 'stat_tenure', icon: CalendarDays, label: 'Tenure', value: `${mortgage?.tenure_months || '—'} mo`, tone: 'text-teal-700', bg: 'from-teal-500/10 to-cyan-500/5' },
   ];
   const visibleStatCards = statCards.filter((item) => !hiddenWidgetKeys.has(`${widgetPrefix}${item.key}`));
 

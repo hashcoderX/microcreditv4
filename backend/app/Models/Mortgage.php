@@ -27,16 +27,23 @@ class Mortgage extends Model
         'insurance_fee',
         'status',
         'approved_by',
+        'responsible_manager_user_id',
+        'responsible_manager_name',
+        'mortgage_qr_code',
+        'mortgage_qr_generated_at',
         'approved_at',
         'due_date',
         'arrears_amount',
         'due_amount',
         'due_interest_amount',
         'created_by',
+        'entry_officer_name',
+        'entry_officer_designation',
     ];
 
     protected $casts = [
         'approved_at' => 'datetime',
+        'mortgage_qr_generated_at' => 'datetime',
         'due_date' => 'date',
         'arrears_amount' => 'decimal:2',
         'due_amount' => 'decimal:2',

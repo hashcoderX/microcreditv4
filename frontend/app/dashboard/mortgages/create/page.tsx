@@ -64,8 +64,18 @@ type AuthUser = {
   id?: number;
   name?: string;
   email?: string;
+  branch_id?: number | null;
   designation?: { id?: number; name?: string | null } | null;
   roles?: Array<{ id?: number; name?: string }>;
+};
+
+type EmployeeLookupRow = {
+  id?: number;
+  first_name?: string;
+  last_name?: string;
+  branch_id?: number | null;
+  designation?: { name?: string | null } | null;
+  user?: { id?: number; name?: string | null; branch_id?: number | null } | null;
 };
 
 type Step =
@@ -141,6 +151,9 @@ export default function CreateMortgage() {
   const [loadingCustomerSuggestions, setLoadingCustomerSuggestions] = useState(false);
   const [customerSuggestions, setCustomerSuggestions] = useState<FinanceCustomerSearchMatch[]>([]);
   const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
+  const [responsibleManagerUserId, setResponsibleManagerUserId] = useState<number | null>(null);
+  const [responsibleManagerName, setResponsibleManagerName] = useState("");
+  const [resolvingResponsibleManager, setResolvingResponsibleManager] = useState(false);
   const widgetPrefix = "mortgages_create_widget_";
   const router = useRouter();
 
@@ -169,6 +182,21 @@ export default function CreateMortgage() {
 
   const displayName = String(authUser?.name || authUser?.email || "User").trim();
   const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || "Staff").trim();
+
+  const normalizeText = useCallback((value: string) => {
+    return String(value || "")
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }, []);
+
+  const isOfficerRole = useMemo(() => {
+    const designation = normalizeText(String(authUser?.designation?.name || ""));
+    const roles = (authUser?.roles || []).map((role) => normalizeText(String(role?.name || "")));
+    return designation.includes("officer") || roles.some((name) => name.includes("officer"));
+  }, [authUser, normalizeText]);
 
   // Customer details
   const [fullName, setFullName] = useState("");
@@ -269,6 +297,73 @@ export default function CreateMortgage() {
       }
     }
   }, [fetchNotificationPreview, router]);
+
+  useEffect(() => {
+    if (!token || !authUser) {
+      return;
+    }
+
+    if (!isOfficerRole) {
+      setResponsibleManagerUserId(null);
+      setResponsibleManagerName("");
+      return;
+    }
+
+    const branchId = Number(authUser.branch_id || 0);
+    if (branchId <= 0) {
+      setResponsibleManagerUserId(null);
+      setResponsibleManagerName("");
+      return;
+    }
+
+    const resolveManager = async () => {
+      try {
+        setResolvingResponsibleManager(true);
+        const response = await axios.get(`${getApiBaseUrl()}/hr/employees`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/json",
+          },
+          params: {
+            per_page: 500,
+          },
+        });
+
+        const rows: EmployeeLookupRow[] = Array.isArray(response.data?.data) ? response.data.data : [];
+        const manager = rows.find((employee) => {
+          const employeeBranchId = Number(
+            employee?.branch_id ?? employee?.user?.branch_id ?? 0
+          );
+          if (employeeBranchId !== branchId) {
+            return false;
+          }
+
+          const designationName = normalizeText(String(employee?.designation?.name || ""));
+          return designationName.includes("branch manager");
+        });
+
+        if (!manager) {
+          setResponsibleManagerUserId(null);
+          setResponsibleManagerName("");
+          return;
+        }
+
+        const managerUserId = Number(manager?.user?.id || 0) || null;
+        const fallbackName = `${String(manager?.first_name || "").trim()} ${String(manager?.last_name || "").trim()}`.trim();
+        const managerName = String(manager?.user?.name || fallbackName).trim();
+
+        setResponsibleManagerUserId(managerUserId);
+        setResponsibleManagerName(managerName);
+      } catch {
+        setResponsibleManagerUserId(null);
+        setResponsibleManagerName("");
+      } finally {
+        setResolvingResponsibleManager(false);
+      }
+    };
+
+    void resolveManager();
+  }, [authUser, isOfficerRole, normalizeText, token]);
 
   async function fetchWidgetPreferences(authToken: string) {
     try {
@@ -635,6 +730,10 @@ export default function CreateMortgage() {
         processing_fee: parseFloat(processingFee || "0"),
         insurance_fee: parseFloat(insuranceFee || "0"),
         penalty_rate: parseFloat(penaltyRate || "0"),
+        entry_officer_name: displayName || undefined,
+        entry_officer_designation: roleName || undefined,
+        responsible_manager_user_id: responsibleManagerUserId || undefined,
+        responsible_manager_name: responsibleManagerName || undefined,
         asset: {
           asset_type: assetType,
           description: normalizedAssetDescription,
@@ -1943,6 +2042,26 @@ export default function CreateMortgage() {
                 <p className="mt-1 text-sm text-slate-600">
                   Review customer, loan, collateral, and uploaded documents before submitting for approval.
                 </p>
+                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className="rounded-xl border border-white/80 bg-white/85 p-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Entering Officer</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-900">{displayName || "-"}</p>
+                    <p className="text-xs text-slate-600">{roleName || "-"}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/80 bg-white/85 p-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Responsible Branch Manager</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-900">
+                      {resolvingResponsibleManager
+                        ? "Detecting..."
+                        : responsibleManagerName || (isOfficerRole ? "Not detected" : "Auto-assigned for officers")}
+                    </p>
+                    <p className="text-xs text-slate-600">
+                      {isOfficerRole
+                        ? "Detected automatically using your branch."
+                        : "Auto manager detection runs when an officer creates this mortgage."}
+                    </p>
+                  </div>
+                </div>
                 <p className="mt-3 text-xs font-semibold text-cyan-800">
                   {progressStats.totalDocs} document{progressStats.totalDocs === 1 ? "" : "s"} attached
                 </p>

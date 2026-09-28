@@ -176,6 +176,20 @@ type DetailsDocumentItem = {
 
 const ACTIVE_LOAN_STATUSES = new Set(['approved', 'released']);
 
+const resolveLoanCode = (loan?: Partial<LoanRequest> | null, fallbackId?: number) => {
+  const directLoanCode = String(loan?.loan_code || '').trim();
+  if (directLoanCode) return directLoanCode;
+
+  const referenceNo = String(loan?.reference_no || '').trim();
+  if (referenceNo) return referenceNo;
+
+  if (fallbackId && fallbackId > 0) {
+    return `LR-${fallbackId}`;
+  }
+
+  return '-';
+};
+
 const buildLoanQrContent = (loan: LoanRequest) => {
   return JSON.stringify(
     {
@@ -287,11 +301,13 @@ export default function ReleasedLoansPage() {
   const [removeConfirmModal, setRemoveConfirmModal] = useState<{
     open: boolean;
     loanId: number | null;
+    loanCode: string;
     customerName: string;
     customerNo: string;
   }>({
     open: false,
     loanId: null,
+    loanCode: '',
     customerName: '',
     customerNo: '',
   });
@@ -473,6 +489,7 @@ export default function ReleasedLoansPage() {
     setRemoveConfirmModal({
       open: true,
       loanId: loan.id,
+      loanCode: resolveLoanCode(loan, loan.id),
       customerName: loan.customer_name,
       customerNo: loan.customer_no,
     });
@@ -482,6 +499,7 @@ export default function ReleasedLoansPage() {
     setRemoveConfirmModal({
       open: false,
       loanId: null,
+      loanCode: '',
       customerName: '',
       customerNo: '',
     });
@@ -497,7 +515,7 @@ export default function ReleasedLoansPage() {
 
     setDocumentsModal({
       open: true,
-      loanCode: loan.customer_no,
+      loanCode: resolveLoanCode(loan, loan.id),
       customerName: loan.customer_name,
       documents: docs,
     });
@@ -1145,6 +1163,7 @@ export default function ReleasedLoansPage() {
   const [scopeFilter, setScopeFilter] = useState('all');
   const [routeFilter, setRouteFilter] = useState('all');
   const [centerFilter, setCenterFilter] = useState('all');
+  const [officerFilter, setOfficerFilter] = useState('all');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [customerNoFilterInput, setCustomerNoFilterInput] = useState('');
@@ -1583,11 +1602,16 @@ export default function ReleasedLoansPage() {
     const customerNoKeyword = normalizeCustomerNo(appliedCustomerNoFilter);
     const selectedRouteId = routeFilter === 'all' ? null : Number(routeFilter);
     const selectedCenterId = centerFilter === 'all' ? null : Number(centerFilter);
+    const selectedOfficer = officerFilter === 'all' ? '' : normalizeText(officerFilter);
 
     return scopedLoans.filter((loan) => {
       if (scopeFilter !== 'all' && loan.loan_scope !== scopeFilter) return false;
       if (selectedRouteId && loan.route?.id !== selectedRouteId) return false;
       if (selectedCenterId && loan.center?.id !== selectedCenterId) return false;
+      if (selectedOfficer) {
+        const loanOfficer = normalizeText(String(loan.field_officer || 'Unassigned'));
+        if (loanOfficer !== selectedOfficer) return false;
+      }
 
       if (customerNoKeyword) {
         const loanCustomerNo = normalizeCustomerNo(String(loan.customer_no || ''));
@@ -1616,7 +1640,7 @@ export default function ReleasedLoansPage() {
 
       return true;
     });
-  }, [scopedLoans, query, appliedCustomerNoFilter, scopeFilter, routeFilter, centerFilter, fromDate, toDate]);
+  }, [scopedLoans, query, appliedCustomerNoFilter, scopeFilter, routeFilter, centerFilter, officerFilter, fromDate, toDate]);
 
   const loanLookup = useMemo(() => {
     const map = new Map<number, LoanRequest>();
@@ -1648,7 +1672,7 @@ export default function ReleasedLoansPage() {
           id: Number(collection.id),
           date: String(collection.collection_date || collection.created_at || ''),
           loanId,
-          loanCode: String(loan?.customer_no || `LR-${loanId}`),
+          loanCode: resolveLoanCode(loan, loanId),
           customerNo: String(loan?.customer_no || '-'),
           customerName: String(loan?.customer_name || '-'),
           fieldOfficer: String(loan?.field_officer || 'Unassigned'),
@@ -1671,10 +1695,18 @@ export default function ReleasedLoansPage() {
   const filteredTransactions = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     const customerNoKeyword = normalizeCustomerNo(appliedCustomerNoFilter);
+    const selectedOfficer = officerFilter === 'all' ? '' : normalizeText(officerFilter);
     const from = fromDate ? new Date(`${fromDate}T00:00:00`) : null;
     const to = toDate ? new Date(`${toDate}T23:59:59`) : null;
 
     return collectionTransactions.filter((row) => {
+      if (selectedOfficer) {
+        const rowOfficer = normalizeText(String(row.fieldOfficer || 'Unassigned'));
+        if (rowOfficer !== selectedOfficer) {
+          return false;
+        }
+      }
+
       if (customerNoKeyword) {
         const rowCustomerNo = normalizeCustomerNo(row.customerNo || '');
         if (!rowCustomerNo.includes(customerNoKeyword)) {
@@ -1701,7 +1733,23 @@ export default function ReleasedLoansPage() {
 
       return true;
     });
-  }, [collectionTransactions, appliedCustomerNoFilter, fromDate, toDate, query]);
+  }, [collectionTransactions, appliedCustomerNoFilter, officerFilter, fromDate, toDate, query]);
+
+  const officerOptions = useMemo(() => {
+    const map = new Map<string, string>();
+
+    scopedLoans.forEach((loan) => {
+      const raw = String(loan.field_officer || '').trim();
+      const label = raw || 'Unassigned';
+      const normalized = normalizeText(label);
+      if (!normalized) return;
+      if (!map.has(normalized)) {
+        map.set(normalized, label);
+      }
+    });
+
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
+  }, [scopedLoans]);
 
   const transactionSummary = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -1740,7 +1788,7 @@ export default function ReleasedLoansPage() {
 
   useEffect(() => {
     setTransactionPage(1);
-  }, [query, appliedCustomerNoFilter, fromDate, toDate, scopeFilter, routeFilter, centerFilter, transactionPageSize]);
+  }, [query, appliedCustomerNoFilter, fromDate, toDate, scopeFilter, routeFilter, centerFilter, officerFilter, transactionPageSize]);
 
   const transactionTotalPages = Math.max(1, Math.ceil(filteredTransactions.length / transactionPageSize));
   const safeTransactionPage = Math.min(transactionPage, transactionTotalPages);
@@ -1771,7 +1819,7 @@ export default function ReleasedLoansPage() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [query, appliedCustomerNoFilter, scopeFilter, routeFilter, centerFilter, fromDate, toDate, pageSize]);
+  }, [query, appliedCustomerNoFilter, scopeFilter, routeFilter, centerFilter, officerFilter, fromDate, toDate, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil(filteredLoans.length / pageSize));
   const safePage = Math.min(currentPage, totalPages);
@@ -1904,7 +1952,11 @@ export default function ReleasedLoansPage() {
   const renderTransactionCellValue = (row: CollectionTransaction, key: (typeof transactionColumns)[number]['key']) => {
     if (key === 'date') return formatTransactionDate(row.date);
     if (key === 'loanCode') return row.loanCode;
-    if (key === 'customerName') return row.customerName;
+    if (key === 'customerName') {
+      const name = String(row.customerName || '-').trim() || '-';
+      const customerNo = String(row.customerNo || '').trim();
+      return customerNo && customerNo !== '-' ? `${name} (${customerNo})` : name;
+    }
     if (key === 'fieldOfficer') return row.fieldOfficer;
     if (key === 'paymentType') return row.paymentType;
     if (key === 'collected') return formatMoney(row.collected);
@@ -2012,7 +2064,7 @@ export default function ReleasedLoansPage() {
         )}
 
         {showFiltersWidget && (
-        <div className="bg-white/90 rounded-2xl shadow-lg border border-cyan-100 p-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-8 gap-3 text-black relative">
+        <div className="bg-white/90 rounded-2xl shadow-lg border border-cyan-100 p-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-9 gap-3 text-black relative">
           <WidgetCloseGate>
             <button
               type="button"
@@ -2088,10 +2140,20 @@ export default function ReleasedLoansPage() {
               <option key={center.id} value={center.id}>{center.name}</option>
             ))}
           </select>
+          <select
+            className="px-3 py-2 rounded-lg border border-cyan-100 text-sm text-black"
+            value={officerFilter}
+            onChange={(e) => setOfficerFilter(e.target.value)}
+          >
+            <option value="all">All Officers</option>
+            {officerOptions.map((officer) => (
+              <option key={officer} value={officer}>{officer}</option>
+            ))}
+          </select>
           <input className="px-3 py-2 rounded-lg border border-cyan-100 text-sm text-black" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
           <input className="px-3 py-2 rounded-lg border border-cyan-100 text-sm text-black" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
           {appliedCustomerNoFilter ? (
-            <p className="xl:col-span-8 text-xs text-cyan-800">
+            <p className="xl:col-span-9 text-xs text-cyan-800">
               Customer No filter active: <span className="font-bold">{appliedCustomerNoFilter}</span>
             </p>
           ) : null}
@@ -2330,7 +2392,7 @@ export default function ReleasedLoansPage() {
                       <div className="min-w-0 flex-1">
                         <h2 className="text-xl font-bold text-slate-900 leading-tight break-words">{loan.customer_name}</h2>
                         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                          <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 font-semibold text-cyan-800">Loan Code: {loan.customer_no}</span>
+                          <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 font-semibold text-cyan-800">Loan Code: {resolveLoanCode(loan, loan.id)} | Customer No: {loan.customer_no || '-'}</span>
                           <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 font-semibold text-emerald-700 capitalize">{loan.status}</span>
                           <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-semibold text-slate-700">
                             {loan.loan_scope === 'center_loan' ? 'Center Loan' : loan.loan_scope === 'route_loan' ? 'Route Loan' : 'Direct Loan'}
@@ -2548,7 +2610,8 @@ export default function ReleasedLoansPage() {
                 Are you sure you want to remove this loan? This action cannot be undone.
               </p>
               <p className="mt-3 text-sm font-semibold text-slate-800">{removeConfirmModal.customerName}</p>
-              <p className="text-xs text-slate-500">Loan Code: {removeConfirmModal.customerNo}</p>
+              <p className="text-xs text-slate-500">Loan Code: {removeConfirmModal.loanCode}</p>
+              <p className="text-xs text-slate-500">Customer No: {removeConfirmModal.customerNo}</p>
               <div className="mt-5 flex justify-end gap-2">
                 <button
                   type="button"
@@ -3137,7 +3200,7 @@ export default function ReleasedLoansPage() {
                 <div>
                   <h3 className="text-xl font-bold text-slate-900">Loan and Customer Full Details</h3>
                   <p className="text-sm text-slate-600 mt-1">
-                    {detailsModal.loan.customer_name} | Loan Code: {detailsModal.loan.customer_no}
+                    {detailsModal.loan.customer_name} | Loan Code: {resolveLoanCode(detailsModal.loan, detailsModal.loan.id)} | Customer No: {detailsModal.loan.customer_no || '-'}
                   </p>
                 </div>
                 <button

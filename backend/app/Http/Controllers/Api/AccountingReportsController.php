@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AccountingExpense;
+use App\Models\AccountingRefund;
 use App\Models\Company;
 use App\Models\CompanyAccount;
 use App\Models\Customer;
@@ -10,10 +12,13 @@ use App\Models\Employee;
 use App\Models\EmployeeWalletCashHandover;
 use App\Models\Finance;
 use App\Models\FinanceCollection;
+use App\Models\LoanRequestCollection;
 use App\Models\LoanRequest;
 use App\Models\EmployeeWalletBankDeposit;
+use App\Models\MicrofinanceLoanCollection;
 use App\Models\MicrofinanceLoanRequest;
 use App\Models\Mortgage;
+use App\Models\MortgagePayment;
 use App\Models\SavingsAccount;
 use App\Models\User;
 use Carbon\Carbon;
@@ -984,24 +989,354 @@ class AccountingReportsController extends Controller
             ->where('is_active', true)
             ->first();
 
-        $ledgerRequest = Request::create('/api/finances/reports/general-ledger', 'GET', [
-            'branch_id' => $branchId,
-            'company_id' => $branchId,
-            'from_date' => $fromDate,
-            'to_date' => $toDate,
-        ]);
-        $ledgerRequest->setUserResolver(fn () => $request->user());
-        $ledgerPayload = app(FinanceController::class)->generalLedgerSnapshot($ledgerRequest)->getData(true);
+        $openingBase = $this->roundMoney((float) ($cashAccount?->opening_balance ?? 0));
+        $openingIn = 0.0;
+        $openingOut = 0.0;
+        $transactions = [];
 
-        $cashLines = collect($ledgerPayload['lines'] ?? [])
-            ->filter(fn (array $line) => in_array($line['account_type'] ?? null, ['cash', CompanyAccount::TYPE_CASH], true)
-                || str_contains(strtolower((string) ($line['account_name'] ?? '')), 'cash'))
-            ->values()
-            ->all();
+        $pushTransaction = static function (
+            array &$target,
+            string $date,
+            string $particulars,
+            string $source,
+            string $reference,
+            string $paymentMethod,
+            float $receipt,
+            float $payment,
+            int $sourceId
+        ): void {
+            $target[] = [
+                'date' => $date,
+                'particulars' => $particulars,
+                'source' => $source,
+                'reference' => $reference,
+                'payment_method' => $paymentMethod,
+                'receipt' => round($receipt, 2),
+                'payment' => round($payment, 2),
+                'source_id' => $sourceId,
+            ];
+        };
 
-        $collectionsLine = collect($cashLines)->first(fn (array $line) => str_contains(strtolower((string) ($line['account_name'] ?? '')), 'collection'));
-        $cashIn = $this->roundMoney((float) ($collectionsLine['period_debit'] ?? collect($cashLines)->sum('period_debit')));
-        $cashOut = $this->roundMoney((float) ($collectionsLine['period_credit'] ?? collect($cashLines)->sum('period_credit')));
+        $loanCashBefore = LoanRequestCollection::query()
+            ->join('loan_requests', 'loan_requests.id', '=', 'loan_request_collections.loan_request_id')
+            ->where('loan_requests.branch_id', $branchId)
+            ->whereDate('loan_request_collections.collection_date', '<', $fromDate)
+            ->whereRaw('LOWER(COALESCE(loan_request_collections.payment_type, ?)) = ?', ['cash', 'cash'])
+            ->sum('loan_request_collections.collected_amount');
+        $openingIn += (float) $loanCashBefore;
+
+        $loanCashRows = LoanRequestCollection::query()
+            ->join('loan_requests', 'loan_requests.id', '=', 'loan_request_collections.loan_request_id')
+            ->where('loan_requests.branch_id', $branchId)
+            ->whereDate('loan_request_collections.collection_date', '>=', $fromDate)
+            ->whereDate('loan_request_collections.collection_date', '<=', $toDate)
+            ->whereRaw('LOWER(COALESCE(loan_request_collections.payment_type, ?)) = ?', ['cash', 'cash'])
+            ->orderBy('loan_request_collections.collection_date')
+            ->orderBy('loan_request_collections.id')
+            ->get([
+                'loan_request_collections.id as id',
+                'loan_request_collections.collection_date as txn_date',
+                'loan_request_collections.collected_amount as amount',
+                'loan_request_collections.payment_type as payment_type',
+                'loan_request_collections.payment_reference as reference',
+                'loan_requests.request_no as loan_reference',
+                'loan_requests.customer_full_name as customer_name',
+            ]);
+
+        foreach ($loanCashRows as $row) {
+            $pushTransaction(
+                $transactions,
+                (string) $row->txn_date,
+                'Instant Loan Collection - ' . trim((string) ($row->customer_name ?? 'Customer')),
+                'loan_collection',
+                (string) ($row->reference ?: $row->loan_reference ?: ('LOAN-' . (int) $row->id)),
+                (string) ($row->payment_type ?: 'cash'),
+                (float) ($row->amount ?? 0),
+                0.0,
+                (int) $row->id
+            );
+        }
+
+        $financeCashBeforeIn = FinanceCollection::query()
+            ->where('branch_id', $branchId)
+            ->whereDate('payment_date', '<', $fromDate)
+            ->whereRaw('LOWER(COALESCE(pay_type, ?)) = ?', ['cash', 'cash'])
+            ->sum('payment_amount');
+        $financeCashBeforeOut = FinanceCollection::query()
+            ->where('branch_id', $branchId)
+            ->whereDate('payment_date', '<', $fromDate)
+            ->whereRaw('LOWER(COALESCE(pay_type, ?)) = ?', ['cash', 'cash'])
+            ->sum('refund_amount');
+        $openingIn += (float) $financeCashBeforeIn;
+        $openingOut += (float) $financeCashBeforeOut;
+
+        $financeCashRows = FinanceCollection::query()
+            ->where('branch_id', $branchId)
+            ->whereDate('payment_date', '>=', $fromDate)
+            ->whereDate('payment_date', '<=', $toDate)
+            ->whereRaw('LOWER(COALESCE(pay_type, ?)) = ?', ['cash', 'cash'])
+            ->orderBy('payment_date')
+            ->orderBy('id')
+            ->get(['id', 'payment_date', 'payment_amount', 'refund_amount', 'pay_type', 'reference_no']);
+
+        foreach ($financeCashRows as $row) {
+            $receiptAmount = (float) ($row->payment_amount ?? 0);
+            if ($receiptAmount > 0) {
+                $pushTransaction(
+                    $transactions,
+                    (string) $row->payment_date,
+                    'Finance Collection',
+                    'finance_collection',
+                    (string) ($row->reference_no ?: ('FIN-' . (int) $row->id)),
+                    (string) ($row->pay_type ?: 'cash'),
+                    $receiptAmount,
+                    0.0,
+                    (int) $row->id
+                );
+            }
+
+            $refundAmount = (float) ($row->refund_amount ?? 0);
+            if ($refundAmount > 0) {
+                $pushTransaction(
+                    $transactions,
+                    (string) $row->payment_date,
+                    'Finance Refund',
+                    'finance_refund',
+                    (string) ($row->reference_no ?: ('FIN-R-' . (int) $row->id)),
+                    (string) ($row->pay_type ?: 'cash'),
+                    0.0,
+                    $refundAmount,
+                    (int) $row->id
+                );
+            }
+        }
+
+        $microCashBefore = MicrofinanceLoanCollection::query()
+            ->join('mf_loan_requests', 'mf_loan_requests.id', '=', 'mf_loan_collections.mf_loan_request_id')
+            ->where('mf_loan_requests.branch_id', $branchId)
+            ->whereDate('mf_loan_collections.collection_date', '<', $fromDate)
+            ->whereNull('mf_loan_collections.deleted_at')
+            ->whereRaw('LOWER(COALESCE(mf_loan_collections.payment_type, ?)) = ?', ['cash', 'cash'])
+            ->sum('mf_loan_collections.collected_amount');
+        $openingIn += (float) $microCashBefore;
+
+        $microCashRows = MicrofinanceLoanCollection::query()
+            ->join('mf_loan_requests', 'mf_loan_requests.id', '=', 'mf_loan_collections.mf_loan_request_id')
+            ->where('mf_loan_requests.branch_id', $branchId)
+            ->whereDate('mf_loan_collections.collection_date', '>=', $fromDate)
+            ->whereDate('mf_loan_collections.collection_date', '<=', $toDate)
+            ->whereNull('mf_loan_collections.deleted_at')
+            ->whereRaw('LOWER(COALESCE(mf_loan_collections.payment_type, ?)) = ?', ['cash', 'cash'])
+            ->orderBy('mf_loan_collections.collection_date')
+            ->orderBy('mf_loan_collections.id')
+            ->get([
+                'mf_loan_collections.id as id',
+                'mf_loan_collections.collection_date as txn_date',
+                'mf_loan_collections.collected_amount as amount',
+                'mf_loan_collections.payment_type as payment_type',
+                'mf_loan_collections.payment_reference as reference',
+                'mf_loan_requests.loan_code as loan_code',
+                'mf_loan_requests.customer_name as customer_name',
+            ]);
+
+        foreach ($microCashRows as $row) {
+            $pushTransaction(
+                $transactions,
+                (string) $row->txn_date,
+                'Microfinance Collection - ' . trim((string) ($row->customer_name ?? 'Customer')),
+                'microfinance_collection',
+                (string) ($row->reference ?: $row->loan_code ?: ('MF-' . (int) $row->id)),
+                (string) ($row->payment_type ?: 'cash'),
+                (float) ($row->amount ?? 0),
+                0.0,
+                (int) $row->id
+            );
+        }
+
+        $mortgageCashBefore = MortgagePayment::query()
+            ->where('branch_id', $branchId)
+            ->whereDate('paid_date', '<', $fromDate)
+            ->whereRaw('LOWER(COALESCE(payment_method, ?)) = ?', ['cash', 'cash'])
+            ->sum('amount');
+        $openingIn += (float) $mortgageCashBefore;
+
+        $mortgageCashRows = MortgagePayment::query()
+            ->where('branch_id', $branchId)
+            ->whereDate('paid_date', '>=', $fromDate)
+            ->whereDate('paid_date', '<=', $toDate)
+            ->whereRaw('LOWER(COALESCE(payment_method, ?)) = ?', ['cash', 'cash'])
+            ->orderBy('paid_date')
+            ->orderBy('id')
+            ->get(['id', 'paid_date', 'amount', 'payment_method', 'remarks', 'mortgage_id']);
+
+        foreach ($mortgageCashRows as $row) {
+            $pushTransaction(
+                $transactions,
+                (string) $row->paid_date,
+                'Mortgage Collection',
+                'mortgage_collection',
+                'MORT-' . (int) ($row->mortgage_id ?? 0),
+                (string) ($row->payment_method ?: 'cash'),
+                (float) ($row->amount ?? 0),
+                0.0,
+                (int) $row->id
+            );
+        }
+
+        $expenseBefore = AccountingExpense::query()
+            ->where('company_id', $branchId)
+            ->whereDate('expense_date', '<', $fromDate)
+            ->whereIn('payment_method', [AccountingExpense::PAYMENT_CASH, AccountingExpense::PAYMENT_MAIN])
+            ->sum('amount');
+        $openingOut += (float) $expenseBefore;
+
+        $expenseRows = AccountingExpense::query()
+            ->where('company_id', $branchId)
+            ->whereDate('expense_date', '>=', $fromDate)
+            ->whereDate('expense_date', '<=', $toDate)
+            ->whereIn('payment_method', [AccountingExpense::PAYMENT_CASH, AccountingExpense::PAYMENT_MAIN])
+            ->orderBy('expense_date')
+            ->orderBy('id')
+            ->get(['id', 'expense_date', 'category', 'title', 'amount', 'payment_method', 'reference_no']);
+
+        foreach ($expenseRows as $row) {
+            $pushTransaction(
+                $transactions,
+                (string) $row->expense_date,
+                'Expense - ' . trim((string) ($row->title ?: $row->category ?: 'Expense')),
+                'expense',
+                (string) ($row->reference_no ?: ('EXP-' . (int) $row->id)),
+                (string) ($row->payment_method ?: 'cash'),
+                0.0,
+                (float) ($row->amount ?? 0),
+                (int) $row->id
+            );
+        }
+
+        $refundBefore = AccountingRefund::query()
+            ->where('company_id', $branchId)
+            ->whereDate('refund_date', '<', $fromDate)
+            ->where('payment_method', AccountingRefund::PAYMENT_CASH)
+            ->sum('amount');
+        $openingIn += (float) $refundBefore;
+
+        $refundRows = AccountingRefund::query()
+            ->where('company_id', $branchId)
+            ->whereDate('refund_date', '>=', $fromDate)
+            ->whereDate('refund_date', '<=', $toDate)
+            ->where('payment_method', AccountingRefund::PAYMENT_CASH)
+            ->orderBy('refund_date')
+            ->orderBy('id')
+            ->get(['id', 'refund_date', 'title', 'amount', 'payment_method', 'reference_no']);
+
+        foreach ($refundRows as $row) {
+            $pushTransaction(
+                $transactions,
+                (string) $row->refund_date,
+                'Refund Received - ' . trim((string) ($row->title ?: 'Refund')),
+                'refund',
+                (string) ($row->reference_no ?: ('REF-' . (int) $row->id)),
+                (string) ($row->payment_method ?: 'cash'),
+                (float) ($row->amount ?? 0),
+                0.0,
+                (int) $row->id
+            );
+        }
+
+        $handoverBefore = EmployeeWalletCashHandover::query()
+            ->where('branch_id', $branchId)
+            ->whereDate('handover_date', '<', $fromDate)
+            ->where('status', 'approved')
+            ->sum('amount');
+        $openingIn += (float) $handoverBefore;
+
+        $handoverRows = EmployeeWalletCashHandover::query()
+            ->where('branch_id', $branchId)
+            ->whereDate('handover_date', '>=', $fromDate)
+            ->whereDate('handover_date', '<=', $toDate)
+            ->where('status', 'approved')
+            ->orderBy('handover_date')
+            ->orderBy('id')
+            ->get(['id', 'handover_date', 'amount', 'note']);
+
+        foreach ($handoverRows as $row) {
+            $pushTransaction(
+                $transactions,
+                (string) $row->handover_date,
+                'Collector Cash Handover',
+                'cash_handover',
+                'HANDOVER-' . (int) $row->id,
+                'cash',
+                (float) ($row->amount ?? 0),
+                0.0,
+                (int) $row->id
+            );
+        }
+
+        $bankDepositBefore = EmployeeWalletBankDeposit::query()
+            ->where('branch_id', $branchId)
+            ->whereDate('deposit_date', '<', $fromDate)
+            ->where('status', 'approved')
+            ->sum('amount');
+        $openingOut += (float) $bankDepositBefore;
+
+        $bankDepositRows = EmployeeWalletBankDeposit::query()
+            ->where('branch_id', $branchId)
+            ->whereDate('deposit_date', '>=', $fromDate)
+            ->whereDate('deposit_date', '<=', $toDate)
+            ->where('status', 'approved')
+            ->orderBy('deposit_date')
+            ->orderBy('id')
+            ->get(['id', 'deposit_date', 'amount', 'note']);
+
+        foreach ($bankDepositRows as $row) {
+            $pushTransaction(
+                $transactions,
+                (string) $row->deposit_date,
+                'Cash Deposited to Bank',
+                'bank_deposit',
+                'DEP-' . (int) $row->id,
+                'cash',
+                0.0,
+                (float) ($row->amount ?? 0),
+                (int) $row->id
+            );
+        }
+
+        usort($transactions, static function (array $a, array $b): int {
+            $dateCompare = strcmp((string) ($a['date'] ?? ''), (string) ($b['date'] ?? ''));
+            if ($dateCompare !== 0) {
+                return $dateCompare;
+            }
+
+            return ((int) ($a['source_id'] ?? 0)) <=> ((int) ($b['source_id'] ?? 0));
+        });
+
+        $openingBalance = $this->roundMoney($openingBase + $openingIn - $openingOut);
+        $running = $openingBalance;
+        $cashIn = 0.0;
+        $cashOut = 0.0;
+
+        $lines = collect($transactions)->map(function (array $entry) use (&$running, &$cashIn, &$cashOut) {
+            $receipt = (float) ($entry['receipt'] ?? 0);
+            $payment = (float) ($entry['payment'] ?? 0);
+            $cashIn += $receipt;
+            $cashOut += $payment;
+            $running = round($running + $receipt - $payment, 2);
+
+            return [
+                'date' => (string) ($entry['date'] ?? ''),
+                'particulars' => (string) ($entry['particulars'] ?? ''),
+                'source' => (string) ($entry['source'] ?? ''),
+                'reference' => (string) ($entry['reference'] ?? ''),
+                'payment_method' => (string) ($entry['payment_method'] ?? ''),
+                'receipt' => $this->roundMoney($receipt),
+                'payment' => $this->roundMoney($payment),
+                'running_balance' => $this->roundMoney($running),
+            ];
+        })->values()->all();
+
+        $closingBalance = $this->roundMoney($openingBalance + $cashIn - $cashOut);
 
         return response()->json([
             'company' => [
@@ -1019,11 +1354,13 @@ class AccountingReportsController extends Controller
                 'current_balance' => $this->roundMoney((float) ($cashAccount->current_balance ?? 0)),
             ] : null,
             'summary' => [
-                'cash_received' => $cashIn,
-                'cash_paid' => $cashOut,
+                'opening_balance' => $openingBalance,
+                'cash_received' => $this->roundMoney($cashIn),
+                'cash_paid' => $this->roundMoney($cashOut),
                 'net_movement' => $this->roundMoney($cashIn - $cashOut),
+                'closing_balance' => $closingBalance,
             ],
-            'lines' => $cashLines,
+            'lines' => $lines,
         ]);
     }
 
