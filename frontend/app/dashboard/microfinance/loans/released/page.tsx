@@ -1,7 +1,7 @@
 'use client';
 
 import axios from 'axios';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getApiBaseUrl, getBackendOrigin } from '@/lib/api';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
@@ -410,6 +410,10 @@ export default function ReleasedLoansPage() {
   const [downloadingQrId, setDownloadingQrId] = useState<number | null>(null);
   const [loanQrByLoanId, setLoanQrByLoanId] = useState<Record<number, string>>({});
   const [editStep, setEditStep] = useState(1);
+  const loansAbortRef = useRef<AbortController | null>(null);
+  const authSyncAbortRef = useRef<AbortController | null>(null);
+  const masterDataAbortRef = useRef<AbortController | null>(null);
+  const masterDataLoadedRef = useRef(false);
 
   const openModal = (message: string, title = 'Notice') => {
     setModal({ open: true, title, message });
@@ -590,6 +594,8 @@ export default function ReleasedLoansPage() {
       openModal('Only Finance Manager, Branch Manager, Managing Director, Business Owner, and Admin can edit loans.', 'Access Denied');
       return;
     }
+
+    void loadMasterData();
 
     const refundableAmount = Number(loan.refundable_amount || 0);
     const totalPaidAmount = Number((loan as LoanRequest & { total_paid_amount?: string | number | null }).total_paid_amount || 0);
@@ -1141,8 +1147,24 @@ export default function ReleasedLoansPage() {
   const [centerFilter, setCenterFilter] = useState('all');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const [customerNoFilterInput, setCustomerNoFilterInput] = useState('');
+  const [appliedCustomerNoFilter, setAppliedCustomerNoFilter] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const [transactionsCollapsed, setTransactionsCollapsed] = useState(true);
+  const [transactionPage, setTransactionPage] = useState(1);
+  const [transactionPageSize, setTransactionPageSize] = useState(20);
+
+  const normalizeCustomerNo = (value: string) => String(value || '').trim().toLowerCase();
+
+  const applyCustomerNoFilter = () => {
+    setAppliedCustomerNoFilter(normalizeCustomerNo(customerNoFilterInput));
+  };
+
+  const clearCustomerNoFilter = () => {
+    setCustomerNoFilterInput('');
+    setAppliedCustomerNoFilter('');
+  };
 
   const fetchNotificationPreview = async (authToken: string) => {
     try {
@@ -1181,6 +1203,52 @@ export default function ReleasedLoansPage() {
       Accept: 'application/json',
     }),
     [token]
+  );
+
+  const loadMasterData = useCallback(
+    async (force = false) => {
+      if (!token) return;
+      if (masterDataLoadedRef.current && !force) return;
+
+      masterDataAbortRef.current?.abort();
+      const controller = new AbortController();
+      masterDataAbortRef.current = controller;
+
+      try {
+        const [routeRes, centerRes, groupRes, employeeRes] = await Promise.all([
+          axios.get(`${getApiBaseUrl()}/microfinance/settings/routes`, { headers, signal: controller.signal }),
+          axios.get(`${getApiBaseUrl()}/microfinance/settings/centers`, { headers, signal: controller.signal }),
+          axios.get(`${getApiBaseUrl()}/microfinance/settings/groups`, { headers, signal: controller.signal }),
+          axios.get(`${getApiBaseUrl()}/hr/employees`, { headers, signal: controller.signal }),
+        ]);
+
+        setRoutes(Array.isArray(routeRes.data) ? routeRes.data : []);
+        setCenters(Array.isArray(centerRes.data) ? centerRes.data : []);
+        setGroups(Array.isArray(groupRes.data) ? groupRes.data : []);
+
+        const employeeRows = Array.isArray(employeeRes.data?.data) ? employeeRes.data.data : [];
+        const mapped: EmployeeOption[] = employeeRows
+          .map((emp: any) => ({
+            id: Number(emp?.id || 0),
+            name: `${emp?.first_name || ''} ${emp?.last_name || ''}`.trim() || emp?.email || '',
+            designation: String(emp?.designation?.name || ''),
+          }))
+          .filter((emp: EmployeeOption) => emp.id > 0 && emp.name);
+
+        const managerOnly = mapped.filter((emp) => /manager/i.test(emp.designation));
+        const officerOnly = mapped.filter((emp) => /officer/i.test(emp.designation));
+
+        setManagers(managerOnly.length > 0 ? managerOnly : mapped);
+        setFieldOfficers(officerOnly.length > 0 ? officerOnly : mapped);
+        masterDataLoadedRef.current = true;
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.code === 'ERR_CANCELED') {
+          return;
+        }
+        // Keep defaults empty when master-data loading fails.
+      }
+    },
+    [token, headers]
   );
 
   const normalizeText = (value: string) =>
@@ -1312,8 +1380,13 @@ export default function ReleasedLoansPage() {
     if (!token) return;
 
     const syncAuthUser = async () => {
+      authSyncAbortRef.current?.abort();
+      const controller = new AbortController();
+      authSyncAbortRef.current = controller;
+
       try {
         const response = await axios.get(`${getApiBaseUrl()}/user`, {
+          signal: controller.signal,
           headers: {
             Authorization: `Bearer ${token}`,
             Accept: 'application/json',
@@ -1322,7 +1395,10 @@ export default function ReleasedLoansPage() {
 
         setAuthUser(response.data || null);
         localStorage.setItem('auth_user', JSON.stringify(response.data || null));
-      } catch {
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.code === 'ERR_CANCELED') {
+          return;
+        }
         // Keep cached auth user when refresh fails.
       }
     };
@@ -1334,37 +1410,50 @@ export default function ReleasedLoansPage() {
     if (!token) return;
 
     const loadApprovedLoans = async () => {
+      loansAbortRef.current?.abort();
+      const controller = new AbortController();
+      loansAbortRef.current = controller;
+
       setLoading(true);
       setCollectionsError('');
       try {
         const [loanRes, collectionRes] = await Promise.all([
           axios.get(`${getApiBaseUrl()}/microfinance/loan-requests`, {
+            signal: controller.signal,
             headers,
             params: {
+              status: 'approved,released',
               ...(isCollectionOfficer && preferredCollectionOfficerName
                 ? { field_officer: preferredCollectionOfficerName }
                 : {}),
             },
           }),
-          axios.get(`${getApiBaseUrl()}/microfinance/collections`, { headers }),
+          axios.get(`${getApiBaseUrl()}/microfinance/collections`, {
+            signal: controller.signal,
+            headers,
+            params: { compact: 1 },
+          }),
         ]);
 
         const loanRows = Array.isArray(loanRes.data) ? loanRes.data : [];
-        setLoans(
-          loanRows.filter((loan: LoanRequest) => ACTIVE_LOAN_STATUSES.has(String(loan.status || '').toLowerCase()))
-        );
+        setLoans(loanRows.filter((loan: LoanRequest) => ACTIVE_LOAN_STATUSES.has(String(loan.status || '').toLowerCase())));
         setCollections(Array.isArray(collectionRes.data) ? collectionRes.data : []);
-      } catch {
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.code === 'ERR_CANCELED') {
+          return;
+        }
         setLoans([]);
         setCollections([]);
         setCollectionsError('Failed to load loans or collection transactions.');
         openModal('Failed to load approved loans.', 'Error');
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     };
 
-    loadApprovedLoans();
+    void loadApprovedLoans();
   }, [token, headers, isCollectionOfficer, preferredCollectionOfficerName]);
 
   const scopedLoans = useMemo(() => {
@@ -1387,42 +1476,12 @@ export default function ReleasedLoansPage() {
   }, [loans, isCollectionOfficer, collectionOfficerNameCandidates]);
 
   useEffect(() => {
-    if (!token) return;
-
-    const loadMasterData = async () => {
-      try {
-        const [routeRes, centerRes, groupRes, employeeRes] = await Promise.all([
-          axios.get(`${getApiBaseUrl()}/microfinance/settings/routes`, { headers }),
-          axios.get(`${getApiBaseUrl()}/microfinance/settings/centers`, { headers }),
-          axios.get(`${getApiBaseUrl()}/microfinance/settings/groups`, { headers }),
-          axios.get(`${getApiBaseUrl()}/hr/employees`, { headers }),
-        ]);
-
-        setRoutes(Array.isArray(routeRes.data) ? routeRes.data : []);
-        setCenters(Array.isArray(centerRes.data) ? centerRes.data : []);
-        setGroups(Array.isArray(groupRes.data) ? groupRes.data : []);
-
-        const employeeRows = Array.isArray(employeeRes.data?.data) ? employeeRes.data.data : [];
-        const mapped: EmployeeOption[] = employeeRows
-          .map((emp: any) => ({
-            id: Number(emp?.id || 0),
-            name: `${emp?.first_name || ''} ${emp?.last_name || ''}`.trim() || emp?.email || '',
-            designation: String(emp?.designation?.name || ''),
-          }))
-          .filter((emp: EmployeeOption) => emp.id > 0 && emp.name);
-
-        const managerOnly = mapped.filter((emp) => /manager/i.test(emp.designation));
-        const officerOnly = mapped.filter((emp) => /officer/i.test(emp.designation));
-
-        setManagers(managerOnly.length > 0 ? managerOnly : mapped);
-        setFieldOfficers(officerOnly.length > 0 ? officerOnly : mapped);
-      } catch {
-        // keep fallbacks empty
-      }
+    return () => {
+      loansAbortRef.current?.abort();
+      authSyncAbortRef.current?.abort();
+      masterDataAbortRef.current?.abort();
     };
-
-    loadMasterData();
-  }, [token, headers]);
+  }, []);
 
   const routeOptions = useMemo(() => {
     const routeMap = new Map<number, string>();
@@ -1521,6 +1580,7 @@ export default function ReleasedLoansPage() {
 
   const filteredLoans = useMemo(() => {
     const keyword = query.trim().toLowerCase();
+    const customerNoKeyword = normalizeCustomerNo(appliedCustomerNoFilter);
     const selectedRouteId = routeFilter === 'all' ? null : Number(routeFilter);
     const selectedCenterId = centerFilter === 'all' ? null : Number(centerFilter);
 
@@ -1528,6 +1588,11 @@ export default function ReleasedLoansPage() {
       if (scopeFilter !== 'all' && loan.loan_scope !== scopeFilter) return false;
       if (selectedRouteId && loan.route?.id !== selectedRouteId) return false;
       if (selectedCenterId && loan.center?.id !== selectedCenterId) return false;
+
+      if (customerNoKeyword) {
+        const loanCustomerNo = normalizeCustomerNo(String(loan.customer_no || ''));
+        if (!loanCustomerNo.includes(customerNoKeyword)) return false;
+      }
 
       if (fromDate && loan.loan_request_date < fromDate) return false;
       if (toDate && loan.loan_request_date > toDate) return false;
@@ -1551,7 +1616,7 @@ export default function ReleasedLoansPage() {
 
       return true;
     });
-  }, [scopedLoans, query, scopeFilter, routeFilter, centerFilter, fromDate, toDate]);
+  }, [scopedLoans, query, appliedCustomerNoFilter, scopeFilter, routeFilter, centerFilter, fromDate, toDate]);
 
   const loanLookup = useMemo(() => {
     const map = new Map<number, LoanRequest>();
@@ -1605,10 +1670,18 @@ export default function ReleasedLoansPage() {
 
   const filteredTransactions = useMemo(() => {
     const keyword = query.trim().toLowerCase();
+    const customerNoKeyword = normalizeCustomerNo(appliedCustomerNoFilter);
     const from = fromDate ? new Date(`${fromDate}T00:00:00`) : null;
     const to = toDate ? new Date(`${toDate}T23:59:59`) : null;
 
     return collectionTransactions.filter((row) => {
+      if (customerNoKeyword) {
+        const rowCustomerNo = normalizeCustomerNo(row.customerNo || '');
+        if (!rowCustomerNo.includes(customerNoKeyword)) {
+          return false;
+        }
+      }
+
       const rowDate = row.date ? new Date(row.date) : null;
       if (from && rowDate && !Number.isNaN(rowDate.getTime()) && rowDate < from) {
         return false;
@@ -1628,7 +1701,7 @@ export default function ReleasedLoansPage() {
 
       return true;
     });
-  }, [collectionTransactions, fromDate, toDate, query]);
+  }, [collectionTransactions, appliedCustomerNoFilter, fromDate, toDate, query]);
 
   const transactionSummary = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -1665,6 +1738,18 @@ export default function ReleasedLoansPage() {
     };
   }, [filteredTransactions]);
 
+  useEffect(() => {
+    setTransactionPage(1);
+  }, [query, appliedCustomerNoFilter, fromDate, toDate, scopeFilter, routeFilter, centerFilter, transactionPageSize]);
+
+  const transactionTotalPages = Math.max(1, Math.ceil(filteredTransactions.length / transactionPageSize));
+  const safeTransactionPage = Math.min(transactionPage, transactionTotalPages);
+  const transactionStartIndex = (safeTransactionPage - 1) * transactionPageSize;
+  const paginatedTransactions = filteredTransactions.slice(
+    transactionStartIndex,
+    transactionStartIndex + transactionPageSize
+  );
+
   const formatMoney = (value: number) =>
     Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -1686,7 +1771,7 @@ export default function ReleasedLoansPage() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [query, scopeFilter, routeFilter, centerFilter, fromDate, toDate, pageSize]);
+  }, [query, appliedCustomerNoFilter, scopeFilter, routeFilter, centerFilter, fromDate, toDate, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil(filteredLoans.length / pageSize));
   const safePage = Math.min(currentPage, totalPages);
@@ -1927,7 +2012,7 @@ export default function ReleasedLoansPage() {
         )}
 
         {showFiltersWidget && (
-        <div className="bg-white/90 rounded-2xl shadow-lg border border-cyan-100 p-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3 text-black relative">
+        <div className="bg-white/90 rounded-2xl shadow-lg border border-cyan-100 p-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-8 gap-3 text-black relative">
           <WidgetCloseGate>
             <button
               type="button"
@@ -1944,6 +2029,36 @@ export default function ReleasedLoansPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
+          <div className="xl:col-span-2 flex items-center gap-2">
+            <input
+              className="w-full px-3 py-2 rounded-lg border border-cyan-100 text-sm text-black"
+              placeholder="Filter by customer no"
+              value={customerNoFilterInput}
+              onChange={(e) => setCustomerNoFilterInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  applyCustomerNoFilter();
+                }
+              }}
+            />
+            <button
+              type="button"
+              onClick={applyCustomerNoFilter}
+              className="shrink-0 rounded-lg bg-cyan-600 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700"
+            >
+              Filter
+            </button>
+            {appliedCustomerNoFilter ? (
+              <button
+                type="button"
+                onClick={clearCustomerNoFilter}
+                className="shrink-0 rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-xs font-semibold text-cyan-800 hover:bg-cyan-100"
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
           <select className="px-3 py-2 rounded-lg border border-cyan-100 text-sm text-black" value={scopeFilter} onChange={(e) => setScopeFilter(e.target.value)}>
             <option value="all">All Scopes</option>
             <option value="center_loan">Center Loan</option>
@@ -1975,6 +2090,11 @@ export default function ReleasedLoansPage() {
           </select>
           <input className="px-3 py-2 rounded-lg border border-cyan-100 text-sm text-black" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
           <input className="px-3 py-2 rounded-lg border border-cyan-100 text-sm text-black" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+          {appliedCustomerNoFilter ? (
+            <p className="xl:col-span-8 text-xs text-cyan-800">
+              Customer No filter active: <span className="font-bold">{appliedCustomerNoFilter}</span>
+            </p>
+          ) : null}
         </div>
         )}
 
@@ -1997,96 +2117,153 @@ export default function ReleasedLoansPage() {
                 Payment history for active loans. Profit follows interest realized on each collection (same as mortgage profit report).
               </p>
             </div>
-            <p className="text-sm text-gray-600">
-              Showing <span className="font-bold text-cyan-700">{transactionSummary.transactionCount}</span> transaction(s)
-            </p>
+            <div className="flex items-center gap-2 self-start sm:self-auto">
+              <p className="text-sm text-gray-600">
+                Showing <span className="font-bold text-cyan-700">{transactionSummary.transactionCount}</span> transaction(s)
+              </p>
+              <button
+                type="button"
+                onClick={() => setTransactionsCollapsed((prev) => !prev)}
+                className="rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-semibold text-cyan-800 hover:bg-cyan-100"
+              >
+                {transactionsCollapsed ? 'Expand' : 'Collapse'}
+              </button>
+            </div>
           </div>
 
-          {collectionsError ? (
-            <p className="text-sm text-rose-600">{collectionsError}</p>
-          ) : null}
-
-          {visibleTransactionCards.length === 0 ? (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              All transaction summary cards are hidden. Restore hidden widgets from dashboard.
+          {transactionsCollapsed ? (
+            <div className="rounded-xl border border-cyan-100 bg-cyan-50/70 p-4 text-sm text-cyan-900">
+              Transaction table is collapsed. Expand to view recent transaction pages.
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
-              {visibleTransactionCards.map((card) => (
-                <div key={card.key} className={`${card.cardClass} relative`}>
-                  <WidgetCloseGate>
-                    <button
-                      type="button"
-                      onClick={() => void hideWidget(`${widgetPrefix}${card.key}`)}
-                      className="absolute right-2 top-2 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-[10px] font-bold text-slate-600 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
-                      aria-label={`Hide ${card.title} summary widget`}
-                    >
-                      ×
-                    </button>
-                  </WidgetCloseGate>
-                  <p className={card.titleClass}>{card.title}</p>
-                  <p className={card.valueClass}>{card.value}</p>
-                  {card.note ? <p className={card.noteClass}>{card.note}</p> : null}
+            <>
+
+              {collectionsError ? (
+                <p className="text-sm text-rose-600">{collectionsError}</p>
+              ) : null}
+
+              {visibleTransactionCards.length === 0 ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                  All transaction summary cards are hidden. Restore hidden widgets from dashboard.
                 </div>
-              ))}
-            </div>
-          )}
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
+                  {visibleTransactionCards.map((card) => (
+                    <div key={card.key} className={`${card.cardClass} relative`}>
+                      <WidgetCloseGate>
+                        <button
+                          type="button"
+                          onClick={() => void hideWidget(`${widgetPrefix}${card.key}`)}
+                          className="absolute right-2 top-2 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-[10px] font-bold text-slate-600 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
+                          aria-label={`Hide ${card.title} summary widget`}
+                        >
+                          ×
+                        </button>
+                      </WidgetCloseGate>
+                      <p className={card.titleClass}>{card.title}</p>
+                      <p className={card.valueClass}>{card.value}</p>
+                      {card.note ? <p className={card.noteClass}>{card.note}</p> : null}
+                    </div>
+                  ))}
+                </div>
+              )}
 
-          {visibleTransactionColumns.length === 0 ? (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              All transaction table columns are hidden. Restore hidden widgets from dashboard.
-            </div>
-          ) : (
-            <div className="overflow-x-auto rounded-xl border border-slate-200">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="bg-red-700 text-left text-white">
-                    {visibleTransactionColumns.map((column) => (
-                      <th key={column.key} className={`${column.headerClass} relative`}>
-                        {column.label}
-                        <WidgetCloseGate>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              void hideWidget(`${widgetPrefix}txn_col_${column.key}`);
-                            }}
-                            className="absolute right-1 top-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-white/70 bg-white/20 text-[10px] font-bold text-white transition hover:bg-white hover:text-rose-700"
-                            aria-label={`Hide ${column.label} column`}
-                          >
-                            ×
-                          </button>
-                        </WidgetCloseGate>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredTransactions.length === 0 ? (
-                    <tr>
-                      <td colSpan={visibleTransactionColumns.length} className="px-3 py-8 text-center text-slate-500">
-                        No collection transactions found for the current filters.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredTransactions.slice(0, 50).map((row) => (
-                      <tr key={row.id} className="border-t border-slate-100 odd:bg-white even:bg-slate-50/60">
-                        {visibleTransactionColumns.map((column) => (
-                          <td key={`${row.id}-${column.key}`} className={column.cellClass}>
-                            {renderTransactionCellValue(row, column.key)}
-                          </td>
-                        ))}
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+              {visibleTransactionColumns.length === 0 ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                  All transaction table columns are hidden. Restore hidden widgets from dashboard.
+                </div>
+              ) : (
+                <>
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="bg-red-700 text-left text-white">
+                          {visibleTransactionColumns.map((column) => (
+                            <th key={column.key} className={`${column.headerClass} relative`}>
+                              {column.label}
+                              <WidgetCloseGate>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    void hideWidget(`${widgetPrefix}txn_col_${column.key}`);
+                                  }}
+                                  className="absolute right-1 top-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-white/70 bg-white/20 text-[10px] font-bold text-white transition hover:bg-white hover:text-rose-700"
+                                  aria-label={`Hide ${column.label} column`}
+                                >
+                                  ×
+                                </button>
+                              </WidgetCloseGate>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredTransactions.length === 0 ? (
+                          <tr>
+                            <td colSpan={visibleTransactionColumns.length} className="px-3 py-8 text-center text-slate-500">
+                              No collection transactions found for the current filters.
+                            </td>
+                          </tr>
+                        ) : (
+                          paginatedTransactions.map((row) => (
+                            <tr key={row.id} className="border-t border-slate-100 odd:bg-white even:bg-slate-50/60">
+                              {visibleTransactionColumns.map((column) => (
+                                <td key={`${row.id}-${column.key}`} className={column.cellClass}>
+                                  {renderTransactionCellValue(row, column.key)}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {filteredTransactions.length > 0 ? (
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-xs text-slate-600">
+                        Showing {transactionStartIndex + 1}-{Math.min(transactionStartIndex + transactionPageSize, filteredTransactions.length)} of {filteredTransactions.length} transactions
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-slate-600">Rows</label>
+                        <select
+                          className="rounded-md border border-cyan-100 bg-white px-2 py-1 text-xs text-black"
+                          value={transactionPageSize}
+                          onChange={(e) => setTransactionPageSize(Number(e.target.value))}
+                        >
+                          <option value={10}>10</option>
+                          <option value={20}>20</option>
+                          <option value={50}>50</option>
+                          <option value={100}>100</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => setTransactionPage((prev) => Math.max(1, prev - 1))}
+                          disabled={safeTransactionPage === 1}
+                          className="rounded-md border border-cyan-100 bg-white px-2.5 py-1 text-xs text-slate-700 disabled:opacity-50"
+                        >
+                          Prev
+                        </button>
+                        <span className="text-xs font-semibold text-slate-700">
+                          {safeTransactionPage} / {transactionTotalPages}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setTransactionPage((prev) => Math.min(transactionTotalPages, prev + 1))}
+                          disabled={safeTransactionPage >= transactionTotalPages}
+                          className="rounded-md border border-cyan-100 bg-white px-2.5 py-1 text-xs text-slate-700 disabled:opacity-50"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </>
           )}
-          {filteredTransactions.length > 50 ? (
-            <p className="text-xs text-slate-500">Showing latest 50 of {filteredTransactions.length} transactions. Use date filters to narrow results.</p>
-          ) : null}
         </div>
         )}
 

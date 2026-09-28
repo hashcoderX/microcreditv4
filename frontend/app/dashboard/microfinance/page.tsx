@@ -498,14 +498,19 @@ export default function MicrofinanceDashboard() {
       permissionTokens: ['recovery report', '/dashboard/microfinance/reports/recovery'],
     },
     {
-      key: 'mf_widget_report_not_paid_customers',
-      name: 'Not Paid Customer Report',
+      key: 'mf_widget_report_outstanding_customers',
+      name: 'Outstanding Customer Report',
       icon: '📋',
       color: 'from-rose-500 to-orange-500',
       bgColor: 'from-rose-50 to-orange-50',
       description: 'List customers with pending loan balances and unpaid installments.',
-      path: '/dashboard/microfinance/reports/not-paid-customers',
-      permissionTokens: ['not paid customer report', '/dashboard/microfinance/reports/not-paid-customers'],
+      path: '/dashboard/microfinance/reports/outstanding-customers',
+      permissionTokens: [
+        'outstanding customer report',
+        'not paid customer report',
+        '/dashboard/microfinance/reports/outstanding-customers',
+        '/dashboard/microfinance/reports/not-paid-customers',
+      ],
     },
     {
       key: 'mf_widget_report_year_end_summary',

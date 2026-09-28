@@ -34,10 +34,17 @@ type AuthUser = {
 
 const API_BASE = getApiBaseUrl();
 
+const isUnauthorizedError = (error: unknown): boolean =>
+  axios.isAxiosError(error) && (error.response?.status === 401 || error.response?.status === 403);
+
 export default function MicrofinanceActiveMembersReportPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const branchId = searchParams.get('branch_id') || '';
+  const normalizedBranchId = useMemo(() => {
+    const parsed = Number(branchId);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }, [branchId]);
   const [token, setToken] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -53,6 +60,12 @@ export default function MicrofinanceActiveMembersReportPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'approved' | 'released'>('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(15);
+
+  const handleUnauthorized = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('auth_user');
+    router.replace('/');
+  };
 
 
   const fetchWidgetPreferences = async (authToken: string) => {
@@ -72,7 +85,11 @@ export default function MicrofinanceActiveMembersReportPage() {
         if (row?.is_visible === false) nextHidden.add(key);
       }
       setHiddenWidgetKeys(nextHidden);
-    } catch {
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        handleUnauthorized();
+        return;
+      }
       setHiddenWidgetKeys(new Set());
     } finally {
       setLoadingWidgets(false);
@@ -93,7 +110,11 @@ export default function MicrofinanceActiveMembersReportPage() {
         }
       );
       return true;
-    } catch {
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        handleUnauthorized();
+        return false;
+      }
       return false;
     }
   };
@@ -145,9 +166,7 @@ export default function MicrofinanceActiveMembersReportPage() {
             Authorization: `Bearer ${token}`,
             Accept: 'application/json',
           },
-          params: {
-            branch_id: branchId,
-          },
+          params: normalizedBranchId ? { branch_id: normalizedBranchId } : undefined,
         });
 
         const apiRows: unknown[] = Array.isArray(response.data?.rows) ? response.data.rows : [];
@@ -170,7 +189,11 @@ export default function MicrofinanceActiveMembersReportPage() {
         });
 
         setRows(mapped);
-      } catch {
+      } catch (error) {
+        if (isUnauthorizedError(error)) {
+          handleUnauthorized();
+          return;
+        }
         setRows([]);
       } finally {
         setLoading(false);
@@ -178,7 +201,7 @@ export default function MicrofinanceActiveMembersReportPage() {
     };
 
     loadReport();
-  }, [token, branchId]);
+  }, [token, normalizedBranchId]);
 
   const officerOptions = useMemo(() => {
     return Array.from(new Set(rows.map((row) => row.fieldOfficer))).sort((a, b) => a.localeCompare(b));

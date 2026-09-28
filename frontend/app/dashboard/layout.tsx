@@ -108,7 +108,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           }
           return;
         }
-      } catch {
+      } catch (error) {
+        if (axios.isAxiosError(error) && (error.response?.status === 401 || error.response?.status === 403)) {
+          localStorage.removeItem('token');
+          localStorage.removeItem('auth_user');
+          if (!cancelled) {
+            setCheckingRouteAccess(false);
+            router.replace('/');
+          }
+          return;
+        }
+
         // Fail-open: keep navigation working if widget preference API is unavailable.
       }
 

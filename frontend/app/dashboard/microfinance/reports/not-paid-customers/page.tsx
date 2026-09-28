@@ -1,30 +1,10 @@
 'use client';
 
 import axios from 'axios';
-import { getApiBaseUrl, getBackendOrigin } from '@/lib/api';
+import { getApiBaseUrl } from '@/lib/api';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
-
-type LoanRow = {
-  id: number;
-  loan_code?: string | null;
-  customer_no?: string | null;
-  customer_name?: string | null;
-  field_officer?: string | null;
-  status?: string | null;
-  loan_amount?: number | string | null;
-  refundable_amount?: number | string | null;
-  arrears_balance?: number | string | null;
-  due_date?: string | null;
-  next_payment_date?: string | null;
-};
-
-type CollectionRow = {
-  mf_loan_request_id: number | string;
-  collection_date?: string | null;
-  collected_amount?: number | string | null;
-};
 
 type NotPaidRow = {
   loanId: number;
@@ -43,7 +23,14 @@ type NotPaidRow = {
   nextPaymentDate: string;
 };
 
+type ReportResponse = {
+  rows?: NotPaidRow[];
+  officer_options?: string[];
+};
+
 const API_BASE = getApiBaseUrl();
+const isUnauthorizedError = (error: unknown): boolean =>
+  axios.isAxiosError(error) && (error.response?.status === 401 || error.response?.status === 403);
 
 export default function NotPaidCustomersReportPage() {
   const router = useRouter();
@@ -52,7 +39,10 @@ export default function NotPaidCustomersReportPage() {
   const [rows, setRows] = useState<NotPaidRow[]>([]);
   const [keyword, setKeyword] = useState('');
   const [officerFilter, setOfficerFilter] = useState('all');
-  const [loadingWidgets, setLoadingWidgets] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<'all' | 'approved' | 'released' | 'completed'>('all');
+  const [officerOptions, setOfficerOptions] = useState<string[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [widgetNotice, setWidgetNotice] = useState<{ open: boolean; title: string; message: string }>({
     open: false,
@@ -61,8 +51,13 @@ export default function NotPaidCustomersReportPage() {
   });
   const widgetPrefix = 'mf_not_paid_customers_widget_';
 
+  const handleUnauthorized = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('auth_user');
+    router.replace('/');
+  };
+
   const fetchWidgetPreferences = async (authToken: string) => {
-    setLoadingWidgets(true);
     try {
       const response = await axios.get(`${API_BASE}/dashboard/widgets`, {
         headers: { Authorization: `Bearer ${authToken}` },
@@ -75,10 +70,12 @@ export default function NotPaidCustomersReportPage() {
         if (row?.is_visible === false) nextHidden.add(key);
       }
       setHiddenWidgetKeys(nextHidden);
-    } catch {
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        handleUnauthorized();
+        return;
+      }
       setHiddenWidgetKeys(new Set());
-    } finally {
-      setLoadingWidgets(false);
     }
   };
 
@@ -91,7 +88,10 @@ export default function NotPaidCustomersReportPage() {
         { headers: { Authorization: `Bearer ${token}` } }
       );
       return true;
-    } catch {
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        handleUnauthorized();
+      }
       return false;
     }
   };
@@ -130,93 +130,42 @@ export default function NotPaidCustomersReportPage() {
     const loadReport = async () => {
       setLoading(true);
       try {
-        const [loanRes, collectionRes] = await Promise.all([
-          axios.get(`${API_BASE}/microfinance/loan-requests`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: 'application/json',
-            },
-          }),
-          axios.get(`${API_BASE}/microfinance/collections`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: 'application/json',
-            },
-          }),
-        ]);
-
-        const loans: LoanRow[] = Array.isArray(loanRes.data) ? loanRes.data : [];
-        const collections: CollectionRow[] = Array.isArray(collectionRes.data) ? collectionRes.data : [];
-        const now = new Date();
-        const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-
-        const paidByLoan = new Map<number, number>();
-        const paidTodayByLoan = new Map<number, number>();
-        collections.forEach((collection) => {
-          const loanId = Number(collection.mf_loan_request_id || 0);
-          if (!loanId) return;
-
-          const amount = Number(collection.collected_amount || 0);
-          paidByLoan.set(loanId, (paidByLoan.get(loanId) || 0) + amount);
-
-          const collectionDate = String(collection.collection_date || '').slice(0, 10);
-          if (collectionDate === todayKey) {
-            paidTodayByLoan.set(loanId, (paidTodayByLoan.get(loanId) || 0) + amount);
-          }
+        const response = await axios.get<ReportResponse>(`${API_BASE}/reports/not-paid-customers`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+          params: {
+            status: statusFilter,
+            q: keyword.trim() || undefined,
+          },
         });
 
-        const mapped = loans
-          .filter((loan) => {
-            const status = String(loan.status || '').toLowerCase();
-            return status === 'approved' || status === 'released' || status === 'completed';
-          })
-          .map((loan) => {
-            const loanId = Number(loan.id || 0);
-            const loanAmount = Number(loan.loan_amount || 0);
-            const refundableAmount = Number(loan.refundable_amount || 0);
-            const collectedAmount = paidByLoan.get(loanId) || 0;
-            const paidTodayAmount = paidTodayByLoan.get(loanId) || 0;
-            const outstandingAmount = Math.max(refundableAmount - collectedAmount, 0);
-            const arrearsAmount = Math.max(Number(loan.arrears_balance || 0), 0);
-            const dueDate = String(loan.due_date || '').slice(0, 10);
+        const nextRows = Array.isArray(response.data?.rows) ? response.data.rows : [];
+        const optionsFromRows = Array.from(
+          new Set(nextRows.map((row) => (String(row.fieldOfficer || '').trim() || 'Unassigned')))
+        ).sort((a, b) => a.localeCompare(b));
 
-            return {
-              loanId,
-              loanCode: String(loan.loan_code || '').trim() || `LR-${loanId}`,
-              customerNo: String(loan.customer_no || '-'),
-              customerName: String(loan.customer_name || '-'),
-              fieldOfficer: String(loan.field_officer || 'Unassigned'),
-              status: String(loan.status || '-'),
-              loanAmount,
-              refundableAmount,
-              collectedAmount,
-              outstandingAmount,
-              arrearsAmount,
-              dueDate: dueDate || '-',
-              nextPaymentDate: String(loan.next_payment_date || '').slice(0, 10) || '-',
-              paidTodayAmount,
-            };
-          })
-          .filter((row) => row.dueDate === todayKey)
-          .filter((row) => row.outstandingAmount > 0)
-          .filter((row) => row.paidTodayAmount <= 0)
-          .sort((a, b) => b.outstandingAmount - a.outstandingAmount);
-
-        setRows(mapped);
-      } catch {
+        setRows(nextRows);
+        if (Array.isArray(response.data?.officer_options) && response.data.officer_options.length > 0) {
+          setOfficerOptions(response.data.officer_options);
+        } else {
+          setOfficerOptions(optionsFromRows);
+        }
+      } catch (error) {
+        if (isUnauthorizedError(error)) {
+          handleUnauthorized();
+          return;
+        }
         setRows([]);
+        setOfficerOptions([]);
       } finally {
         setLoading(false);
       }
     };
 
     loadReport();
-  }, [token]);
-
-  const officerOptions = useMemo(
-    () => Array.from(new Set(rows.map((row) => row.fieldOfficer))).sort((a, b) => a.localeCompare(b)),
-    [rows]
-  );
+  }, [token, statusFilter, keyword]);
 
   const filteredRows = useMemo(() => {
     const search = keyword.trim().toLowerCase();
@@ -227,11 +176,7 @@ export default function NotPaidCustomersReportPage() {
       }
 
       if (!search) return true;
-
-      const haystack = [row.loanCode, row.customerNo, row.customerName, row.fieldOfficer]
-        .join(' ')
-        .toLowerCase();
-
+      const haystack = [row.loanCode, row.customerNo, row.customerName, row.fieldOfficer].join(' ').toLowerCase();
       return haystack.includes(search);
     });
   }, [rows, keyword, officerFilter]);
@@ -259,6 +204,20 @@ export default function NotPaidCustomersReportPage() {
   }, [filteredRows]);
 
   const formatMoney = (value: number) => Number(value || 0).toFixed(2);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [keyword, officerFilter, statusFilter, pageSize, rows.length]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const paginatedRows = useMemo(() => {
+    const safePage = Math.min(currentPage, totalPages);
+    const start = (safePage - 1) * pageSize;
+    return filteredRows.slice(start, start + pageSize);
+  }, [filteredRows, currentPage, pageSize, totalPages]);
+
+  const pageStart = filteredRows.length === 0 ? 0 : (Math.min(currentPage, totalPages) - 1) * pageSize + 1;
+  const pageEnd = Math.min(Math.min(currentPage, totalPages) * pageSize, filteredRows.length);
 
   const formatDate = (value: string) => {
     if (!value || value === '-') return '-';
@@ -365,6 +324,33 @@ export default function NotPaidCustomersReportPage() {
                 ))}
               </select>
             </div>
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</label>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as 'all' | 'approved' | 'released' | 'completed')}
+                className="mt-1 w-full rounded-xl border border-rose-100 bg-white px-3 py-2.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-rose-200"
+              >
+                <option value="all">All Status</option>
+                <option value="approved">Approved</option>
+                <option value="released">Released</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-3 flex justify-end">
+            <button
+              type="button"
+              onClick={() => {
+                setKeyword('');
+                setOfficerFilter('all');
+                setStatusFilter('all');
+              }}
+              className="rounded-xl border border-rose-100 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-rose-50"
+            >
+              Reset Filters
+            </button>
           </div>
 
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -410,6 +396,25 @@ export default function NotPaidCustomersReportPage() {
           ) : filteredRows.length === 0 ? (
             <p className="py-8 text-center text-slate-600">No unpaid customers found.</p>
           ) : (
+            <>
+            <div className="mb-3 flex items-center justify-between gap-3 text-sm text-slate-600">
+              <span>
+                Showing {pageStart}-{pageEnd} of {filteredRows.length} unpaid customers
+              </span>
+              <div className="flex items-center gap-2">
+                <label className="text-xs uppercase tracking-wide text-slate-500">Rows</label>
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value))}
+                  className="rounded-lg border border-rose-100 bg-white px-2 py-1.5 text-xs text-black focus:outline-none focus:ring-2 focus:ring-rose-200"
+                >
+                  <option value={10}>10</option>
+                  <option value={15}>15</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                </select>
+              </div>
+            </div>
             <div className="overflow-x-auto rounded-2xl border border-rose-100">
               <table className="min-w-full text-sm text-left text-slate-700 bg-white">
                 <thead className="bg-rose-50 text-slate-700">
@@ -429,7 +434,7 @@ export default function NotPaidCustomersReportPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.map((row) => (
+                  {paginatedRows.map((row) => (
                     <tr key={row.loanId} className="border-b border-rose-100 last:border-b-0 hover:bg-rose-50/40">
                       <td className="px-3 py-2 font-semibold text-slate-900">{row.loanCode}</td>
                       <td className="px-3 py-2">{row.customerNo}</td>
@@ -448,6 +453,30 @@ export default function NotPaidCustomersReportPage() {
                 </tbody>
               </table>
             </div>
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-slate-500">
+                Page {Math.min(currentPage, totalPages)} of {totalPages}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                  disabled={currentPage <= 1}
+                  className="rounded-lg border border-rose-100 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage >= totalPages}
+                  className="rounded-lg border border-rose-100 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+            </>
           )}
         </div>
         )}

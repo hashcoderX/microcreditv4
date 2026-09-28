@@ -367,6 +367,8 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('reports/investor-funding', [AccountingReportsController::class, 'investorFundingReport']);
     Route::get('reports/collector-wallet-deposits', [AccountingReportsController::class, 'collectorWalletDepositsReport']);
     Route::get('reports/active-members', [AccountingReportsController::class, 'activeMembersReport']);
+    Route::get('reports/not-paid-customers', [AccountingReportsController::class, 'notPaidCustomersReport']);
+    Route::get('reports/outstanding-customers', [AccountingReportsController::class, 'notPaidCustomersReport']);
     Route::get('reports/team-member-wallets', [AccountingReportsController::class, 'teamMemberWalletsReport']);
     Route::get('reports/team-member-wallets/{employee}/transactions', [AccountingReportsController::class, 'teamMemberWalletTransactions']);
     Route::get('reports/branch-collection', [BranchCollectionReportController::class, 'index']);

@@ -22,6 +22,7 @@ use App\Models\SavingsAccount;
 use App\Models\User;
 use App\Models\UserNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -35,6 +36,7 @@ class LoanRequestController extends Controller
     private const DEFAULT_LOAN_REQUEST_MIN_PROFILE_COMPLETION = 30;
     private const LOAN_REQUEST_MIN_DOCUMENT_COMPLETION = 0;
     private const WORKFLOW_FINAL_STEP = 14;
+    private const INDEX_CACHE_TTL_SECONDS = 20;
 
     private function getLoanRequestMinProfileCompletionPercent(): int
     {
@@ -2014,7 +2016,7 @@ class LoanRequestController extends Controller
         }
 
         $userId = (int) ($user?->id ?? 0);
-        if ($userId > 0) {
+        if ($userId > 0 && Schema::hasColumn('employees', 'user_id')) {
             $employeeByUserIdBranchId = (int) (Employee::query()->where('user_id', $userId)->orderByDesc('id')->value('branch_id') ?? 0);
             if ($employeeByUserIdBranchId > 0) {
                 return $employeeByUserIdBranchId;
@@ -2364,123 +2366,173 @@ class LoanRequestController extends Controller
             $limit = 5000;
         }
         $viewer = $request->user();
+        $viewerUserId = (int) ($viewer?->id ?? 0);
+        $viewerBranchId = $this->resolveUserBranchId($viewer);
 
-        $relations = [
-            'branch:id,name',
-            'approvalEmployee:id,first_name,last_name',
-            'createdBy:id,name,email,employee_id,branch_id',
-            'createdBy.employee:id,first_name,last_name,employee_code,branch_id',
-            'route:id,name,code',
-            'center:id,name,code,meeting_day',
-            'group:id,name,code',
-        ];
-
-        if (!$compact) {
-            $relations[] = 'guarantors';
-            $relations[] = 'documents';
-        }
-
-        $query = MicrofinanceLoanRequest::with($relations)
-            ->withMax('collections as last_pay_date', 'collection_date')
-            ->withSum('collections as total_paid_amount', 'collected_amount')
-            ->orderBy('id', 'desc');
-
+        $statusValuesForKey = [];
         if ($status) {
-            $statusValues = [];
-
             if (is_array($status)) {
                 foreach ($status as $rawStatus) {
                     $normalized = strtolower(trim((string) $rawStatus));
                     if ($normalized !== '') {
-                        $statusValues[] = $normalized;
+                        $statusValuesForKey[] = $normalized;
                     }
                 }
             } else {
-                $parts = explode(',', (string) $status);
-                foreach ($parts as $rawStatus) {
+                foreach (explode(',', (string) $status) as $rawStatus) {
                     $normalized = strtolower(trim((string) $rawStatus));
                     if ($normalized !== '') {
-                        $statusValues[] = $normalized;
+                        $statusValuesForKey[] = $normalized;
                     }
                 }
             }
-
-            $statusValues = array_values(array_unique($statusValues));
-
-            if (count($statusValues) === 1) {
-                $query->where('status', $statusValues[0]);
-            } elseif (count($statusValues) > 1) {
-                $query->whereIn('status', $statusValues);
-            }
         }
+        $statusValuesForKey = array_values(array_unique($statusValuesForKey));
+        sort($statusValuesForKey);
 
-        $scopedBranchId = $this->scopedBranchId($request);
-        if ($scopedBranchId !== null) {
-            $query->where('branch_id', $scopedBranchId);
-        } elseif ($branchId > 0) {
-            $query->where('branch_id', $branchId);
-        }
+        $cacheKey = implode(':', [
+            'mf_loan_requests',
+            'index',
+            'user_' . $viewerUserId,
+            'viewer_branch_' . max($viewerBranchId, 0),
+            'status_' . (count($statusValuesForKey) > 0 ? implode(',', $statusValuesForKey) : 'all'),
+            'branch_filter_' . max($branchId, 0),
+            'field_officer_' . md5(mb_strtolower($fieldOfficer)),
+            'compact_' . ($compact ? '1' : '0'),
+            'limit_' . ($limit > 0 ? $limit : 'all'),
+        ]);
 
-        if ($fieldOfficer !== '') {
-            $query->whereRaw('LOWER(TRIM(field_officer)) = ?', [mb_strtolower($fieldOfficer)]);
-        }
+        $buildPayload = function () use ($compact, $viewer, $status, $request, $branchId, $fieldOfficer, $limit) {
+            $relations = [
+                'branch:id,name',
+                'approvalEmployee:id,first_name,last_name',
+                'createdBy:id,name,email,employee_id,branch_id',
+                'createdBy.employee:id,first_name,last_name,employee_code,branch_id',
+                'route:id,name,code',
+                'center:id,name,code,meeting_day',
+                'group:id,name,code',
+            ];
 
-        if (!$this->isAdminUser($viewer)) {
-            $viewerUserId = (int) ($viewer?->id ?? 0);
-            $viewerEmployeeId = (int) ($viewer?->employee_id ?? 0);
-            $viewerBranchId = $this->resolveUserBranchId($viewer);
-            $allowedBranchSteps = $this->allowedActionCenterStepsForUser($viewer);
-            $hasBranchWorkflowScope = $viewerBranchId > 0 && count($allowedBranchSteps) > 0;
-
-            if ($viewerUserId <= 0 && $viewerEmployeeId <= 0) {
-                if (!$hasBranchWorkflowScope) {
-                    $query->whereRaw('1 = 0');
-                }
+            if (!$compact) {
+                $relations[] = 'guarantors';
+                $relations[] = 'documents';
             }
 
-            $query->where(function ($scope) use ($viewerUserId, $viewerEmployeeId, $viewerBranchId, $allowedBranchSteps, $hasBranchWorkflowScope) {
-                if ($viewerUserId > 0) {
-                    $scope->orWhere('created_by', $viewerUserId);
-                }
+            $query = MicrofinanceLoanRequest::with($relations)
+                ->withMax('collections as last_pay_date', 'collection_date')
+                ->withSum('collections as total_paid_amount', 'collected_amount')
+                ->orderBy('id', 'desc');
 
-                if ($viewerEmployeeId > 0) {
-                    $scope->orWhere('approval_employee_id', $viewerEmployeeId);
-                }
+            if ($status) {
+                $statusValues = [];
 
-                if ($hasBranchWorkflowScope) {
-                    $scope->orWhere(function ($branchScope) use ($viewerBranchId, $allowedBranchSteps) {
-                        $branchScope->where('branch_id', $viewerBranchId);
-
-                        if (count($allowedBranchSteps) > 0) {
-                            $branchScope->whereIn('workflow_step', $allowedBranchSteps);
+                if (is_array($status)) {
+                    foreach ($status as $rawStatus) {
+                        $normalized = strtolower(trim((string) $rawStatus));
+                        if ($normalized !== '') {
+                            $statusValues[] = $normalized;
                         }
-                    });
+                    }
+                } else {
+                    $parts = explode(',', (string) $status);
+                    foreach ($parts as $rawStatus) {
+                        $normalized = strtolower(trim((string) $rawStatus));
+                        if ($normalized !== '') {
+                            $statusValues[] = $normalized;
+                        }
+                    }
                 }
-            });
+
+                $statusValues = array_values(array_unique($statusValues));
+
+                if (count($statusValues) === 1) {
+                    $query->where('status', $statusValues[0]);
+                } elseif (count($statusValues) > 1) {
+                    $query->whereIn('status', $statusValues);
+                }
+            }
+
+            $scopedBranchId = $this->scopedBranchId($request);
+            if ($scopedBranchId !== null) {
+                $query->where('branch_id', $scopedBranchId);
+            } elseif ($branchId > 0) {
+                $query->where('branch_id', $branchId);
+            }
+
+            if ($fieldOfficer !== '') {
+                $query->whereRaw('LOWER(TRIM(field_officer)) = ?', [mb_strtolower($fieldOfficer)]);
+            }
+
+            if (!$this->isAdminUser($viewer)) {
+                $viewerUserId = (int) ($viewer?->id ?? 0);
+                $viewerEmployeeId = (int) ($viewer?->employee_id ?? 0);
+                $viewerBranchId = $this->resolveUserBranchId($viewer);
+                $allowedBranchSteps = $this->allowedActionCenterStepsForUser($viewer);
+                $hasBranchWorkflowScope = $viewerBranchId > 0 && count($allowedBranchSteps) > 0;
+
+                if ($viewerUserId <= 0 && $viewerEmployeeId <= 0) {
+                    if (!$hasBranchWorkflowScope) {
+                        $query->whereRaw('1 = 0');
+                    }
+                }
+
+                $query->where(function ($scope) use ($viewerUserId, $viewerEmployeeId, $viewerBranchId, $allowedBranchSteps, $hasBranchWorkflowScope) {
+                    if ($viewerUserId > 0) {
+                        $scope->orWhere('created_by', $viewerUserId);
+                    }
+
+                    if ($viewerEmployeeId > 0) {
+                        $scope->orWhere('approval_employee_id', $viewerEmployeeId);
+                    }
+
+                    if ($hasBranchWorkflowScope) {
+                        $scope->orWhere(function ($branchScope) use ($viewerBranchId, $allowedBranchSteps) {
+                            $branchScope->where('branch_id', $viewerBranchId);
+
+                            if (count($allowedBranchSteps) > 0) {
+                                $branchScope->whereIn('workflow_step', $allowedBranchSteps);
+                            }
+                        });
+                    }
+                });
+            }
+
+            if ($limit > 0) {
+                $query->limit($limit);
+            }
+
+            $loans = $query->get();
+
+            if (!$compact) {
+                $loans->each(function (MicrofinanceLoanRequest $loan) use ($viewer) {
+                    $currentStep = $this->resolveWorkflowStep($loan);
+                    $canConfiguredStepAction = $this->canPerformConfiguredStepAction($viewer, $loan, $currentStep);
+                    $canRequesterAdvance = $this->canLoanRequesterAdvanceStepOne($viewer, $loan);
+                    $canCreditOfficerMarkCalled = $this->canCreditOfficerHandlePendingCallConfirmation($viewer, $loan);
+                    $canCreditOfficerSendBack = $this->canCreditOfficerSendBack($viewer, $loan);
+                    $loan->setAttribute('can_advance_workflow', $canConfiguredStepAction || $canRequesterAdvance);
+                    $loan->setAttribute('can_send_back_workflow', $canCreditOfficerSendBack);
+                    $loan->setAttribute('can_mark_called_workflow', $canCreditOfficerMarkCalled);
+                });
+
+                $this->attachCustomerPhotoUrls($loans);
+            }
+
+            return $loans->toArray();
+        };
+
+        $shouldCache = $compact;
+        if (!$shouldCache) {
+            return response()->json($buildPayload());
         }
 
-        if ($limit > 0) {
-            $query->limit($limit);
+        try {
+            $payload = Cache::remember($cacheKey, now()->addSeconds(self::INDEX_CACHE_TTL_SECONDS), $buildPayload);
+        } catch (\Throwable) {
+            $payload = $buildPayload();
         }
 
-        $loans = $query->get();
-
-        if (!$compact) {
-            $loans->each(function (MicrofinanceLoanRequest $loan) use ($viewer) {
-                $currentStep = $this->resolveWorkflowStep($loan);
-                $canConfiguredStepAction = $this->canPerformConfiguredStepAction($viewer, $loan, $currentStep);
-                $canRequesterAdvance = $this->canLoanRequesterAdvanceStepOne($viewer, $loan);
-                $canCreditOfficerMarkCalled = $this->canCreditOfficerHandlePendingCallConfirmation($viewer, $loan);
-                $canCreditOfficerSendBack = $this->canCreditOfficerSendBack($viewer, $loan);
-                $loan->setAttribute('can_advance_workflow', $canConfiguredStepAction || $canRequesterAdvance);
-                $loan->setAttribute('can_send_back_workflow', $canCreditOfficerSendBack);
-                $loan->setAttribute('can_mark_called_workflow', $canCreditOfficerMarkCalled);
-            });
-
-            $this->attachCustomerPhotoUrls($loans);
-        }
-
-        return response()->json($loans);
+        return response()->json($payload);
     }
 
     private function attachCustomerPhotoUrls($loans): void

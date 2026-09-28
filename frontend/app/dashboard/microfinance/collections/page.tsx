@@ -20,9 +20,20 @@ import { useRouter } from 'next/navigation';
 type LoanRow = {
   id: number;
   branch_id?: number | string | null;
+  branch?: { id: number; name?: string | null } | null;
   field_officer?: string | null;
   field_officer_id?: number | string | null;
+  manager_name?: string | null;
+  approval_employee_id?: number | string | null;
+  approvalEmployee?: { id: number; first_name?: string | null; last_name?: string | null } | null;
+  createdBy?: {
+    id?: number;
+    name?: string | null;
+    email?: string | null;
+    employee?: { id?: number; first_name?: string | null; last_name?: string | null } | null;
+  } | null;
   loan_code?: string | null;
+  reference_no?: string | null;
   customer_no: string;
   customer_code?: string | null;
   customer_name: string;
@@ -34,8 +45,14 @@ type LoanRow = {
   center?: { id: number; name: string; code: string; meeting_day?: string | null } | null;
   group?: { id: number; name: string; code: string } | null;
   loan_amount?: number | string;
+  net_disbursed_amount?: number | string;
   installment_amount: number | string;
   refundable_amount: number | string;
+  terms_count?: number | string;
+  interest_rate?: number | string;
+  workflow_step?: number | string;
+  loan_request_date?: string | null;
+  created_at?: string | null;
   penalty_rate?: number | string | null;
   penalty_grace_days?: number | string | null;
   due_date?: string | null;
@@ -882,6 +899,20 @@ export default function CollectionManagementPage() {
       month: 'short',
       year: 'numeric',
     });
+  };
+
+  const formatMoneyDisplay = (value: number | string | null | undefined) => {
+    const amount = Number(value || 0);
+    if (!Number.isFinite(amount)) return '0.00';
+    return amount.toFixed(2);
+  };
+
+  const personFullName = (person?: { first_name?: string | null; last_name?: string | null } | null) => {
+    const fullName = [String(person?.first_name || '').trim(), String(person?.last_name || '').trim()]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    return fullName || '-';
   };
 
   const isLoanCodeText = (value: string) => /^(RL-|CL-|DL-)/i.test(value.trim());
@@ -3629,13 +3660,41 @@ export default function CollectionManagementPage() {
 
               <div className="p-5 bg-gradient-to-b from-cyan-50/35 to-white">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm text-slate-700">
+                  <div className="rounded-xl border border-cyan-100 bg-cyan-50/70 p-3 md:col-span-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-700">Responsible Officers</p>
+                    <div className="mt-2 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5">
+                      <div className="rounded-lg border border-cyan-100 bg-white px-3 py-2">
+                        <p className="text-[11px] text-slate-500">Field Officer</p>
+                        <p className="font-semibold text-slate-900">{loanDetailsModal.loan.field_officer || '-'}</p>
+                      </div>
+                      <div className="rounded-lg border border-cyan-100 bg-white px-3 py-2">
+                        <p className="text-[11px] text-slate-500">Branch Manager</p>
+                        <p className="font-semibold text-slate-900">{loanDetailsModal.loan.manager_name || '-'}</p>
+                      </div>
+                      <div className="rounded-lg border border-cyan-100 bg-white px-3 py-2">
+                        <p className="text-[11px] text-slate-500">Approval Officer</p>
+                        <p className="font-semibold text-slate-900">{personFullName(loanDetailsModal.loan.approvalEmployee)}</p>
+                      </div>
+                      <div className="rounded-lg border border-cyan-100 bg-white px-3 py-2">
+                        <p className="text-[11px] text-slate-500">Requested By</p>
+                        <p className="font-semibold text-slate-900">
+                          {loanDetailsModal.loan.createdBy?.name || personFullName(loanDetailsModal.loan.createdBy?.employee) || '-'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Route</p><p className="font-semibold">{loanDetailsModal.loan.route?.name || loanDetailsModal.loan.route_name || '-'}</p></div>
                   <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Center</p><p className="font-semibold">{loanDetailsModal.loan.center?.name || '-'}</p></div>
                   <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Group</p><p className="font-semibold">{loanDetailsModal.loan.group?.name || '-'}</p></div>
 
-                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Loan Amount</p><p className="font-semibold text-slate-900">{Number(loanDetailsModal.loan.loan_amount || 0).toFixed(2)}</p></div>
-                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Refundable Amount</p><p className="font-semibold text-slate-900">{Number(loanDetailsModal.loan.refundable_amount || 0).toFixed(2)}</p></div>
-                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Installment Amount</p><p className="font-semibold text-slate-900">{Number(loanDetailsModal.loan.installment_amount || 0).toFixed(2)}</p></div>
+                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Loan Amount</p><p className="font-semibold text-slate-900">{formatMoneyDisplay(loanDetailsModal.loan.loan_amount)}</p></div>
+                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Refundable Amount</p><p className="font-semibold text-slate-900">{formatMoneyDisplay(loanDetailsModal.loan.refundable_amount)}</p></div>
+                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Installment Amount</p><p className="font-semibold text-slate-900">{formatMoneyDisplay(loanDetailsModal.loan.installment_amount)}</p></div>
+
+                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Net Disbursed</p><p className="font-semibold text-slate-900">{formatMoneyDisplay(loanDetailsModal.loan.net_disbursed_amount)}</p></div>
+                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Interest Rate</p><p className="font-semibold text-slate-900">{loanDetailsModal.loan.interest_rate != null ? `${Number(loanDetailsModal.loan.interest_rate)}%` : '-'}</p></div>
+                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Term Count</p><p className="font-semibold text-slate-900">{loanDetailsModal.loan.terms_count ?? '-'}</p></div>
 
                   <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3"><p className="text-xs text-emerald-700">Paid Total</p><p className="font-extrabold text-emerald-700">{getPaidTotal(loanDetailsModal.loan.id).toFixed(2)}</p></div>
                   <div className="rounded-xl border border-rose-100 bg-rose-50/60 p-3"><p className="text-xs text-rose-700">Outstanding Balance</p><p className="font-extrabold text-rose-700">{getOutstandingBalance(loanDetailsModal.loan).toFixed(2)}</p></div>
@@ -3652,6 +3711,10 @@ export default function CollectionManagementPage() {
                     <p className="text-xs text-orange-700">Loan End Date</p>
                     <p className="font-semibold text-orange-900">{formatDateDisplay(loanDetailsModal.loan.loan_end_date)}</p>
                   </div>
+                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Request Date</p><p className="font-semibold">{formatDateDisplay(loanDetailsModal.loan.loan_request_date || loanDetailsModal.loan.created_at)}</p></div>
+                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Reference No</p><p className="font-semibold">{loanDetailsModal.loan.reference_no || '-'}</p></div>
+                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Workflow Step</p><p className="font-semibold">{loanDetailsModal.loan.workflow_step ?? '-'}</p></div>
+                  <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Branch</p><p className="font-semibold">{loanDetailsModal.loan.branch?.name || '-'}</p></div>
                 </div>
               </div>
 
