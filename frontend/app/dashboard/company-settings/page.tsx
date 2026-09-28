@@ -501,6 +501,7 @@ export default function CompanySettingsPage() {
   const [smsTesting, setSmsTesting] = useState(false);
   const [smsConfig, setSmsConfig] = useState({
     enabled: false,
+    provider_code: 'generic',
     provider_name: '',
     endpoint_url: '',
     http_method: 'POST',
@@ -511,8 +512,16 @@ export default function CompanySettingsPage() {
     api_key_header: 'X-API-Key',
     api_key_value: '',
     sender_id: '',
+    smslenz_user_id: '',
+    smslenz_api_key: '',
     timeout_seconds: 10,
     message_template: '',
+    loan_release_template: '',
+    mortgage_approval_template: '',
+    birthday_template: '',
+    otp_template: '',
+    deposit_template: '',
+    withdrawal_template: '',
   });
   const [smsTestPhone, setSmsTestPhone] = useState('');
   const [smsTestMessage, setSmsTestMessage] = useState('');
@@ -864,8 +873,15 @@ export default function CompanySettingsPage() {
         headers: { Authorization: `Bearer ${authToken}` },
       });
       const config = response.data?.config || {};
+      const providerCodeRaw = String(config.provider_code || '').trim().toLowerCase();
+      const providerNameRaw = String(config.provider_name || '').trim().toLowerCase();
+      const endpointRaw = String(config.endpoint_url || '').trim().toLowerCase();
+      const isSmsLenz =
+        providerCodeRaw === 'smslenz' || providerNameRaw.includes('smslenz') || endpointRaw.includes('smslenz.lk');
+
       setSmsConfig({
         enabled: Boolean(config.enabled),
+        provider_code: isSmsLenz ? 'smslenz' : 'generic',
         provider_name: String(config.provider_name || ''),
         endpoint_url: String(config.endpoint_url || ''),
         http_method: String(config.http_method || 'POST').toUpperCase() === 'GET' ? 'GET' : 'POST',
@@ -878,8 +894,16 @@ export default function CompanySettingsPage() {
         api_key_header: String(config.api_key_header || 'X-API-Key'),
         api_key_value: String(config.api_key_value || ''),
         sender_id: String(config.sender_id || ''),
+        smslenz_user_id: String(config.smslenz_user_id || config.username || ''),
+        smslenz_api_key: String(config.smslenz_api_key || config.api_key_value || ''),
         timeout_seconds: Number(config.timeout_seconds || 10),
         message_template: String(config.message_template || ''),
+        loan_release_template: String(config.loan_release_template || ''),
+        mortgage_approval_template: String(config.mortgage_approval_template || ''),
+        birthday_template: String(config.birthday_template || ''),
+        otp_template: String(config.otp_template || ''),
+        deposit_template: String(config.deposit_template || ''),
+        withdrawal_template: String(config.withdrawal_template || ''),
       });
     } catch {
       // Ignore for non-admin users or unavailable endpoint.
@@ -928,18 +952,27 @@ export default function CompanySettingsPage() {
         `/api/system/sms-gateway`,
         {
           enabled: smsConfig.enabled,
+          provider_code: smsConfig.provider_code,
           provider_name: smsConfig.provider_name.trim(),
           endpoint_url: smsConfig.endpoint_url.trim(),
           http_method: smsConfig.http_method,
-          auth_type: smsConfig.auth_type,
-          username: smsConfig.username.trim(),
+          auth_type: smsConfig.provider_code === 'smslenz' ? 'none' : smsConfig.auth_type,
+          username: smsConfig.provider_code === 'smslenz' ? smsConfig.smslenz_user_id.trim() : smsConfig.username.trim(),
           password: smsConfig.password,
           auth_token: smsConfig.auth_token,
           api_key_header: smsConfig.api_key_header.trim(),
-          api_key_value: smsConfig.api_key_value,
+          api_key_value: smsConfig.provider_code === 'smslenz' ? smsConfig.smslenz_api_key : smsConfig.api_key_value,
           sender_id: smsConfig.sender_id.trim(),
+          smslenz_user_id: smsConfig.smslenz_user_id.trim(),
+          smslenz_api_key: smsConfig.smslenz_api_key,
           timeout_seconds: Number(smsConfig.timeout_seconds || 10),
           message_template: smsConfig.message_template.trim(),
+          loan_release_template: smsConfig.loan_release_template.trim(),
+          mortgage_approval_template: smsConfig.mortgage_approval_template.trim(),
+          birthday_template: smsConfig.birthday_template.trim(),
+          otp_template: smsConfig.otp_template.trim(),
+          deposit_template: smsConfig.deposit_template.trim(),
+          withdrawal_template: smsConfig.withdrawal_template.trim(),
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -963,6 +996,23 @@ export default function CompanySettingsPage() {
       return;
     }
 
+    if (smsConfig.provider_code === 'smslenz') {
+      if (!smsConfig.smslenz_user_id.trim() || !smsConfig.smslenz_api_key.trim()) {
+        setNotice({ type: 'error', text: 'SMSLenz User ID and API Key are required.' });
+        return;
+      }
+
+      if (!smsConfig.sender_id.trim()) {
+        setNotice({ type: 'error', text: 'Sender ID Mask is required for SMSLenz.' });
+        return;
+      }
+
+      if (!smsConfig.endpoint_url.trim()) {
+        setNotice({ type: 'error', text: 'SMSLenz endpoint URL is required.' });
+        return;
+      }
+    }
+
     setSmsTesting(true);
     setNotice(null);
     try {
@@ -971,6 +1021,23 @@ export default function CompanySettingsPage() {
         {
           phone: smsTestPhone.trim(),
           message: smsTestMessage.trim() || 'Test SMS from Global Capital system.',
+          config: {
+            enabled: true,
+            provider_code: smsConfig.provider_code,
+            provider_name: smsConfig.provider_name.trim(),
+            endpoint_url: smsConfig.endpoint_url.trim(),
+            http_method: smsConfig.http_method,
+            auth_type: smsConfig.provider_code === 'smslenz' ? 'none' : smsConfig.auth_type,
+            username: smsConfig.provider_code === 'smslenz' ? smsConfig.smslenz_user_id.trim() : smsConfig.username.trim(),
+            password: smsConfig.password,
+            auth_token: smsConfig.auth_token,
+            api_key_header: smsConfig.api_key_header.trim(),
+            api_key_value: smsConfig.provider_code === 'smslenz' ? smsConfig.smslenz_api_key : smsConfig.api_key_value,
+            sender_id: smsConfig.sender_id.trim(),
+            smslenz_user_id: smsConfig.smslenz_user_id.trim(),
+            smslenz_api_key: smsConfig.smslenz_api_key,
+            timeout_seconds: Number(smsConfig.timeout_seconds || 10),
+          },
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -980,6 +1047,59 @@ export default function CompanySettingsPage() {
     } finally {
       setSmsTesting(false);
     }
+  };
+
+  const handleSmsProviderCodeChange = (providerCode: 'generic' | 'smslenz') => {
+    if (providerCode === 'smslenz') {
+      setSmsConfig((prev) => ({
+        ...prev,
+        provider_code: 'smslenz',
+        provider_name: prev.provider_name.trim() || 'SMSLenz.lk',
+        endpoint_url: prev.endpoint_url.trim() || 'https://smslenz.lk/api/send-sms',
+        http_method: 'POST',
+        auth_type: 'none',
+      }));
+      return;
+    }
+
+    setSmsConfig((prev) => ({ ...prev, provider_code: 'generic' }));
+  };
+
+  const handleGenerateSmsTemplates = () => {
+    const hasExistingContent = [
+      smsConfig.message_template,
+      smsConfig.loan_release_template,
+      smsConfig.mortgage_approval_template,
+      smsConfig.birthday_template,
+      smsConfig.otp_template,
+      smsConfig.deposit_template,
+      smsConfig.withdrawal_template,
+    ].some((value) => String(value || '').trim() !== '');
+
+    if (hasExistingContent) {
+      const confirmed = window.confirm('This will replace current SMS templates with generated defaults. Continue?');
+      if (!confirmed) return;
+    }
+
+    setSmsConfig((prev) => ({
+      ...prev,
+      message_template:
+        'Dear {{customer_name}}, we received your {{module}} payment of LKR {{amount}} on {{date}}. Ref: {{reference}}. Thank you.',
+      loan_release_template:
+        'Dear {{customer_name}}, your {{module}} loan has been released. Amount: LKR {{amount}} on {{date}}. Ref: {{reference}}.',
+      mortgage_approval_template:
+        'Dear {{customer_name}}, your mortgage request has been approved. Amount: LKR {{amount}} on {{date}}. Ref: {{reference}}.',
+      birthday_template:
+        'Happy Birthday {{customer_name}}! Wishing you health, happiness, and success. - {{app_name}}',
+      otp_template:
+        'Dear {{customer_name}}, your OTP is {{otp_code}}. It expires in {{expiry_minutes}} minutes. Do not share this code.',
+      deposit_template:
+        'Dear {{customer_name}}, we received your deposit of LKR {{amount}} on {{date}}. Ref: {{reference}}.',
+      withdrawal_template:
+        'Dear {{customer_name}}, your withdrawal of LKR {{amount}} was processed on {{date}}. Ref: {{reference}}.',
+    }));
+
+    setNotice({ type: 'success', text: 'SMS templates generated. Click Save SMS settings to apply.' });
   };
 
   const handleSaveWhatsappGateway = async () => {
@@ -1868,7 +1988,12 @@ export default function CompanySettingsPage() {
                         <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                           <div className="h-24 w-24 rounded-xl border border-cyan-200 bg-white overflow-hidden flex items-center justify-center shrink-0">
                             {logoPreview ? (
-                              <img src={logoPreview} alt="Company logo preview" className="h-full w-full object-cover" />
+                              <img
+                                src={logoPreview}
+                                alt="Company logo preview"
+                                className="h-full w-full object-cover"
+                                onError={() => setLogoPreview('')}
+                              />
                             ) : (
                               <Building2 className="h-8 w-8 text-cyan-300" />
                             )}
@@ -2547,12 +2672,23 @@ export default function CompanySettingsPage() {
 
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div>
+                              <label className={labelClass}>Provider type</label>
+                              <select
+                                value={smsConfig.provider_code}
+                                onChange={(e) => handleSmsProviderCodeChange(e.target.value as 'generic' | 'smslenz')}
+                                className={inputClass}
+                              >
+                                <option value="generic">Generic SMS API</option>
+                                <option value="smslenz">SMSLenz.lk</option>
+                              </select>
+                            </div>
+                            <div>
                               <label className={labelClass}>Provider name</label>
                               <input
                                 value={smsConfig.provider_name}
                                 onChange={(e) => setSmsConfig({ ...smsConfig, provider_name: e.target.value })}
                                 className={inputClass}
-                                placeholder="e.g. NotifyLK"
+                                placeholder={smsConfig.provider_code === 'smslenz' ? 'SMSLenz.lk' : 'e.g. NotifyLK'}
                               />
                             </div>
                             <div>
@@ -2561,7 +2697,11 @@ export default function CompanySettingsPage() {
                                 value={smsConfig.endpoint_url}
                                 onChange={(e) => setSmsConfig({ ...smsConfig, endpoint_url: e.target.value })}
                                 className={inputClass}
-                                placeholder="https://sms.example.com/api/send"
+                                placeholder={
+                                  smsConfig.provider_code === 'smslenz'
+                                    ? 'https://smslenz.lk/api/send-sms'
+                                    : 'https://sms.example.com/api/send'
+                                }
                               />
                             </div>
                             <div>
@@ -2575,21 +2715,46 @@ export default function CompanySettingsPage() {
                                 <option value="GET">GET</option>
                               </select>
                             </div>
-                            <div>
-                              <label className={labelClass}>Auth type</label>
-                              <select
-                                value={smsConfig.auth_type}
-                                onChange={(e) => setSmsConfig({ ...smsConfig, auth_type: e.target.value })}
-                                className={inputClass}
-                              >
-                                <option value="none">None</option>
-                                <option value="bearer">Bearer token</option>
-                                <option value="basic">Basic auth</option>
-                                <option value="api_key">API key header</option>
-                              </select>
-                            </div>
+                            {smsConfig.provider_code !== 'smslenz' && (
+                              <div>
+                                <label className={labelClass}>Auth type</label>
+                                <select
+                                  value={smsConfig.auth_type}
+                                  onChange={(e) => setSmsConfig({ ...smsConfig, auth_type: e.target.value })}
+                                  className={inputClass}
+                                >
+                                  <option value="none">None</option>
+                                  <option value="bearer">Bearer token</option>
+                                  <option value="basic">Basic auth</option>
+                                  <option value="api_key">API key header</option>
+                                </select>
+                              </div>
+                            )}
 
-                            {smsConfig.auth_type === 'bearer' && (
+                            {smsConfig.provider_code === 'smslenz' && (
+                              <>
+                                <div>
+                                  <label className={labelClass}>SMSLenz User ID *</label>
+                                  <input
+                                    value={smsConfig.smslenz_user_id}
+                                    onChange={(e) => setSmsConfig({ ...smsConfig, smslenz_user_id: e.target.value })}
+                                    className={inputClass}
+                                    placeholder="e.g. 2510"
+                                  />
+                                </div>
+                                <div>
+                                  <label className={labelClass}>SMSLenz API Key *</label>
+                                  <input
+                                    value={smsConfig.smslenz_api_key}
+                                    onChange={(e) => setSmsConfig({ ...smsConfig, smslenz_api_key: e.target.value })}
+                                    className={inputClass}
+                                    placeholder="Paste API key from SMSLenz"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {smsConfig.provider_code !== 'smslenz' && smsConfig.auth_type === 'bearer' && (
                               <div className="md:col-span-2">
                                 <label className={labelClass}>Bearer token</label>
                                 <input
@@ -2601,7 +2766,7 @@ export default function CompanySettingsPage() {
                               </div>
                             )}
 
-                            {smsConfig.auth_type === 'basic' && (
+                            {smsConfig.provider_code !== 'smslenz' && smsConfig.auth_type === 'basic' && (
                               <>
                                 <div>
                                   <label className={labelClass}>Username</label>
@@ -2623,7 +2788,7 @@ export default function CompanySettingsPage() {
                               </>
                             )}
 
-                            {smsConfig.auth_type === 'api_key' && (
+                            {smsConfig.provider_code !== 'smslenz' && smsConfig.auth_type === 'api_key' && (
                               <>
                                 <div>
                                   <label className={labelClass}>API key header</label>
@@ -2677,9 +2842,101 @@ export default function CompanySettingsPage() {
                                 Placeholders: {'{{customer_name}}'}, {'{{amount}}'}, {'{{date}}'}, {'{{reference}}'}, {'{{module}}'}
                               </p>
                             </div>
+
+                            <div className="md:col-span-2">
+                              <label className={labelClass}>Loan release SMS template</label>
+                              <textarea
+                                rows={3}
+                                value={smsConfig.loan_release_template}
+                                onChange={(e) => setSmsConfig({ ...smsConfig, loan_release_template: e.target.value })}
+                                className={inputClass}
+                                placeholder="Dear {{customer_name}}, your {{module}} loan has been released. Amount: LKR {{amount}} on {{date}}. Ref: {{reference}}"
+                              />
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                Placeholders: {'{{customer_name}}'}, {'{{amount}}'}, {'{{date}}'}, {'{{reference}}'}, {'{{module}}'}
+                              </p>
+                            </div>
+
+                            <div className="md:col-span-2">
+                              <label className={labelClass}>Mortgage approval SMS template</label>
+                              <textarea
+                                rows={3}
+                                value={smsConfig.mortgage_approval_template}
+                                onChange={(e) => setSmsConfig({ ...smsConfig, mortgage_approval_template: e.target.value })}
+                                className={inputClass}
+                                placeholder="Dear {{customer_name}}, your mortgage request has been approved. Amount: LKR {{amount}} on {{date}}. Ref: {{reference}}"
+                              />
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                Placeholders: {'{{customer_name}}'}, {'{{amount}}'}, {'{{date}}'}, {'{{reference}}'}, {'{{module}}'}
+                              </p>
+                            </div>
+
+                            <div className="md:col-span-2">
+                              <label className={labelClass}>Birthday wishes SMS template</label>
+                              <textarea
+                                rows={3}
+                                value={smsConfig.birthday_template}
+                                onChange={(e) => setSmsConfig({ ...smsConfig, birthday_template: e.target.value })}
+                                className={inputClass}
+                                placeholder="Happy Birthday {{customer_name}}! Wishing you health, happiness, and success. - {{app_name}}"
+                              />
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                Placeholders: {'{{customer_name}}'}, {'{{app_name}}'}, {'{{date}}'}
+                              </p>
+                            </div>
+
+                            <div className="md:col-span-2">
+                              <label className={labelClass}>OTP SMS template</label>
+                              <textarea
+                                rows={3}
+                                value={smsConfig.otp_template}
+                                onChange={(e) => setSmsConfig({ ...smsConfig, otp_template: e.target.value })}
+                                className={inputClass}
+                                placeholder="Dear {{customer_name}}, your OTP is {{otp_code}}. It expires in {{expiry_minutes}} minutes. Do not share this code."
+                              />
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                Placeholders: {'{{customer_name}}'}, {'{{otp_code}}'}, {'{{expiry_minutes}}'}, {'{{app_name}}'}
+                              </p>
+                            </div>
+
+                            <div className="md:col-span-2">
+                              <label className={labelClass}>Deposit SMS template</label>
+                              <textarea
+                                rows={3}
+                                value={smsConfig.deposit_template}
+                                onChange={(e) => setSmsConfig({ ...smsConfig, deposit_template: e.target.value })}
+                                className={inputClass}
+                                placeholder="Dear {{customer_name}}, we received your deposit of LKR {{amount}} on {{date}}. Ref: {{reference}}. Thank you."
+                              />
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                Placeholders: {'{{customer_name}}'}, {'{{amount}}'}, {'{{date}}'}, {'{{reference}}'}, {'{{module}}'}
+                              </p>
+                            </div>
+
+                            <div className="md:col-span-2">
+                              <label className={labelClass}>Withdrawal SMS template</label>
+                              <textarea
+                                rows={3}
+                                value={smsConfig.withdrawal_template}
+                                onChange={(e) => setSmsConfig({ ...smsConfig, withdrawal_template: e.target.value })}
+                                className={inputClass}
+                                placeholder="Dear {{customer_name}}, your withdrawal of LKR {{amount}} was processed on {{date}}. Ref: {{reference}}."
+                              />
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                Placeholders: {'{{customer_name}}'}, {'{{amount}}'}, {'{{date}}'}, {'{{reference}}'}, {'{{module}}'}
+                              </p>
+                            </div>
                           </div>
 
                           <div className="flex flex-wrap gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={handleGenerateSmsTemplates}
+                              className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-bold text-indigo-800 hover:bg-indigo-100"
+                            >
+                              <FileText className="h-4 w-4" />
+                              Generate SMS templates
+                            </button>
                             <button
                               type="button"
                               onClick={handleSaveSmsGateway}
@@ -2698,7 +2955,7 @@ export default function CompanySettingsPage() {
                                 value={smsTestPhone}
                                 onChange={(e) => setSmsTestPhone(e.target.value)}
                                 className={inputClass}
-                                placeholder="Recipient phone number"
+                                placeholder={smsConfig.provider_code === 'smslenz' ? 'Recipient phone: 9477XXXXXXX or 077XXXXXXX' : 'Recipient phone number'}
                               />
                               <input
                                 value={smsTestMessage}
@@ -2716,6 +2973,11 @@ export default function CompanySettingsPage() {
                               <MessageSquare className="h-4 w-4" />
                               {smsTesting ? 'Sending…' : 'Send test SMS'}
                             </button>
+                            {smsConfig.provider_code === 'smslenz' && (
+                              <p className="mt-2 text-[11px] text-slate-600">
+                                SMSLenz uses: user_id, api_key, sender_id, contact, and message in the request body.
+                              </p>
+                            )}
                           </div>
                         </div>
                       )}

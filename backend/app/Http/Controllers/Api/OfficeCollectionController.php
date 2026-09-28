@@ -17,9 +17,105 @@ use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class OfficeCollectionController extends Controller
 {
+    /**
+     * @param array<string, mixed> $messageContext
+     */
+    private function sendCollectionSmsAlert(string $phone, array $messageContext): void
+    {
+        $trimmedPhone = trim($phone);
+        if ($trimmedPhone === '') {
+            return;
+        }
+
+        try {
+            /** @var SmsGatewayService $smsService */
+            $smsService = app(SmsGatewayService::class);
+            $smsMessage = $smsService->buildCollectionMessage($messageContext);
+            $smsResult = $smsService->send($trimmedPhone, $smsMessage);
+
+            if (!($smsResult['ok'] ?? false)) {
+                Log::warning('Office collection SMS failed', [
+                    'phone' => $trimmedPhone,
+                    'context' => $messageContext,
+                    'result' => $smsResult,
+                ]);
+            }
+        } catch (\Throwable $exception) {
+            Log::warning('Office collection SMS dispatch exception', [
+                'phone' => $trimmedPhone,
+                'context' => $messageContext,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+    }
+
+    private function dispatchOfficeCollectionSms(string $type, int $sourceId, float $amount, string $paymentDate): void
+    {
+        if ($type === 'loan') {
+            $loan = LoanRequest::query()->find($sourceId);
+            if (!$loan) {
+                return;
+            }
+
+            $this->sendCollectionSmsAlert(
+                (string) ($loan->customer_mobile ?? ''),
+                [
+                    'customer_name' => (string) ($loan->customer_full_name ?? 'Customer'),
+                    'amount' => number_format($amount, 2, '.', ''),
+                    'date' => $paymentDate,
+                    'reference' => (string) ($loan->request_no ?? ('LOAN-' . $sourceId)),
+                    'module' => 'Loan',
+                ]
+            );
+
+            return;
+        }
+
+        if ($type === 'finance') {
+            $finance = Finance::query()->with('customer:id,first_name,last_name,phone')->find($sourceId);
+            if (!$finance) {
+                return;
+            }
+
+            $customerName = trim(((string) ($finance->customer?->first_name ?? '')) . ' ' . ((string) ($finance->customer?->last_name ?? '')));
+            $this->sendCollectionSmsAlert(
+                (string) ($finance->customer?->phone ?? ''),
+                [
+                    'customer_name' => $customerName !== '' ? $customerName : 'Customer',
+                    'amount' => number_format($amount, 2, '.', ''),
+                    'date' => $paymentDate,
+                    'reference' => 'FIN-' . $sourceId,
+                    'module' => 'Finance',
+                ]
+            );
+
+            return;
+        }
+
+        if ($type === 'mortgage') {
+            $mortgage = Mortgage::query()->with('customer:id,first_name,last_name,phone')->find($sourceId);
+            if (!$mortgage) {
+                return;
+            }
+
+            $customerName = trim(((string) ($mortgage->customer?->first_name ?? '')) . ' ' . ((string) ($mortgage->customer?->last_name ?? '')));
+            $this->sendCollectionSmsAlert(
+                (string) ($mortgage->customer?->phone ?? ''),
+                [
+                    'customer_name' => $customerName !== '' ? $customerName : 'Customer',
+                    'amount' => number_format($amount, 2, '.', ''),
+                    'date' => $paymentDate,
+                    'reference' => 'MORT-' . $sourceId,
+                    'module' => 'Mortgage',
+                ]
+            );
+        }
+    }
+
     private function isAdminUser(?object $user): bool
     {
         if (!$user) {
@@ -502,6 +598,13 @@ class OfficeCollectionController extends Controller
                 $whatsappMessage = $whatsappService->buildCollectionMessage($messageContext);
                 $whatsappService->send($phone, $whatsappMessage);
             }
+        }
+
+        // Send SMS for successful finance/mortgage office collections. Loan path
+        // already sends SMS/WhatsApp above; microfinance is handled in
+        // Microfinance\LoanCollectionController to avoid duplicate sends.
+        if (in_array($type, ['finance', 'mortgage'], true)) {
+            $this->dispatchOfficeCollectionSms($type, $sourceId, $amount, $paymentDate);
         }
 
         return response()->json($payload, $response->getStatusCode());

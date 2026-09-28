@@ -319,6 +319,7 @@ class CompanyController extends Controller
 
             $validated = $request->validate([
                 'enabled' => 'required|boolean',
+                'provider_code' => 'nullable|in:generic,smslenz',
                 'provider_name' => 'nullable|string|max:120',
                 'endpoint_url' => 'nullable|string|max:255',
                 'http_method' => 'nullable|in:GET,POST',
@@ -329,13 +330,22 @@ class CompanyController extends Controller
                 'api_key_header' => 'nullable|string|max:120',
                 'api_key_value' => 'nullable|string|max:255',
                 'sender_id' => 'nullable|string|max:100',
+                'smslenz_user_id' => 'nullable|string|max:120',
+                'smslenz_api_key' => 'nullable|string|max:255',
                 'timeout_seconds' => 'nullable|integer|min:3|max:60',
                 'message_template' => 'nullable|string|max:500',
+                'loan_release_template' => 'nullable|string|max:500',
+                'mortgage_approval_template' => 'nullable|string|max:500',
+                'birthday_template' => 'nullable|string|max:500',
+                'otp_template' => 'nullable|string|max:500',
+                'deposit_template' => 'nullable|string|max:500',
+                'withdrawal_template' => 'nullable|string|max:500',
             ]);
 
             $service = app(SmsGatewayService::class);
             $config = [
                 'enabled' => (bool) ($validated['enabled'] ?? false),
+                'provider_code' => strtolower(trim((string) ($validated['provider_code'] ?? 'generic'))),
                 'provider_name' => trim((string) ($validated['provider_name'] ?? '')),
                 'endpoint_url' => trim((string) ($validated['endpoint_url'] ?? '')),
                 'http_method' => strtoupper((string) ($validated['http_method'] ?? 'POST')),
@@ -346,8 +356,16 @@ class CompanyController extends Controller
                 'api_key_header' => trim((string) ($validated['api_key_header'] ?? 'X-API-Key')),
                 'api_key_value' => (string) ($validated['api_key_value'] ?? ''),
                 'sender_id' => trim((string) ($validated['sender_id'] ?? '')),
+                'smslenz_user_id' => (string) ($validated['smslenz_user_id'] ?? ''),
+                'smslenz_api_key' => (string) ($validated['smslenz_api_key'] ?? ''),
                 'timeout_seconds' => (int) ($validated['timeout_seconds'] ?? 10),
                 'message_template' => trim((string) ($validated['message_template'] ?? '')),
+                'loan_release_template' => trim((string) ($validated['loan_release_template'] ?? '')),
+                'mortgage_approval_template' => trim((string) ($validated['mortgage_approval_template'] ?? '')),
+                'birthday_template' => trim((string) ($validated['birthday_template'] ?? '')),
+                'otp_template' => trim((string) ($validated['otp_template'] ?? '')),
+                'deposit_template' => trim((string) ($validated['deposit_template'] ?? '')),
+                'withdrawal_template' => trim((string) ($validated['withdrawal_template'] ?? '')),
             ];
             $service->saveConfig($config);
 
@@ -369,11 +387,29 @@ class CompanyController extends Controller
             $validated = $request->validate([
                 'phone' => 'required|string|max:30',
                 'message' => 'nullable|string|max:500',
+                'config' => 'nullable|array',
+                'config.enabled' => 'nullable|boolean',
+                'config.provider_code' => 'nullable|in:generic,smslenz',
+                'config.provider_name' => 'nullable|string|max:120',
+                'config.endpoint_url' => 'nullable|string|max:255',
+                'config.http_method' => 'nullable|in:GET,POST',
+                'config.auth_type' => 'nullable|in:none,bearer,basic,api_key',
+                'config.username' => 'nullable|string|max:120',
+                'config.password' => 'nullable|string|max:255',
+                'config.auth_token' => 'nullable|string|max:255',
+                'config.api_key_header' => 'nullable|string|max:120',
+                'config.api_key_value' => 'nullable|string|max:255',
+                'config.sender_id' => 'nullable|string|max:100',
+                'config.smslenz_user_id' => 'nullable|string|max:120',
+                'config.smslenz_api_key' => 'nullable|string|max:255',
+                'config.timeout_seconds' => 'nullable|integer|min:3|max:60',
             ]);
 
             $service = app(SmsGatewayService::class);
             $message = trim((string) ($validated['message'] ?? 'Test SMS from Global Capital system.'));
-            $result = $service->send((string) $validated['phone'], $message);
+
+            $overrideConfig = is_array($validated['config'] ?? null) ? $validated['config'] : [];
+            $result = $service->sendWithConfig((string) $validated['phone'], $message, $overrideConfig);
 
             return response()->json($result, $result['ok'] ? 200 : 422);
         }

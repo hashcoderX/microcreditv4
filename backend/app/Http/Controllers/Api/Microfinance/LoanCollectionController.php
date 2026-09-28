@@ -7,10 +7,12 @@ use App\Models\EmployeeWallet;
 use App\Models\MicrofinanceLoanCollection;
 use App\Models\MicrofinanceLoanRequest;
 use App\Models\User;
+use App\Services\SmsGatewayService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class LoanCollectionController extends Controller
 {
@@ -251,6 +253,41 @@ class LoanCollectionController extends Controller
         }
 
         return $cursor;
+    }
+
+    private function dispatchCollectionSmsAlert(MicrofinanceLoanRequest $loanRequest, float $amount, string $collectionDate): void
+    {
+        $phone = trim((string) ($loanRequest->contact_no ?? ''));
+        if ($phone === '') {
+            return;
+        }
+
+        try {
+            /** @var SmsGatewayService $smsService */
+            $smsService = app(SmsGatewayService::class);
+            $messageContext = [
+                'customer_name' => (string) ($loanRequest->customer_name ?? 'Customer'),
+                'amount' => number_format($amount, 2, '.', ''),
+                'date' => $collectionDate,
+                'reference' => (string) ($loanRequest->loan_code ?: ('MF-' . $loanRequest->id)),
+                'module' => 'Microfinance',
+            ];
+
+            $smsMessage = $smsService->buildCollectionMessage($messageContext);
+            $smsResult = $smsService->send($phone, $smsMessage);
+            if (!($smsResult['ok'] ?? false)) {
+                Log::warning('Microfinance collection SMS failed', [
+                    'loan_request_id' => (int) $loanRequest->id,
+                    'phone' => $phone,
+                    'result' => $smsResult,
+                ]);
+            }
+        } catch (\Throwable $exception) {
+            Log::warning('Microfinance collection SMS dispatch exception', [
+                'loan_request_id' => (int) $loanRequest->id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 
     public function index(Request $request)
@@ -581,6 +618,12 @@ class LoanCollectionController extends Controller
         }
 
         $this->bumpCacheVersion();
+
+        $this->dispatchCollectionSmsAlert(
+            $loanRequest,
+            (float) $collectedAmount,
+            (string) $validated['collection_date']
+        );
 
         $breakdown = [
             'arrears_outstanding_before' => round($arrearsOutstandingBefore, 2),

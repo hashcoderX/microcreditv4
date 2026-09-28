@@ -22,6 +22,44 @@ use Carbon\Carbon;
 
 class MortgageController extends Controller
 {
+    private function sendMortgageApprovalSms(Mortgage $mortgage): void
+    {
+        try {
+            $mortgage->loadMissing('customer:id,first_name,last_name,phone');
+            $phone = trim((string) ($mortgage->customer?->phone ?? ''));
+            if ($phone === '') {
+                return;
+            }
+
+            $customerName = trim(((string) ($mortgage->customer?->first_name ?? '')) . ' ' . ((string) ($mortgage->customer?->last_name ?? '')));
+            $amount = (float) ($mortgage->approved_amount ?? $mortgage->requested_amount ?? 0);
+
+            /** @var SmsGatewayService $smsService */
+            $smsService = app(SmsGatewayService::class);
+            $smsMessage = $smsService->buildMortgageApprovalMessage([
+                'customer_name' => $customerName !== '' ? $customerName : 'Customer',
+                'module' => 'Mortgage',
+                'amount' => number_format($amount, 2, '.', ''),
+                'date' => now()->toDateString(),
+                'reference' => 'MORT-' . (int) $mortgage->id,
+            ]);
+
+            $smsResult = $smsService->send($phone, $smsMessage);
+            if (!($smsResult['ok'] ?? false)) {
+                Log::warning('Mortgage approval SMS failed', [
+                    'mortgage_id' => (int) $mortgage->id,
+                    'phone' => $phone,
+                    'result' => $smsResult,
+                ]);
+            }
+        } catch (\Throwable $exception) {
+            Log::warning('Mortgage approval SMS dispatch exception', [
+                'mortgage_id' => (int) $mortgage->id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+    }
+
     private function isAdminUser(?object $user): bool
     {
         if (!$user) {
@@ -1058,6 +1096,10 @@ class MortgageController extends Controller
             $mortgage->setAttribute('due_interest_amount', round($this->calculateCurrentInterestDue($mortgage, $principal), 2));
         }
         $mortgage->save();
+
+        if ($next === 'approved') {
+            $this->sendMortgageApprovalSms($mortgage);
+        }
 
         return response()->json([
             'id' => $mortgage->id,
