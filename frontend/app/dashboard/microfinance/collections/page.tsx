@@ -36,6 +36,8 @@ type LoanRow = {
   reference_no?: string | null;
   customer_no: string;
   customer_code?: string | null;
+  nic?: string | null;
+  nic_passport?: string | null;
   customer_name: string;
   loan_scope: 'route_loan' | 'center_loan' | 'direct_loan';
   mf_route_id?: number | string | null;
@@ -176,6 +178,8 @@ export default function CollectionManagementPage() {
   const [collections, setCollections] = useState<CollectionRow[]>([]);
   const [activeMode, setActiveMode] = useState<'center' | 'route' | 'office' | 'today' | 'next'>('center');
   const [finderCustomerNo, setFinderCustomerNo] = useState('');
+  const [finderHydratedAllLoans, setFinderHydratedAllLoans] = useState(false);
+  const [finderHydratingAllLoans, setFinderHydratingAllLoans] = useState(false);
   const [officeView, setOfficeView] = useState<'all' | 'today_debt' | 'date_debt'>('all');
   const [debtTargetDate, setDebtTargetDate] = useState(() => {
     const tomorrow = new Date();
@@ -418,7 +422,7 @@ export default function CollectionManagementPage() {
       .trim();
 
     return [authUser?.name, fullName, authUser?.email, authUser?.employee?.email]
-      .map((value) => String(value || '').trim().toLowerCase())
+      .map((value) => normalizeText(String(value || '')))
       .filter((value, index, arr) => value !== '' && arr.indexOf(value) === index);
   }, [authUser]);
 
@@ -508,7 +512,6 @@ export default function CollectionManagementPage() {
               ? {
                   status: 'approved',
                   branch_id: authUser.branch_id,
-                  field_officer: authUser?.name || undefined,
                   compact: loadProfile === 'fast' ? 1 : undefined,
                   limit: loadProfile === 'fast' ? loanFetchLimit : undefined,
                 }
@@ -677,6 +680,68 @@ export default function CollectionManagementPage() {
     }
   }, [loadProfile]);
 
+  useEffect(() => {
+    const keyword = finderCustomerNo.trim();
+    if (!token || keyword === '') return;
+    if (loadProfile !== 'fast') return;
+    if (finderHydratedAllLoans || finderHydratingAllLoans) return;
+    if (!hasMoreLoanRecords) {
+      setFinderHydratedAllLoans(true);
+      return;
+    }
+
+    let cancelled = false;
+
+    const hydrateAllLoansForFinder = async () => {
+      try {
+        setFinderHydratingAllLoans(true);
+        const response = await axios.get(`${API_BASE}/microfinance/loan-requests`, {
+          headers,
+          params:
+            isFieldOfficer && authUser?.branch_id
+              ? {
+                  status: 'approved',
+                  branch_id: authUser.branch_id,
+                }
+              : {
+                  status: 'approved',
+                },
+        });
+
+        if (cancelled) return;
+        const fullRows = Array.isArray(response.data) ? response.data : [];
+        setLoans(fullRows);
+        setFetchedLoanCount(fullRows.length);
+        setHasMoreLoanRecords(false);
+        setFinderHydratedAllLoans(true);
+      } catch {
+        if (!cancelled) {
+          setFinderHydratedAllLoans(false);
+        }
+      } finally {
+        if (!cancelled) {
+          setFinderHydratingAllLoans(false);
+        }
+      }
+    };
+
+    void hydrateAllLoansForFinder();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    finderCustomerNo,
+    token,
+    loadProfile,
+    finderHydratedAllLoans,
+    finderHydratingAllLoans,
+    hasMoreLoanRecords,
+    headers,
+    isFieldOfficer,
+    authUser?.branch_id,
+  ]);
+
   const scopedLoans = useMemo(() => {
     if (!isFieldOfficer) return loans;
 
@@ -685,7 +750,7 @@ export default function CollectionManagementPage() {
 
     return loans.filter((loan) => {
       const loanBranchId = Number(loan.branch_id || 0);
-      const loanOfficer = String(loan.field_officer || '').trim().toLowerCase();
+      const loanOfficer = normalizeText(String(loan.field_officer || ''));
       const loanOfficerId = Number(loan.field_officer_id || 0);
 
       const isBranchMatch = branchId > 0 ? loanBranchId === branchId : true;
@@ -943,6 +1008,48 @@ export default function CollectionManagementPage() {
     return customerNoField || '-';
   };
 
+  const normalizeNicDigits = (value: string) => String(value || '').replace(/[^0-9]/g, '').trim();
+
+  const nicVariants = (value: string) => {
+    const raw = String(value || '').trim().toLowerCase();
+    const digits = normalizeNicDigits(value);
+    const variants = new Set<string>();
+
+    if (raw) variants.add(raw);
+    if (digits) variants.add(digits);
+
+    // Sri Lankan NIC compatibility helpers:
+    // New NIC often appears as 12 digits (e.g. 199306701924)
+    // Old NIC core is commonly 9 digits plus a letter (e.g. 930670192V)
+    if (digits.length === 12) {
+      variants.add(digits.slice(2, 11));
+      variants.add(digits.slice(2));
+    }
+
+    if (digits.length === 10 || digits.length === 9) {
+      variants.add(digits.slice(0, 9));
+    }
+
+    return Array.from(variants).filter(Boolean);
+  };
+
+  const nicMatches = (keyword: string, loan: LoanRow) => {
+    const normalizedKeyword = String(keyword || '').trim().toLowerCase();
+    if (!normalizedKeyword) return false;
+
+    const loanNicValue = String(loan.nic || loan.nic_passport || '').trim();
+    if (!loanNicValue) return false;
+
+    const keywordVariants = nicVariants(normalizedKeyword);
+    const loanVariants = nicVariants(loanNicValue);
+
+    return keywordVariants.some((queryVariant) =>
+      loanVariants.some((loanVariant) =>
+        loanVariant.includes(queryVariant) || queryVariant.includes(loanVariant)
+      )
+    );
+  };
+
   const hydrateCollectModalForLoan = useCallback((loan: LoanRow) => {
     const graceDays = Number(loan.penalty_grace_days ?? 2);
     const penaltyRate = Number(loan.penalty_rate ?? 0);
@@ -1175,7 +1282,7 @@ export default function CollectionManagementPage() {
       .filter((loan) => {
         const customerNo = String(loan.customer_no || '').toLowerCase();
         const customerCode = String(loan.customer_code || '').toLowerCase();
-        return customerNo.includes(keyword) || customerCode.includes(keyword);
+        return customerNo.includes(keyword) || customerCode.includes(keyword) || nicMatches(keyword, loan);
       })
       .sort((a, b) => String(a.customer_no || '').localeCompare(String(b.customer_no || '')))
       .slice(0, 20);
@@ -2814,7 +2921,7 @@ export default function CollectionManagementPage() {
               <div className="relative min-w-[280px] flex-1 sm:flex-none">
                 <input
                   className="w-full pl-9 pr-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-black focus:outline-none focus:ring-2 focus:ring-cyan-200"
-                  placeholder="Find by Customer No"
+                  placeholder="Find by Customer No / NIC"
                   value={finderCustomerNo}
                   onChange={(e) => setFinderCustomerNo(e.target.value)}
                 />
@@ -2850,10 +2957,14 @@ export default function CollectionManagementPage() {
             </div>
           )}
 
+          {finderHydratingAllLoans && (
+            <p className="mt-2 text-xs font-semibold text-cyan-700">Loading all approved loans for accurate finder search...</p>
+          )}
+
           {!finderCustomerNo.trim() ? (
-            <p className="mt-3 text-sm text-slate-500">Type customer number to quickly find any loan and collect installment.</p>
+            <p className="mt-3 text-sm text-slate-500">Type customer number or NIC to quickly find any loan and collect installment.</p>
           ) : commonFinderResults.length === 0 ? (
-            <p className="mt-3 text-sm text-rose-600">No loan found for this customer number.</p>
+            <p className="mt-3 text-sm text-rose-600">No loan found for this customer number or NIC.</p>
           ) : (
             <div className="mt-3 overflow-x-auto rounded-2xl border border-cyan-100">
               <table className="min-w-full text-sm text-left text-slate-700 bg-white">
@@ -3604,8 +3715,8 @@ export default function CollectionManagementPage() {
         </div>
 
         {bulkCollectModal.open && (
-          <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto bg-slate-900/55 backdrop-blur-sm px-4 py-4 sm:py-6">
-            <div className="my-auto w-full max-w-5xl max-h-[calc(100vh-2rem)] overflow-hidden rounded-3xl border border-cyan-100 bg-white shadow-[0_30px_90px_-35px_rgba(15,23,42,0.75)]">
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center overflow-y-auto bg-slate-900/55 backdrop-blur-sm px-2 sm:px-4 py-2 sm:py-6">
+            <div className="my-auto flex h-[calc(100dvh-1rem)] w-full max-w-5xl flex-col overflow-hidden rounded-3xl border border-cyan-100 bg-white shadow-[0_30px_90px_-35px_rgba(15,23,42,0.75)] sm:h-auto sm:max-h-[calc(100dvh-2rem)]">
               <div className="relative bg-gradient-to-r from-cyan-600 via-sky-500 to-blue-500 px-5 py-5 text-white">
                 <div className="absolute -right-8 -top-8 h-24 w-24 rounded-full bg-white/20 blur-2xl"></div>
                 <div className="flex items-start justify-between gap-3">
@@ -3626,7 +3737,7 @@ export default function CollectionManagementPage() {
                 </div>
               </div>
 
-              <div className="max-h-[calc(100vh-14rem)] overflow-y-auto p-4 sm:p-5 space-y-4 text-black bg-gradient-to-b from-cyan-50/35 to-white">
+              <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 text-black bg-gradient-to-b from-cyan-50/35 to-white">
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                   <div>
                     <label className="text-xs font-semibold uppercase text-slate-600">Collection Date</label>
@@ -3742,7 +3853,7 @@ export default function CollectionManagementPage() {
                 </div>
               </div>
 
-              <div className="border-t border-cyan-100 bg-white px-4 sm:px-5 py-4 flex flex-col-reverse sm:flex-row sm:justify-between gap-2">
+              <div className="sticky bottom-0 z-10 border-t border-cyan-100 bg-white px-4 sm:px-5 py-4 pb-5 flex flex-col-reverse sm:flex-row sm:justify-between gap-2 shadow-[0_-8px_18px_-12px_rgba(15,23,42,0.35)]">
                 <p className="text-xs text-slate-500">
                   Selected Members:{' '}
                   <span className="font-semibold text-slate-700">
@@ -3772,8 +3883,8 @@ export default function CollectionManagementPage() {
         )}
 
         {collectModal.open && (
-          <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto bg-slate-900/55 backdrop-blur-sm px-4 py-4 sm:py-6">
-            <div className="my-auto w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-hidden rounded-3xl border border-emerald-100 bg-white shadow-[0_30px_90px_-35px_rgba(15,23,42,0.75)]">
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center overflow-y-auto bg-slate-900/55 backdrop-blur-sm px-2 sm:px-4 py-2 sm:py-6">
+            <div className="my-auto flex h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-emerald-100 bg-white shadow-[0_30px_90px_-35px_rgba(15,23,42,0.75)] sm:h-auto sm:max-h-[calc(100dvh-2rem)]">
               <div className="relative bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-500 px-5 py-5 text-white">
                 <div className="absolute -right-8 -top-8 h-24 w-24 rounded-full bg-white/20 blur-2xl"></div>
                 <div className="flex items-start justify-between gap-3">
@@ -3793,7 +3904,7 @@ export default function CollectionManagementPage() {
                 </div>
               </div>
 
-              <div className="max-h-[calc(100vh-14rem)] overflow-y-auto p-4 sm:p-5 space-y-4 text-black bg-gradient-to-b from-emerald-50/35 to-white">
+              <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 text-black bg-gradient-to-b from-emerald-50/35 to-white">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 rounded-2xl border border-emerald-100 bg-white p-3 text-xs">
                   <div>
                     <p className="uppercase text-slate-500">Due Date</p>
@@ -3874,7 +3985,7 @@ export default function CollectionManagementPage() {
                 </div>
               </div>
 
-              <div className="border-t border-emerald-100 bg-white px-4 sm:px-5 py-4 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+              <div className="sticky bottom-0 z-10 border-t border-emerald-100 bg-white px-4 sm:px-5 py-4 pb-5 flex flex-col-reverse sm:flex-row sm:justify-end gap-2 shadow-[0_-8px_18px_-12px_rgba(15,23,42,0.35)]">
                 <button
                   type="button"
                   onClick={closeCollectModal}

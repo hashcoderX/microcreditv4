@@ -466,6 +466,11 @@ export default function ReportsHubPage() {
         iconBg: 'from-emerald-500 to-teal-600',
         reports: [
           {
+            title: 'Finance Collection Report',
+            description: 'Collection history, payment tracking, and downloadable receipts for finance accounts.',
+            path: '/dashboard/finance/reports/collections',
+          },
+          {
             title: 'Finance Portfolio Reports',
             description: 'Portfolio KPIs, monthly trends, arrears, and profitability by finance account.',
             path: '/dashboard/finance/reports',

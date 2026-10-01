@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Microfinance;
 
 use App\Http\Controllers\Controller;
+use App\Models\Customer;
 use App\Models\EmployeeWallet;
 use App\Models\MicrofinanceLoanCollection;
 use App\Models\MicrofinanceLoanRequest;
@@ -257,8 +258,13 @@ class LoanCollectionController extends Controller
 
     private function dispatchCollectionSmsAlert(MicrofinanceLoanRequest $loanRequest, float $amount, string $collectionDate): void
     {
-        $phone = trim((string) ($loanRequest->contact_no ?? ''));
+        $phone = $this->resolveCollectionRecipientPhone($loanRequest);
         if ($phone === '') {
+            Log::info('Microfinance collection SMS skipped: no recipient phone resolved', [
+                'loan_request_id' => (int) $loanRequest->id,
+                'customer_no' => (string) ($loanRequest->customer_no ?? ''),
+                'nic' => (string) ($loanRequest->nic ?? ''),
+            ]);
             return;
         }
 
@@ -288,6 +294,75 @@ class LoanCollectionController extends Controller
                 'error' => $exception->getMessage(),
             ]);
         }
+    }
+
+    private function resolveCollectionRecipientPhone(MicrofinanceLoanRequest $loanRequest): string
+    {
+        $customerNo = strtoupper(trim((string) ($loanRequest->customer_no ?? '')));
+        $loanNic = strtoupper(trim((string) ($loanRequest->nic ?? '')));
+
+        $nicCandidates = [];
+        if ($loanNic !== '') {
+            $nicCandidates[] = $loanNic;
+
+            // For 12-digit NIC, also attempt legacy matches: 9-digit core + V/X.
+            if (preg_match('/^\d{12}$/', $loanNic) === 1) {
+                $legacyCore = substr($loanNic, 2, 9);
+                $nicCandidates[] = $legacyCore;
+                $nicCandidates[] = $legacyCore . 'V';
+                $nicCandidates[] = $legacyCore . 'X';
+            }
+        }
+        $nicCandidates = array_values(array_unique(array_filter($nicCandidates, static fn ($v) => trim((string) $v) !== '')));
+
+        $customer = null;
+        if ($customerNo !== '' || !empty($nicCandidates)) {
+            $customer = Customer::query()
+                ->where(function ($query) use ($customerNo, $nicCandidates) {
+                    $hasAny = false;
+
+                    if ($customerNo !== '') {
+                        $hasAny = true;
+                        $query->whereRaw('REPLACE(UPPER(customer_code), " ", "") = ?', [str_replace(' ', '', $customerNo)]);
+                    }
+
+                    if (!empty($nicCandidates)) {
+                        $placeholders = implode(',', array_fill(0, count($nicCandidates), '?'));
+                        if ($hasAny) {
+                            $query->orWhereRaw("UPPER(nic_passport) IN ($placeholders)", $nicCandidates)
+                                ->orWhereRaw("UPPER(old_nic) IN ($placeholders)", $nicCandidates);
+                        } else {
+                            $query->whereRaw("UPPER(nic_passport) IN ($placeholders)", $nicCandidates)
+                                ->orWhereRaw("UPPER(old_nic) IN ($placeholders)", $nicCandidates);
+                        }
+                    }
+                })
+                ->orderByDesc('id')
+                ->first();
+        }
+
+        if (!$customer) {
+            $loanCustomerName = trim((string) ($loanRequest->customer_name ?? ''));
+            $loanBranchId = (int) ($loanRequest->branch_id ?? 0);
+
+            if ($loanCustomerName !== '') {
+                $customer = Customer::query()
+                    ->when($loanBranchId > 0, function ($query) use ($loanBranchId) {
+                        $query->where('branch_id', $loanBranchId);
+                    })
+                    ->whereRaw("TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, ''))) = ?", [$loanCustomerName])
+                    ->orderByDesc('id')
+                    ->first();
+            }
+        }
+
+        $customerPhone = trim((string) ($customer?->phone ?? ''));
+        if ($customerPhone !== '') {
+            return $customerPhone;
+        }
+
+        // Fallback to the loan request contact only when customer profile has no phone.
+        return trim((string) ($loanRequest->contact_no ?? ''));
     }
 
     public function index(Request $request)

@@ -441,6 +441,7 @@ export default function FinanceReportsPage() {
     const portfolioRows = filteredRows.filter((row) => isPortfolioBookStatus(row.status));
 
     const totalFinanced = portfolioRows.reduce((sum, row) => sum + getFinancedAmount(row), 0);
+    const totalRefundableTarget = portfolioRows.reduce((sum, row) => sum + getTotalRefundableValue(row), 0);
     const totalCollected = portfolioRows.reduce((sum, row) => sum + getCollectedAmount(row), 0);
     const totalOutstanding = portfolioRows.reduce((sum, row) => sum + getOutstandingAmount(row), 0);
     const totalArrears = portfolioRows.reduce((sum, row) => sum + getArrearsAmount(row), 0);
@@ -455,11 +456,19 @@ export default function FinanceReportsPage() {
       return arrears > 0 || overdueDays > 0;
     }).length;
 
-    const collectionRate = totalFinanced > 0 ? (totalCollected / totalFinanced) * 100 : 0;
+    const collectionRate = totalRefundableTarget > 0 ? (totalCollected / totalRefundableTarget) * 100 : 0;
+
+    const expectedOutstanding = Math.max(totalRefundableTarget - totalCollected, 0);
+    const outstandingVariance = totalOutstanding - expectedOutstanding;
+    const accuracyPercent =
+      totalRefundableTarget > 0
+        ? Math.max(0, 100 - (Math.abs(outstandingVariance) / totalRefundableTarget) * 100)
+        : 100;
 
     return {
       totalAccounts,
       totalFinanced,
+      totalRefundableTarget,
       totalCollected,
       totalOutstanding,
       totalArrears,
@@ -469,6 +478,9 @@ export default function FinanceReportsPage() {
       atRiskCount,
       collectionRate,
       portfolioAccounts: portfolioRows.length,
+      expectedOutstanding,
+      outstandingVariance,
+      accuracyPercent,
     };
   }, [filteredRows]);
 
@@ -950,7 +962,7 @@ export default function FinanceReportsPage() {
           <MetricCard
             label="Collected"
             value={formatAmount(metrics.totalCollected)}
-            sub={`${metrics.collectionRate.toFixed(2)}% of financed book`}
+            sub={`${metrics.collectionRate.toFixed(2)}% of refundable target`}
             icon={HandCoins}
             accent={{ border: 'border-blue-100', iconBg: 'bg-blue-100', iconText: 'text-blue-700', glow: 'bg-blue-400' }}
           />
@@ -969,6 +981,38 @@ export default function FinanceReportsPage() {
             accent={{ border: 'border-rose-100', iconBg: 'bg-rose-100', iconText: 'text-rose-700', glow: 'bg-rose-400' }}
           />
         </div>
+
+        <ReportPanel
+          title="Summary Preview"
+          description="Quick reconciliation view to confirm finance report accuracy for current filters."
+          icon={PieChart}
+          headerClass="bg-gradient-to-r from-slate-50 to-cyan-50"
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+            <div className="rounded-xl border border-cyan-100 bg-cyan-50/40 p-3">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-cyan-700">Total refundable target</p>
+              <p className="mt-1 text-sm font-extrabold text-slate-900 tabular-nums">{formatAmount(metrics.totalRefundableTarget)}</p>
+            </div>
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-3">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">Expected outstanding</p>
+              <p className="mt-1 text-sm font-extrabold text-slate-900 tabular-nums">{formatAmount(metrics.expectedOutstanding)}</p>
+            </div>
+            <div className="rounded-xl border border-amber-100 bg-amber-50/40 p-3">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Book variance</p>
+              <p className={`mt-1 text-sm font-extrabold tabular-nums ${Math.abs(metrics.outstandingVariance) <= 1 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                {formatAmount(metrics.outstandingVariance)}
+              </p>
+              <p className="mt-0.5 text-[10px] text-slate-500">Book outstanding - expected outstanding</p>
+            </div>
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-3">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-indigo-700">Accuracy score</p>
+              <p className="mt-1 text-sm font-extrabold text-slate-900 tabular-nums">{metrics.accuracyPercent.toFixed(2)}%</p>
+            </div>
+          </div>
+          <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            Formula: Collection Rate = Collected / Total Refundable Target. Expected Outstanding = Total Refundable Target - Collected.
+          </div>
+        </ReportPanel>
 
         {/* Collection progress */}
         <div className="rounded-3xl border border-cyan-100 bg-white/95 shadow-lg p-5">

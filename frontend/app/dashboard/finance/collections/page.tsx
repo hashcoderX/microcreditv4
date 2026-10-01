@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
-import { getApiBaseUrl } from '@/lib/api';
+import CollectionReceiptBill, { type CollectionReceipt } from '@/app/components/collections/CollectionReceiptBill';
+import { getApiBaseUrl, getBackendOrigin, resolveStorageAssetUrl } from '@/lib/api';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
 import { ArrowLeft, CalendarDays, Eye, HandCoins, Search, ShieldCheck, Trash2, Users, Wallet } from 'lucide-react';
 
@@ -108,8 +109,21 @@ type AuthUser = {
   id?: number;
   name?: string;
   email?: string;
+  branch_id?: number | null;
   designation?: { id?: number; name?: string | null } | null;
   roles?: Array<{ id?: number; name?: string }>;
+};
+
+type FinanceCollectionItem = NonNullable<FinanceRow['collections']>[number];
+type ReceiptPaperSize = 'thermal-80' | 'dot-matrix' | 'a4';
+
+type CompanyInfo = {
+  id: number;
+  name?: string | null;
+  address?: string | null;
+  phone?: string | null;
+  logo_path?: string | null;
+  logo_url?: string | null;
 };
 
 function toNumber(v: unknown): number {
@@ -221,6 +235,7 @@ export default function FinanceCollectionsPage() {
   const PAGE_SIZE = 10;
   const widgetPrefix = 'finance_collections_widget_';
   const router = useRouter();
+  const backendOrigin = useMemo(() => getBackendOrigin(), []);
   const [token, setToken] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
@@ -257,6 +272,30 @@ export default function FinanceCollectionsPage() {
     total_paid_amount: number;
     balance_amount: number;
   } | null>(null);
+  const [receiptModal, setReceiptModal] = useState<{ open: boolean; receipt: CollectionReceipt | null }>({
+    open: false,
+    receipt: null,
+  });
+  const [downloadReceiptModal, setDownloadReceiptModal] = useState<{
+    open: boolean;
+    item: FinanceCollectionItem | null;
+    paperSize: ReceiptPaperSize;
+  }>({
+    open: false,
+    item: null,
+    paperSize: 'thermal-80',
+  });
+  const [receiptCompany, setReceiptCompany] = useState<{
+    name: string;
+    address: string;
+    contactNo: string;
+    logoUrl: string;
+  }>({
+    name: 'BMS Collection Center',
+    address: '',
+    contactNo: '',
+    logoUrl: '/media/company/logo',
+  });
 
   const fetchNotificationPreview = useCallback(async (authToken: string) => {
     try {
@@ -283,6 +322,74 @@ export default function FinanceCollectionsPage() {
 
   const displayName = String(authUser?.name || authUser?.email || 'User').trim();
   const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
+
+  const resolveCompanyLogoUrl = useCallback(
+    (company: CompanyInfo | null) => {
+      const direct = String(company?.logo_url || '').trim();
+      if (direct) {
+        const normalized = resolveStorageAssetUrl(direct);
+        return normalized.startsWith('/') ? `${backendOrigin}${normalized}` : normalized;
+      }
+
+      const path = String(company?.logo_path || '').trim();
+      if (path) {
+        const normalized = resolveStorageAssetUrl(path);
+        return normalized.startsWith('/') ? `${backendOrigin}${normalized}` : normalized;
+      }
+
+      return '/media/company/logo';
+    },
+    [backendOrigin]
+  );
+
+  const buildCollectionReceipt = useCallback(
+    (
+      finance: FinanceRow,
+      payment: {
+        amount: number;
+        date: string;
+        payType: string;
+        referenceNo: string;
+      },
+      payload: Record<string, unknown>
+    ): CollectionReceipt => {
+      const collection = (payload?.collection as Record<string, unknown> | undefined) || {};
+      const calc = (payload?.calculation as Record<string, unknown> | undefined) || {};
+      const fullName = `${finance.customer?.first_name || ''} ${finance.customer?.last_name || ''}`.trim();
+      const customerNo = displayCustomerNo(finance.customer);
+      const paidAmount = Number(collection.payment_amount ?? payment.amount ?? 0);
+      const previousTotalPaid = Number(finance.total_paid_amount || 0);
+      const nextTotalPaid = Number(calc.total_paid_amount ?? previousTotalPaid + paidAmount);
+
+      return {
+        bill_no: `BILL-FIN-${finance.id}-${Number(collection.id || Date.now())}`,
+        product_type: String(finance.product_type || 'finance').toLowerCase(),
+        product_label: String(finance.product_type || 'Finance Collection'),
+        reference: String(finance.asset_reference || `FIN-${finance.id}`),
+        source_id: Number(finance.id),
+        customer_name: fullName || 'Customer',
+        customer_no: customerNo === '-' ? null : customerNo,
+        loan_product: String(finance.product_type || finance.finance_type || 'Finance'),
+        payment_date: String(collection.payment_date || payment.date),
+        payment_type: String(collection.pay_type || payment.payType || 'cash'),
+        payment_reference: String(collection.reference_no || payment.referenceNo || '').trim() || null,
+        paid_amount: paidAmount,
+        principal_paid: Number(calc.principal_paid ?? collection.principal_paid ?? 0),
+        interest_paid: Number(calc.interest_paid ?? collection.interest_paid ?? 0),
+        penalty_paid: 0,
+        arrears_before: Number((collection.meta as { opening_arrears?: unknown } | undefined)?.opening_arrears ?? finance.arrears ?? 0),
+        arrears_after: Number(calc.new_arrears ?? collection.arrears ?? 0),
+        outstanding: Number(calc.balance_amount ?? collection.remaining_capital ?? finance.balance_amount ?? 0),
+        total_paid_cumulative: nextTotalPaid,
+        installment_amount: Number(finance.installment_amount || 0),
+        next_due_date: String(finance.next_collection_date || finance.due_date || '').trim() || null,
+        note: null,
+        collection_id: Number(collection.id || 0) || null,
+        printed_at: new Date().toISOString(),
+      };
+    },
+    []
+  );
 
   const fetchFinanceRows = async (authToken: string) => {
     const response = await fetch('/api/finances?per_page=1000', {
@@ -339,6 +446,42 @@ export default function FinanceCollectionsPage() {
 
     run();
   }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+
+    const loadReceiptCompany = async () => {
+      try {
+        const response = await axios.get(`${getApiBaseUrl()}/companies`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+        });
+
+        const list = Array.isArray(response.data)
+          ? response.data
+          : Array.isArray(response.data?.data)
+            ? response.data.data
+            : [];
+
+        const branchId = Number(authUser?.branch_id || 0);
+        const matched = (list as CompanyInfo[]).find((item) => Number(item.id) === branchId) || (list[0] as CompanyInfo | undefined);
+        if (!matched) return;
+
+        setReceiptCompany({
+          name: String(matched.name || 'BMS Collection Center'),
+          address: String(matched.address || ''),
+          contactNo: String(matched.phone || ''),
+          logoUrl: resolveCompanyLogoUrl(matched),
+        });
+      } catch {
+        setReceiptCompany((prev) => ({ ...prev, logoUrl: '/media/company/logo' }));
+      }
+    };
+
+    void loadReceiptCompany();
+  }, [authUser?.branch_id, resolveCompanyLogoUrl, token]);
 
   const fetchWidgetPreferences = useCallback(async (authToken: string) => {
     try {
@@ -560,6 +703,18 @@ export default function FinanceCollectionsPage() {
         return;
       }
 
+      const receipt = buildCollectionReceipt(
+        selectedRecord,
+        {
+          amount,
+          date: collectionDate,
+          payType: collectionPayType,
+          referenceNo: collectionReference,
+        },
+        (payload || {}) as Record<string, unknown>
+      );
+      setReceiptModal({ open: true, receipt });
+
       const calc = payload?.calculation;
       if (calc) {
         setLastCalculation({
@@ -589,6 +744,144 @@ export default function FinanceCollectionsPage() {
       setCollecting(false);
     }
   };
+
+  const downloadCollectionReceipt = useCallback(
+    (item: FinanceCollectionItem, paperSize: ReceiptPaperSize) => {
+      if (!selectedRecord) return;
+
+      const payTypeRaw = String(item.pay_type || 'cash').trim();
+      const receipt = buildCollectionReceipt(
+        selectedRecord,
+        {
+          amount: Number(item.payment_amount || 0),
+          date: String(item.payment_date || ''),
+          payType: payTypeRaw,
+          referenceNo: String(item.reference_no || ''),
+        },
+        {
+          collection: item,
+          calculation: {
+            interest_paid: item.interest_paid,
+            principal_paid: item.principal_paid,
+            new_arrears: item.arrears,
+            balance_amount: item.remaining_capital,
+            total_paid_amount: selectedRecord.total_paid_amount,
+          },
+        }
+      );
+
+      const formatAmount = (value: unknown) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return '0.00';
+        return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      };
+
+      const formatDate = (value: string | null | undefined) => {
+        if (!value) return '-';
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return value;
+        return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+      };
+
+      const escapeHtml = (value: unknown) =>
+        String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+
+      const layout =
+        paperSize === 'thermal-80'
+          ? {
+              bodyWidth: '72mm',
+              pageSize: '80mm auto',
+              margin: '3mm',
+              fontSize: '11px',
+            }
+          : paperSize === 'dot-matrix'
+            ? {
+                bodyWidth: '180mm',
+                pageSize: 'auto',
+                margin: '8mm',
+                fontSize: '12px',
+              }
+            : {
+                bodyWidth: '180mm',
+                pageSize: 'A4 portrait',
+                margin: '12mm',
+                fontSize: '12px',
+              };
+
+      const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(receipt.bill_no)}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Courier New", monospace;
+      background:#fff;
+      color:#000;
+      width:${layout.bodyWidth};
+      max-width:${layout.bodyWidth};
+      margin:10px auto;
+      padding:8px;
+      font-size:${layout.fontSize};
+      line-height:1.35;
+    }
+    .c { text-align:center; }
+    .r { display:flex; justify-content:space-between; gap:8px; margin:2px 0; font-size:12px; }
+    .d { border-top:1px dashed #111; margin:8px 0; }
+    .box { border:1px solid #111; padding:6px; text-align:center; margin:8px 0; }
+    .r span:last-child { text-align:right; max-width:58%; word-break:break-word; }
+    @media print {
+      @page { size: ${layout.pageSize}; margin: ${layout.margin}; }
+      body { margin:0 auto; padding:0; width:${layout.bodyWidth}; max-width:${layout.bodyWidth}; }
+    }
+  </style>
+</head>
+<body>
+  <div class="c">
+    <strong>${escapeHtml(receiptCompany.name || 'BMS Collection Center')}</strong>
+    ${receiptCompany.address ? `<div>${escapeHtml(receiptCompany.address)}</div>` : ''}
+    ${receiptCompany.contactNo ? `<div>Contact: ${escapeHtml(receiptCompany.contactNo)}</div>` : ''}
+    <div><strong>OFFICIAL COLLECTION RECEIPT</strong></div>
+  </div>
+  <div class="d"></div>
+  <div class="r"><span>Bill No</span><span>${escapeHtml(receipt.bill_no)}</span></div>
+  <div class="r"><span>Date</span><span>${escapeHtml(formatDate(receipt.payment_date))}</span></div>
+  <div class="r"><span>Reference</span><span>${escapeHtml(receipt.reference)}</span></div>
+  <div class="r"><span>Customer</span><span>${escapeHtml(receipt.customer_name)}</span></div>
+  <div class="r"><span>Customer No</span><span>${escapeHtml(receipt.customer_no || '-')}</span></div>
+  <div class="r"><span>Product</span><span>${escapeHtml(receipt.loan_product || '-')}</span></div>
+  <div class="d"></div>
+  <div class="box">
+    <div>AMOUNT PAID TODAY</div>
+    <div><strong>LKR ${escapeHtml(formatAmount(receipt.paid_amount))}</strong></div>
+  </div>
+  <div class="r"><span>Principal paid</span><span>${escapeHtml(formatAmount(receipt.principal_paid))}</span></div>
+  <div class="r"><span>Interest paid</span><span>${escapeHtml(formatAmount(receipt.interest_paid))}</span></div>
+  <div class="r"><span>Arrears (after)</span><span>${escapeHtml(formatAmount(receipt.arrears_after))}</span></div>
+  <div class="r"><span>Outstanding</span><span>${escapeHtml(formatAmount(receipt.outstanding))}</span></div>
+  <div class="r"><span>Pay type</span><span>${escapeHtml(String(receipt.payment_type || '').replaceAll('_', ' ').toUpperCase())}</span></div>
+  ${receipt.payment_reference ? `<div class="r"><span>Reference no</span><span>${escapeHtml(receipt.payment_reference)}</span></div>` : ''}
+</body>
+</html>`;
+
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${receipt.bill_no}-${paperSize}.html`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    },
+    [buildCollectionReceipt, receiptCompany.address, receiptCompany.contactNo, receiptCompany.name, selectedRecord]
+  );
 
   const deleteCollection = async (collectionId: number) => {
     if (!token || !selectedRecord) return;
@@ -1328,6 +1621,20 @@ export default function FinanceCollectionsPage() {
                                 <td className="px-2 py-2">
                                   <button
                                     type="button"
+                                    onClick={() =>
+                                      setDownloadReceiptModal({
+                                        open: true,
+                                        item,
+                                        paperSize: 'thermal-80',
+                                      })
+                                    }
+                                    disabled={collecting || detailLoading}
+                                    className="mr-2 inline-flex items-center gap-1 rounded-md border border-cyan-200 bg-cyan-50 px-2 py-1 text-[11px] font-semibold text-cyan-700 hover:bg-cyan-100 disabled:opacity-60"
+                                  >
+                                    Download receipt
+                                  </button>
+                                  <button
+                                    type="button"
                                     onClick={() => deleteCollection(item.id)}
                                     disabled={deletingCollectionId === item.id || collecting || detailLoading}
                                     className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
@@ -1347,6 +1654,68 @@ export default function FinanceCollectionsPage() {
                   </div>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <CollectionReceiptBill
+        open={receiptModal.open}
+        receipt={receiptModal.receipt}
+        onClose={() => setReceiptModal({ open: false, receipt: null })}
+        companyName={receiptCompany.name}
+        companyAddress={receiptCompany.address}
+        companyContactNo={receiptCompany.contactNo}
+        companyLogoUrl={receiptCompany.logoUrl}
+      />
+
+      {downloadReceiptModal.open && (
+        <div className="fixed inset-0 z-[80] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl border border-cyan-100 bg-white p-5 shadow-2xl">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700">Download Receipt</p>
+            <h4 className="mt-1 text-lg font-extrabold text-slate-900">Choose Paper Size</h4>
+            <p className="mt-1 text-sm text-slate-600">Receipt file layout will be aligned to selected paper size.</p>
+
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {([
+                { id: 'thermal-80', label: 'Thermal 80mm' },
+                { id: 'dot-matrix', label: 'Dot matrix' },
+                { id: 'a4', label: 'A4 / Letter' },
+              ] as Array<{ id: ReceiptPaperSize; label: string }>).map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setDownloadReceiptModal((prev) => ({ ...prev, paperSize: option.id }))}
+                  className={`rounded-xl border px-3 py-2 text-left transition ${
+                    downloadReceiptModal.paperSize === option.id
+                      ? 'border-cyan-500 bg-cyan-50 ring-1 ring-cyan-200'
+                      : 'border-slate-200 bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  <p className="text-xs font-bold text-slate-900">{option.label}</p>
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!downloadReceiptModal.item) return;
+                  downloadCollectionReceipt(downloadReceiptModal.item, downloadReceiptModal.paperSize);
+                  setDownloadReceiptModal({ open: false, item: null, paperSize: 'thermal-80' });
+                }}
+                className="flex-1 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 px-4 py-2.5 text-sm font-bold text-white"
+              >
+                Download
+              </button>
+              <button
+                type="button"
+                onClick={() => setDownloadReceiptModal({ open: false, item: null, paperSize: 'thermal-80' })}
+                className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-800 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>
