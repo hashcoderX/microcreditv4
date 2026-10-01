@@ -182,9 +182,14 @@ export default function OutstandingCustomersReportPage() {
   }, [rows, keyword, officerFilter]);
 
   const summary = useMemo(() => {
-    return filteredRows.reduce(
+    const uniqueCustomers = new Set<string>();
+    const totals = filteredRows.reduce(
       (acc, row) => {
-        acc.customers += 1;
+        const customerNo = String(row.customerNo || '').trim().toLowerCase();
+        const customerName = String(row.customerName || '').trim().toLowerCase();
+        const customerKey = customerNo && customerNo !== '-' ? customerNo : `name:${customerName || '-'}`;
+
+        uniqueCustomers.add(customerKey);
         acc.loanAmount += row.loanAmount;
         acc.refundable += row.refundableAmount;
         acc.collected += row.collectedAmount;
@@ -193,7 +198,6 @@ export default function OutstandingCustomersReportPage() {
         return acc;
       },
       {
-        customers: 0,
         loanAmount: 0,
         refundable: 0,
         collected: 0,
@@ -201,6 +205,11 @@ export default function OutstandingCustomersReportPage() {
         arrears: 0,
       }
     );
+
+    return {
+      customers: uniqueCustomers.size,
+      ...totals,
+    };
   }, [filteredRows]);
 
   const formatMoney = (value: number) => Number(value || 0).toFixed(2);
@@ -536,12 +545,12 @@ export default function OutstandingCustomersReportPage() {
           {loading ? (
             <p className="py-8 text-center text-slate-600">Loading report...</p>
           ) : filteredRows.length === 0 ? (
-            <p className="py-8 text-center text-slate-600">No outstanding customers found.</p>
+            <p className="py-8 text-center text-slate-600">No outstanding customer loans found.</p>
           ) : (
             <>
             <div className="mb-3 flex items-center justify-between gap-3 text-sm text-slate-600">
               <span>
-                Showing {pageStart}-{pageEnd} of {filteredRows.length} outstanding customers
+                Showing {pageStart}-{pageEnd} of {filteredRows.length} outstanding loan accounts
               </span>
               <div className="flex items-center gap-2">
                 <label className="text-xs uppercase tracking-wide text-slate-500">Rows</label>

@@ -1949,6 +1949,19 @@ class AccountingReportsController extends Controller
             ->sort()
             ->values();
 
+        $uniqueCustomers = $rows
+            ->map(function (array $row) {
+                $customerNo = strtolower(trim((string) ($row['customerNo'] ?? '')));
+                if ($customerNo !== '' && $customerNo !== '-') {
+                    return $customerNo;
+                }
+
+                $customerName = strtolower(trim((string) ($row['customerName'] ?? '')));
+                return 'name:' . ($customerName !== '' ? $customerName : '-');
+            })
+            ->unique()
+            ->count();
+
         return response()->json([
             'company' => [
                 'id' => $company->id,
@@ -1963,7 +1976,8 @@ class AccountingReportsController extends Controller
                 'date' => $today,
             ],
             'summary' => [
-                'customers' => $rows->count(),
+                'customers' => $uniqueCustomers,
+                'loan_accounts' => $rows->count(),
                 'loan_amount' => $this->roundMoney((float) $rows->sum('loanAmount')),
                 'refundable' => $this->roundMoney((float) $rows->sum('refundableAmount')),
                 'collected' => $this->roundMoney((float) $rows->sum('collectedAmount')),

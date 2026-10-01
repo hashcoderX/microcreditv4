@@ -552,6 +552,8 @@ export default function RequestLoanPage() {
   const [branchScopedCenterIds, setBranchScopedCenterIds] = useState<number[]>([]);
   const [customerLookupQuery, setCustomerLookupQuery] = useState('');
   const [showCustomerLookupOptions, setShowCustomerLookupOptions] = useState(false);
+  const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
+  const [remoteCustomerMatches, setRemoteCustomerMatches] = useState<ExistingCustomer[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState<number>(0);
   const [activeStep, setActiveStep] = useState(1);
 
@@ -1788,10 +1790,75 @@ export default function RequestLoanPage() {
     return `${first} ${last}`.trim();
   }, []);
 
+  useEffect(() => {
+    if (!token) return;
+
+    const query = customerLookupQuery.trim();
+    if (query.length < 2) {
+      setRemoteCustomerMatches([]);
+      setCustomerLookupLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setCustomerLookupLoading(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        const response = await axios.get(`${API_BASE}/customers/finance-search`, {
+          headers,
+          params: {
+            customer_no: query,
+            nic_passport: query,
+            name: query,
+            phone: query,
+            limit: 20,
+          },
+        });
+
+        if (cancelled) return;
+
+        const matches = Array.isArray(response.data?.matches) ? response.data.matches : [];
+        const customersFromSearch = matches
+          .map((row: unknown) => {
+            if (!row || typeof row !== 'object') return null;
+            const customer = (row as { customer?: unknown }).customer;
+            if (!customer || typeof customer !== 'object') return null;
+            return customer as ExistingCustomer;
+          })
+          .filter((customer: ExistingCustomer | null): customer is ExistingCustomer => Boolean(customer?.id));
+
+        setRemoteCustomerMatches(customersFromSearch);
+      } catch {
+        if (!cancelled) {
+          setRemoteCustomerMatches([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setCustomerLookupLoading(false);
+        }
+      }
+    }, 260);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [token, customerLookupQuery, headers]);
+
   const customerLookupOptions = useMemo(() => {
     const keyword = normalizeText(customerLookupQuery);
 
-    const mapped = customers
+    const mergedCustomers = [...remoteCustomerMatches, ...customers];
+    const uniqueById = new Map<number, ExistingCustomer>();
+    mergedCustomers.forEach((customer) => {
+      const id = Number(customer?.id || 0);
+      if (id > 0 && !uniqueById.has(id)) {
+        uniqueById.set(id, customer);
+      }
+    });
+
+    const mapped = Array.from(uniqueById.values())
       .map((customer) => {
         const customerCode = normalizeCustomerNo(String(customer.customer_code || ''));
         const nic = String(customer.nic_passport || '').trim();
@@ -1814,7 +1881,7 @@ export default function RequestLoanPage() {
       : mapped;
 
     return filtered.slice(0, 10);
-  }, [customers, customerLookupQuery, getCustomerDisplayName]);
+  }, [customers, remoteCustomerMatches, customerLookupQuery, getCustomerDisplayName]);
 
   const fillCustomerFromRecord = useCallback(
     (customer: ExistingCustomer) => {
@@ -1835,6 +1902,13 @@ export default function RequestLoanPage() {
         address: address || prev.address,
         contact_no: customer.phone || prev.contact_no,
       }));
+      setCustomers((prev) => {
+        const id = Number(customer.id || 0);
+        if (id <= 0 || prev.some((item) => Number(item.id || 0) === id)) {
+          return prev;
+        }
+        return [customer, ...prev];
+      });
       setSelectedCustomerId(Number(customer.id || 0));
       setCustomerLookupQuery([customerCode, fullName, nic].filter(Boolean).join(' | '));
       setShowCustomerLookupOptions(false);
@@ -3589,21 +3663,29 @@ export default function RequestLoanPage() {
                         }}
                       />
 
-                      {showCustomerLookupOptions && customerLookupOptions.length > 0 && (
+                      {showCustomerLookupOptions && (
                         <div className="absolute z-30 mt-1 w-full rounded-xl border border-emerald-100 bg-white shadow-xl max-h-64 overflow-auto">
-                          {customerLookupOptions.map(({ customer, name, customerCode, nic }) => (
-                            <button
-                              key={customer.id}
-                              type="button"
-                              onMouseDown={() => applyCustomerFromSuggestion(customer)}
-                              className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-emerald-50 last:border-b-0"
-                            >
-                              <p className="text-sm font-semibold text-slate-800">{name || 'Unnamed customer'}</p>
-                              <p className="text-xs text-slate-500">
-                                {[customerCode, nic].filter(Boolean).join(' | ') || 'No customer number or NIC'}
-                              </p>
-                            </button>
-                          ))}
+                          {customerLookupLoading ? (
+                            <div className="px-3 py-2 text-sm text-slate-500">Searching customers...</div>
+                          ) : customerLookupOptions.length > 0 ? (
+                            customerLookupOptions.map(({ customer, name, customerCode, nic }) => (
+                              <button
+                                key={customer.id}
+                                type="button"
+                                onMouseDown={() => applyCustomerFromSuggestion(customer)}
+                                className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-emerald-50 last:border-b-0"
+                              >
+                                <p className="text-sm font-semibold text-slate-800">{name || 'Unnamed customer'}</p>
+                                <p className="text-xs text-slate-500">
+                                  {[customerCode, nic].filter(Boolean).join(' | ') || 'No customer number or NIC'}
+                                </p>
+                              </button>
+                            ))
+                          ) : customerLookupQuery.trim().length >= 2 ? (
+                            <div className="px-3 py-2 text-sm text-slate-500">No customer found.</div>
+                          ) : (
+                            <div className="px-3 py-2 text-sm text-slate-500">Type at least 2 characters to search.</div>
+                          )}
                         </div>
                       )}
                     </div>
