@@ -25,6 +25,7 @@ use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class AccountingReportsController extends Controller
 {
@@ -1985,6 +1986,153 @@ class AccountingReportsController extends Controller
                 'arrears' => $this->roundMoney((float) $rows->sum('arrearsAmount')),
             ],
             'officer_options' => $officerOptions,
+            'rows' => $rows,
+        ]);
+    }
+
+    public function smsCommunicationReport(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'branch_id' => ['nullable', 'integer', 'exists:companies,id'],
+            'company_id' => ['nullable', 'integer', 'exists:companies,id'],
+            'status' => ['nullable', 'string', 'in:all,sent,failed'],
+            'module' => ['nullable', 'string', 'max:80'],
+            'phone' => ['nullable', 'string', 'max:30'],
+            'q' => ['nullable', 'string', 'max:150'],
+            'from_date' => ['nullable', 'date'],
+            'to_date' => ['nullable', 'date'],
+            'limit' => ['nullable', 'integer', 'min:10', 'max:1000'],
+        ]);
+
+        if (!Schema::hasTable('sms_message_logs')) {
+            return response()->json([
+                'filters' => [
+                    'status' => 'all',
+                    'module' => null,
+                    'phone' => null,
+                    'q' => null,
+                    'from_date' => null,
+                    'to_date' => null,
+                ],
+                'summary' => [
+                    'total' => 0,
+                    'sent' => 0,
+                    'failed' => 0,
+                    'success_rate' => 0,
+                ],
+                'module_options' => [],
+                'rows' => [],
+            ]);
+        }
+
+        $statusFilter = strtolower(trim((string) ($validated['status'] ?? 'all')));
+        $moduleFilter = trim((string) ($validated['module'] ?? ''));
+        $phoneFilter = trim((string) ($validated['phone'] ?? ''));
+        $keyword = trim((string) ($validated['q'] ?? ''));
+        $fromDate = $validated['from_date'] ?? Carbon::today()->subDays(30)->toDateString();
+        $toDate = $validated['to_date'] ?? Carbon::today()->toDateString();
+        $limit = (int) ($validated['limit'] ?? 300);
+
+        $isAdmin = $this->isAdminUser($request->user());
+        $branchId = null;
+        if ($isAdmin) {
+            $requestedBranch = (int) ($validated['branch_id'] ?? $validated['company_id'] ?? 0);
+            $branchId = $requestedBranch > 0 ? $requestedBranch : null;
+        } else {
+            $scoped = (int) ($this->scopedBranchId($request) ?? 0);
+            if ($scoped <= 0) {
+                return response()->json(['message' => 'Select a branch to view SMS records.'], 422);
+            }
+            $branchId = $scoped;
+        }
+
+        $base = DB::table('sms_message_logs as logs')
+            ->when($branchId !== null, fn ($query) => $query->where('logs.branch_id', '=', (int) $branchId))
+            ->when($statusFilter !== '' && $statusFilter !== 'all', fn ($query) => $query->whereRaw('LOWER(COALESCE(logs.status, "")) = ?', [$statusFilter]))
+            ->when($moduleFilter !== '', fn ($query) => $query->whereRaw('LOWER(COALESCE(logs.module, "")) = ?', [strtolower($moduleFilter)]))
+            ->when($phoneFilter !== '', fn ($query) => $query->whereRaw('COALESCE(logs.phone, "") LIKE ?', ['%' . $phoneFilter . '%']))
+            ->when($keyword !== '', function ($query) use ($keyword) {
+                $like = '%' . strtolower($keyword) . '%';
+                $query->where(function ($nested) use ($like) {
+                    $nested
+                        ->whereRaw('LOWER(COALESCE(logs.reference, "")) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(COALESCE(logs.customer_name, "")) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(COALESCE(logs.phone, "")) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(COALESCE(logs.message, "")) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(COALESCE(logs.error_message, "")) LIKE ?', [$like]);
+                });
+            })
+            ->whereDate(DB::raw('COALESCE(logs.sent_at, logs.created_at)'), '>=', $fromDate)
+            ->whereDate(DB::raw('COALESCE(logs.sent_at, logs.created_at)'), '<=', $toDate);
+
+        $total = (clone $base)->count();
+        $sent = (clone $base)->whereRaw('LOWER(COALESCE(logs.status, "")) = ?', ['sent'])->count();
+        $failed = (clone $base)->whereRaw('LOWER(COALESCE(logs.status, "")) = ?', ['failed'])->count();
+
+        $rows = (clone $base)
+            ->selectRaw('logs.id')
+            ->selectRaw('logs.branch_id')
+            ->selectRaw('logs.user_id')
+            ->selectRaw('COALESCE(logs.module, "General") as module')
+            ->selectRaw('COALESCE(logs.reference, "") as reference')
+            ->selectRaw('COALESCE(logs.customer_name, "") as customer_name')
+            ->selectRaw('COALESCE(logs.phone, "") as phone')
+            ->selectRaw('COALESCE(logs.message, "") as message')
+            ->selectRaw('COALESCE(logs.status, "failed") as status')
+            ->selectRaw('COALESCE(logs.error_message, "") as error_message')
+            ->selectRaw('logs.provider_status_code')
+            ->selectRaw('COALESCE(logs.provider_response, "") as provider_response')
+            ->selectRaw('COALESCE(logs.sent_at, logs.created_at) as sent_at')
+            ->orderByDesc(DB::raw('COALESCE(logs.sent_at, logs.created_at)'))
+            ->orderByDesc('logs.id')
+            ->limit($limit)
+            ->get()
+            ->map(function ($row) {
+                return [
+                    'id' => (int) ($row->id ?? 0),
+                    'branchId' => isset($row->branch_id) ? (int) $row->branch_id : null,
+                    'userId' => isset($row->user_id) ? (int) $row->user_id : null,
+                    'module' => (string) ($row->module ?? 'General'),
+                    'reference' => (string) ($row->reference ?? ''),
+                    'customerName' => (string) ($row->customer_name ?? ''),
+                    'phone' => (string) ($row->phone ?? ''),
+                    'message' => (string) ($row->message ?? ''),
+                    'status' => strtolower((string) ($row->status ?? 'failed')),
+                    'errorMessage' => (string) ($row->error_message ?? ''),
+                    'providerStatusCode' => isset($row->provider_status_code) ? (int) $row->provider_status_code : null,
+                    'providerResponse' => (string) ($row->provider_response ?? ''),
+                    'sentAt' => $row->sent_at ? Carbon::parse((string) $row->sent_at)->toDateTimeString() : null,
+                ];
+            })
+            ->values();
+
+        $moduleOptions = DB::table('sms_message_logs')
+            ->when($branchId !== null, fn ($query) => $query->where('branch_id', '=', (int) $branchId))
+            ->selectRaw('COALESCE(module, "General") as module')
+            ->groupBy('module')
+            ->orderBy('module')
+            ->pluck('module')
+            ->filter(fn ($value) => trim((string) $value) !== '')
+            ->values();
+
+        return response()->json([
+            'filters' => [
+                'branch_id' => $branchId,
+                'status' => $statusFilter,
+                'module' => $moduleFilter !== '' ? $moduleFilter : null,
+                'phone' => $phoneFilter !== '' ? $phoneFilter : null,
+                'q' => $keyword !== '' ? $keyword : null,
+                'from_date' => $fromDate,
+                'to_date' => $toDate,
+                'limit' => $limit,
+            ],
+            'summary' => [
+                'total' => $total,
+                'sent' => $sent,
+                'failed' => $failed,
+                'success_rate' => $total > 0 ? $this->roundMoney(($sent / $total) * 100) : 0,
+            ],
+            'module_options' => $moduleOptions,
             'rows' => $rows,
         ]);
     }

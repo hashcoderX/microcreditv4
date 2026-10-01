@@ -485,6 +485,10 @@ export default function CompanySettingsPage() {
   const [deletingTemplateId, setDeletingTemplateId] = useState<number | null>(null);
   const [backingUp, setBackingUp] = useState(false);
   const [backingUpDatabase, setBackingUpDatabase] = useState(false);
+  const [dbBackupProgressPercent, setDbBackupProgressPercent] = useState(0);
+  const [dbBackupProgressLoaded, setDbBackupProgressLoaded] = useState(0);
+  const [dbBackupProgressTotal, setDbBackupProgressTotal] = useState(0);
+  const [dbBackupProgressPhase, setDbBackupProgressPhase] = useState<'idle' | 'preparing' | 'downloading' | 'done'>('idle');
   const [systemOnline, setSystemOnline] = useState(true);
   const [systemStatusLoading, setSystemStatusLoading] = useState(false);
   const [updatingSystemStatus, setUpdatingSystemStatus] = useState(false);
@@ -1336,12 +1340,30 @@ export default function CompanySettingsPage() {
     }
 
     setBackingUpDatabase(true);
+    setDbBackupProgressPhase('preparing');
+    setDbBackupProgressPercent(5);
+    setDbBackupProgressLoaded(0);
+    setDbBackupProgressTotal(0);
     setNotice(null);
 
     try {
       const response = await axios.get(`/api/companies/${selectedCompanyId}/database-backup`, {
         headers: { Authorization: `Bearer ${token}` },
         responseType: 'blob',
+        onDownloadProgress: (event) => {
+          setDbBackupProgressPhase('downloading');
+          const loaded = Number(event.loaded || 0);
+          const total = Number(event.total || 0);
+          setDbBackupProgressLoaded(loaded);
+          setDbBackupProgressTotal(total);
+
+          if (total > 0) {
+            const percent = Math.min(99, Math.max(10, Math.round((loaded / total) * 100)));
+            setDbBackupProgressPercent(percent);
+          } else {
+            setDbBackupProgressPercent((prev) => (prev < 90 ? prev + 3 : prev));
+          }
+        },
       });
 
       const blob = new Blob([response.data], {
@@ -1361,6 +1383,8 @@ export default function CompanySettingsPage() {
       link.remove();
       window.URL.revokeObjectURL(url);
 
+      setDbBackupProgressPhase('done');
+      setDbBackupProgressPercent(100);
       setNotice({ type: 'success', text: 'Database backup downloaded successfully.' });
     } catch (error: any) {
       let message = 'Failed to download database backup.';
@@ -1381,6 +1405,12 @@ export default function CompanySettingsPage() {
       setNotice({ type: 'error', text: message });
     } finally {
       setBackingUpDatabase(false);
+      setTimeout(() => {
+        setDbBackupProgressPhase('idle');
+        setDbBackupProgressPercent(0);
+        setDbBackupProgressLoaded(0);
+        setDbBackupProgressTotal(0);
+      }, 1400);
     }
   };
 
@@ -2591,8 +2621,36 @@ export default function CompanySettingsPage() {
                             className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-slate-700 to-slate-900 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
                           >
                             <Database className="h-4 w-4" />
-                            {backingUpDatabase ? 'Preparing DB backup…' : 'Database backup (.sql)'}
+                            {backingUpDatabase ? 'Preparing fast DB backup…' : 'Fast database backup (.sql)'}
                           </button>
+                          {dbBackupProgressPhase !== 'idle' && (
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                              <div className="mb-1.5 flex items-center justify-between text-xs">
+                                <span className="font-semibold text-slate-700">
+                                  {dbBackupProgressPhase === 'preparing'
+                                    ? 'Preparing SQL dump...'
+                                    : dbBackupProgressPhase === 'downloading'
+                                      ? 'Downloading backup...'
+                                      : 'Completed'}
+                                </span>
+                                <span className="font-bold text-slate-800">{dbBackupProgressPercent}%</span>
+                              </div>
+                              <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                                <div
+                                  className="h-full rounded-full bg-gradient-to-r from-slate-700 to-emerald-500 transition-all duration-300"
+                                  style={{ width: `${dbBackupProgressPercent}%` }}
+                                />
+                              </div>
+                              {dbBackupProgressLoaded > 0 && (
+                                <p className="mt-1.5 text-[11px] text-slate-600">
+                                  Downloaded {(dbBackupProgressLoaded / (1024 * 1024)).toFixed(2)} MB
+                                  {dbBackupProgressTotal > 0
+                                    ? ` / ${(dbBackupProgressTotal / (1024 * 1024)).toFixed(2)} MB`
+                                    : ''}
+                                </p>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>

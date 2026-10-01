@@ -9,6 +9,9 @@ use Illuminate\Support\Facades\Schema;
 
 class SmsGatewayService
 {
+    private const LOG_STATUS_SENT = 'sent';
+    private const LOG_STATUS_FAILED = 'failed';
+
     /**
      * @return array<string, mixed>
      */
@@ -77,30 +80,39 @@ class SmsGatewayService
     /**
      * @return array{ok:bool,message:string,response_body?:string,status_code?:int}
      */
-    public function send(string $phone, string $message): array
+    public function send(string $phone, string $message, array $context = []): array
     {
-        return $this->sendWithConfig($phone, $message);
+        return $this->sendWithConfig($phone, $message, [], $context);
     }
 
     /**
      * @param array<string, mixed> $overrideConfig
      * @return array{ok:bool,message:string,response_body?:string,status_code?:int}
      */
-    public function sendWithConfig(string $phone, string $message, array $overrideConfig = []): array
+    public function sendWithConfig(string $phone, string $message, array $overrideConfig = [], array $context = []): array
     {
         $config = array_merge($this->getConfig(), $overrideConfig);
         if (!($config['enabled'] ?? false)) {
-            return ['ok' => false, 'message' => 'SMS gateway is disabled.'];
+            return $this->logAndReturnResult($phone, $message, [
+                'ok' => false,
+                'message' => 'SMS gateway is disabled.',
+            ], $context);
         }
 
         $endpointUrl = trim((string) ($config['endpoint_url'] ?? ''));
         if ($endpointUrl === '') {
-            return ['ok' => false, 'message' => 'SMS gateway endpoint URL is not configured.'];
+            return $this->logAndReturnResult($phone, $message, [
+                'ok' => false,
+                'message' => 'SMS gateway endpoint URL is not configured.',
+            ], $context);
         }
 
         $cleanPhone = preg_replace('/\s+/', '', $phone) ?? '';
         if ($cleanPhone === '') {
-            return ['ok' => false, 'message' => 'Recipient phone number is empty.'];
+            return $this->logAndReturnResult($phone, $message, [
+                'ok' => false,
+                'message' => 'Recipient phone number is empty.',
+            ], $context);
         }
 
         $timeout = max(3, (int) ($config['timeout_seconds'] ?? 10));
@@ -121,11 +133,17 @@ class SmsGatewayService
             $smsLenzApiKey = trim((string) ($config['smslenz_api_key'] ?? $config['api_key_value'] ?? ''));
 
             if ($smsLenzUserId === '' || $smsLenzApiKey === '') {
-                return ['ok' => false, 'message' => 'SMSLenz requires both user_id and api_key.'];
+                return $this->logAndReturnResult($cleanPhone, $message, [
+                    'ok' => false,
+                    'message' => 'SMSLenz requires both user_id and api_key.',
+                ], $context);
             }
 
             if ($senderId === '') {
-                return ['ok' => false, 'message' => 'SMSLenz requires sender_id (Sender ID Mask).'];
+                return $this->logAndReturnResult($cleanPhone, $message, [
+                    'ok' => false,
+                    'message' => 'SMSLenz requires sender_id (Sender ID Mask).',
+                ], $context);
             }
 
             $smsLenzContact = preg_replace('/\D+/', '', $cleanPhone) ?? '';
@@ -136,10 +154,10 @@ class SmsGatewayService
             }
 
             if (!preg_match('/^94\d{9}$/', $smsLenzContact)) {
-                return [
+                return $this->logAndReturnResult($cleanPhone, $message, [
                     'ok' => false,
                     'message' => 'Invalid SMSLenz contact format. Use 94XXXXXXXXX or local mobile 07XXXXXXXX.',
-                ];
+                ], $context);
             }
 
             $payload = [
@@ -177,7 +195,10 @@ class SmsGatewayService
                 : $http->post($endpointUrl, $payload);
         } catch (\Throwable $e) {
             Log::warning('SMS gateway request failed', ['error' => $e->getMessage()]);
-            return ['ok' => false, 'message' => 'SMS gateway connection failed: ' . $e->getMessage()];
+            return $this->logAndReturnResult($cleanPhone, $message, [
+                'ok' => false,
+                'message' => 'SMS gateway connection failed: ' . $e->getMessage(),
+            ], $context);
         }
 
         if (!$response->successful()) {
@@ -192,22 +213,65 @@ class SmsGatewayService
                 );
             }
 
-            return [
+            return $this->logAndReturnResult($cleanPhone, $message, [
                 'ok' => false,
                 'message' => $providerMessage !== ''
                     ? 'SMS gateway returned an error response: ' . $providerMessage
                     : 'SMS gateway returned an error response.',
                 'status_code' => $response->status(),
                 'response_body' => $response->body(),
-            ];
+            ], $context);
         }
 
-        return [
+        return $this->logAndReturnResult($cleanPhone, $message, [
             'ok' => true,
             'message' => 'SMS sent successfully.',
             'status_code' => $response->status(),
             'response_body' => $response->body(),
-        ];
+        ], $context);
+    }
+
+    /**
+     * @param array{ok:bool,message:string,response_body?:string,status_code?:int} $result
+     * @param array<string, mixed> $context
+     * @return array{ok:bool,message:string,response_body?:string,status_code?:int}
+     */
+    private function logAndReturnResult(string $phone, string $message, array $result, array $context = []): array
+    {
+        try {
+            if (Schema::hasTable('sms_message_logs')) {
+                $normalizedPhone = preg_replace('/\s+/', '', $phone) ?? '';
+                $status = (bool) ($result['ok'] ?? false) ? self::LOG_STATUS_SENT : self::LOG_STATUS_FAILED;
+                $module = trim((string) ($context['module'] ?? 'General'));
+                if ($module === '') {
+                    $module = 'General';
+                }
+
+                $providerBody = isset($result['response_body']) ? (string) $result['response_body'] : '';
+                DB::table('sms_message_logs')->insert([
+                    'branch_id' => isset($context['branch_id']) && is_numeric($context['branch_id']) ? (int) $context['branch_id'] : null,
+                    'user_id' => isset($context['user_id']) && is_numeric($context['user_id']) ? (int) $context['user_id'] : null,
+                    'module' => mb_substr($module, 0, 80),
+                    'reference' => mb_substr(trim((string) ($context['reference'] ?? '')), 0, 120),
+                    'customer_name' => mb_substr(trim((string) ($context['customer_name'] ?? '')), 0, 160),
+                    'phone' => mb_substr(trim((string) $normalizedPhone), 0, 30),
+                    'message' => (string) $message,
+                    'status' => $status,
+                    'error_message' => $status === self::LOG_STATUS_FAILED ? mb_substr((string) ($result['message'] ?? ''), 0, 500) : null,
+                    'provider_status_code' => isset($result['status_code']) && is_numeric($result['status_code'])
+                        ? (int) $result['status_code']
+                        : null,
+                    'provider_response' => $providerBody !== '' ? mb_substr($providerBody, 0, 5000) : null,
+                    'sent_at' => now(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to persist SMS message log', ['error' => $exception->getMessage()]);
+        }
+
+        return $result;
     }
 
     /**

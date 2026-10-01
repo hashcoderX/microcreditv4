@@ -409,7 +409,13 @@ class CompanyController extends Controller
             $message = trim((string) ($validated['message'] ?? 'Test SMS from Global Capital system.'));
 
             $overrideConfig = is_array($validated['config'] ?? null) ? $validated['config'] : [];
-            $result = $service->sendWithConfig((string) $validated['phone'], $message, $overrideConfig);
+            $result = $service->sendWithConfig((string) $validated['phone'], $message, $overrideConfig, [
+                'module' => 'SMS Gateway Test',
+                'reference' => 'SYSTEM-TEST',
+                'customer_name' => 'System Test',
+                'branch_id' => (int) ($user->branch_id ?? 0),
+                'user_id' => (int) ($user->id ?? 0),
+            ]);
 
             return response()->json($result, $result['ok'] ? 200 : 422);
         }
@@ -999,6 +1005,10 @@ class CompanyController extends Controller
         }
 
         $sqlDump = '';
+        $tempBase = tempnam(sys_get_temp_dir(), 'db_backup_');
+        $sqlPath = $tempBase . '.sql';
+        @unlink($tempBase);
+
         $binary = $this->resolveMysqldumpBinary();
 
         if ($binary !== null) {
@@ -1013,7 +1023,9 @@ class CompanyController extends Controller
                 '--routines',
                 '--triggers',
                 '--events',
+                '--skip-lock-tables',
                 '--no-tablespaces',
+                "--result-file={$sqlPath}",
                 $database,
             ];
 
@@ -1023,7 +1035,15 @@ class CompanyController extends Controller
                 $process->run();
 
                 if ($process->isSuccessful()) {
-                    $sqlDump = $process->getOutput();
+                    if (is_file($sqlPath) && filesize($sqlPath) > 0) {
+                        $downloadName = 'database_backup_' . $company->id . '_' . date('Ymd_His') . '.sql';
+                        return response()->download($sqlPath, $downloadName)->deleteFileAfterSend(true);
+                    }
+
+                    Log::warning('mysqldump completed but result file is empty, using fallback builder', [
+                        'binary' => $binary,
+                        'path' => $sqlPath,
+                    ]);
                 } else {
                     Log::warning('mysqldump failed, using PHP fallback backup builder', [
                         'stderr' => trim($process->getErrorOutput()),
@@ -1042,6 +1062,7 @@ class CompanyController extends Controller
             try {
                 $sqlDump = $this->buildSqlBackupFromConnection((string) $defaultConnection);
             } catch (Throwable $exception) {
+                @unlink($sqlPath);
                 return response()->json([
                     'message' => 'Database backup failed. ' . $exception->getMessage()
                 ], 500);
@@ -1049,14 +1070,12 @@ class CompanyController extends Controller
         }
 
         if (trim($sqlDump) === '') {
+            @unlink($sqlPath);
             return response()->json([
                 'message' => 'Database backup output is empty.'
             ], 500);
         }
 
-        $tempBase = tempnam(sys_get_temp_dir(), 'db_backup_');
-        $sqlPath = $tempBase . '.sql';
-        @unlink($tempBase);
         file_put_contents($sqlPath, $sqlDump);
 
         $downloadName = 'database_backup_' . $company->id . '_' . date('Ymd_His') . '.sql';

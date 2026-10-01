@@ -343,7 +343,13 @@ class LoanRequestController extends Controller
                 'reference' => $this->resolveLoanReference($loanRequest),
             ]);
 
-            $smsResult = $smsService->send($phone, $message);
+            $smsResult = $smsService->send($phone, $message, [
+                'module' => 'Microfinance Loan Approval',
+                'reference' => $this->resolveLoanReference($loanRequest),
+                'customer_name' => (string) ($loanRequest->customer_name ?? 'Customer'),
+                'branch_id' => (int) ($loanRequest->branch_id ?? 0),
+                'user_id' => (int) ($loanRequest->updated_by ?? $loanRequest->created_by ?? 0),
+            ]);
             if (!($smsResult['ok'] ?? false)) {
                 Log::warning('Microfinance approval SMS failed', [
                     'loan_request_id' => (int) $loanRequest->id,

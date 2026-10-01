@@ -3542,7 +3542,13 @@ class FinanceController extends Controller
                 'module' => 'Finance',
             ];
             $smsMessage = $smsService->buildCollectionMessage($messageContext);
-            $smsService->send($customerPhone, $smsMessage);
+            $smsService->send($customerPhone, $smsMessage, [
+                'module' => 'Finance Collection',
+                'reference' => (string) ($finance->id ?? 'FIN'),
+                'customer_name' => $customerName,
+                'branch_id' => (int) ($finance->branch_id ?? 0),
+                'user_id' => (int) ($finance->updated_by ?? $finance->created_by ?? 0),
+            ]);
 
             /** @var WhatsappGatewayService $whatsappService */
             $whatsappService = app(WhatsappGatewayService::class);

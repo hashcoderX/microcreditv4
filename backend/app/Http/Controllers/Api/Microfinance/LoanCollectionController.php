@@ -280,7 +280,13 @@ class LoanCollectionController extends Controller
             ];
 
             $smsMessage = $smsService->buildCollectionMessage($messageContext);
-            $smsResult = $smsService->send($phone, $smsMessage);
+            $smsResult = $smsService->send($phone, $smsMessage, [
+                'module' => 'Microfinance Collection',
+                'reference' => (string) ($loanRequest->loan_code ?: ('MF-' . $loanRequest->id)),
+                'customer_name' => (string) ($loanRequest->customer_name ?? 'Customer'),
+                'branch_id' => (int) ($loanRequest->branch_id ?? 0),
+                'user_id' => (int) ($loanRequest->updated_by ?? $loanRequest->created_by ?? 0),
+            ]);
             if (!($smsResult['ok'] ?? false)) {
                 Log::warning('Microfinance collection SMS failed', [
                     'loan_request_id' => (int) $loanRequest->id,

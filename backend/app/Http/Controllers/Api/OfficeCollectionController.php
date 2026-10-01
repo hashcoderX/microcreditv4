@@ -35,7 +35,11 @@ class OfficeCollectionController extends Controller
             /** @var SmsGatewayService $smsService */
             $smsService = app(SmsGatewayService::class);
             $smsMessage = $smsService->buildCollectionMessage($messageContext);
-            $smsResult = $smsService->send($trimmedPhone, $smsMessage);
+            $smsResult = $smsService->send($trimmedPhone, $smsMessage, [
+                'module' => (string) (($messageContext['module'] ?? 'Office Collection') . ' Collection'),
+                'reference' => (string) ($messageContext['reference'] ?? ''),
+                'customer_name' => (string) ($messageContext['customer_name'] ?? 'Customer'),
+            ]);
 
             if (!($smsResult['ok'] ?? false)) {
                 Log::warning('Office collection SMS failed', [
@@ -591,7 +595,12 @@ class OfficeCollectionController extends Controller
                     'module' => 'Loan',
                 ];
                 $smsMessage = $smsService->buildCollectionMessage($messageContext);
-                $smsService->send($phone, $smsMessage);
+                $smsService->send($phone, $smsMessage, [
+                    'module' => 'Loan Collection',
+                    'reference' => (string) (data_get($loan, 'request_no') ?? ('LOAN-' . $sourceId)),
+                    'customer_name' => (string) (data_get($loan, 'customer_full_name') ?? 'Customer'),
+                    'branch_id' => isset($payload['branch_id']) ? (int) $payload['branch_id'] : null,
+                ]);
 
                 /** @var WhatsappGatewayService $whatsappService */
                 $whatsappService = app(WhatsappGatewayService::class);

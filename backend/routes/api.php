@@ -41,7 +41,7 @@ use App\Http\Controllers\Api\Microfinance\ActionCenterStepRoleController;
 use App\Http\Controllers\Api\FinanceController;
 use App\Http\Controllers\Api\FinanceProductTypeController;
 use App\Http\Controllers\Api\LoanProductController as LoanModuleProductController;
-use App\Http\Controllers\Api\LoanRequestController;
+use App\Http\Controllers\Api\Microfinance\LoanRequestController as LoanWorkflowRequestController;
 use App\Http\Controllers\Api\OfficeCollectionController;
 use App\Http\Controllers\Api\AiAssistantController;
 use App\Http\Controllers\Reports\BranchCollectionReportController;
@@ -369,6 +369,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('reports/active-members', [AccountingReportsController::class, 'activeMembersReport']);
     Route::get('reports/not-paid-customers', [AccountingReportsController::class, 'notPaidCustomersReport']);
     Route::get('reports/outstanding-customers', [AccountingReportsController::class, 'notPaidCustomersReport']);
+    Route::get('reports/sms-communications', [AccountingReportsController::class, 'smsCommunicationReport']);
     Route::get('reports/team-member-wallets', [AccountingReportsController::class, 'teamMemberWalletsReport']);
     Route::get('reports/team-member-wallets/{employee}/transactions', [AccountingReportsController::class, 'teamMemberWalletTransactions']);
     Route::get('reports/branch-collection', [BranchCollectionReportController::class, 'index']);
@@ -380,11 +381,11 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
 
     // Loan Requests (step-by-step loan module)
     Route::apiResource('loan-products', LoanModuleProductController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
-    Route::get('loan-requests', [LoanRequestController::class, 'index']);
-    Route::get('loan-requests/summary', [LoanRequestController::class, 'summary']);
-    Route::post('loan-requests', [LoanRequestController::class, 'store']);
-    Route::get('loan-requests/{id}', [LoanRequestController::class, 'show']);
-    Route::post('loan-requests/{id}/status', [LoanRequestController::class, 'updateStatus']);
+    Route::get('loan-requests', [LoanWorkflowRequestController::class, 'index']);
+    Route::get('loan-requests/summary', [LoanWorkflowRequestController::class, 'summary']);
+    Route::post('loan-requests', [LoanWorkflowRequestController::class, 'store']);
+    Route::get('loan-requests/{id}', [LoanWorkflowRequestController::class, 'show']);
+    Route::post('loan-requests/{id}/status', [LoanWorkflowRequestController::class, 'updateStatus']);
 
     // Customers
     Route::get('customers/generate-code', [CustomerController::class, 'generateCode']);

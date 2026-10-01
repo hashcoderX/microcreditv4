@@ -123,7 +123,13 @@ class MortgageController extends Controller
                 'reference' => 'MORT-' . (int) $mortgage->id,
             ]);
 
-            $smsResult = $smsService->send($phone, $smsMessage);
+            $smsResult = $smsService->send($phone, $smsMessage, [
+                'module' => 'Mortgage Approval',
+                'reference' => 'MORT-' . (int) $mortgage->id,
+                'customer_name' => $customerName !== '' ? $customerName : 'Customer',
+                'branch_id' => (int) ($mortgage->branch_id ?? 0),
+                'user_id' => (int) ($mortgage->updated_by ?? $mortgage->created_by ?? 0),
+            ]);
             if (!($smsResult['ok'] ?? false)) {
                 Log::warning('Mortgage approval SMS failed', [
                     'mortgage_id' => (int) $mortgage->id,
@@ -1381,7 +1387,13 @@ class MortgageController extends Controller
                 'module' => 'Mortgage',
             ];
             $smsMessage = $smsService->buildCollectionMessage($messageContext);
-            $smsService->send($customerPhone, $smsMessage);
+            $smsService->send($customerPhone, $smsMessage, [
+                'module' => 'Mortgage Collection',
+                'reference' => 'MOR-' . (string) $mortgage->id,
+                'customer_name' => $customerName,
+                'branch_id' => (int) ($mortgage->branch_id ?? 0),
+                'user_id' => (int) ($mortgage->updated_by ?? $mortgage->created_by ?? 0),
+            ]);
 
             /** @var WhatsappGatewayService $whatsappService */
             $whatsappService = app(WhatsappGatewayService::class);
