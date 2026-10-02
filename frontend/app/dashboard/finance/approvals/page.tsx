@@ -124,6 +124,7 @@ type FinanceApprovalRow = {
     can_send_back_current_step?: boolean | null;
     can_reject_current_step?: boolean | null;
     can_final_approve?: boolean | null;
+    can_direct_approve?: boolean | null;
     allowed_configured_steps?: number[] | null;
   } | null;
 };
@@ -1165,6 +1166,14 @@ export default function FinanceApprovalsPage() {
     typeof backendCanFinalApprove === 'boolean'
       ? backendCanFinalApprove
       : (isFinalWorkflowStep && isPrivilegedApprover);
+  const backendCanDirectApprove =
+    typeof selectedFinance?.workflow_permissions?.can_direct_approve === 'boolean'
+      ? selectedFinance.workflow_permissions.can_direct_approve
+      : null;
+  const canDirectApprove =
+    typeof backendCanDirectApprove === 'boolean'
+      ? backendCanDirectApprove
+      : (isSuperAdmin || userHasKeyword('cro') || userHasKeyword('loan approver') || userHasKeyword('finance manager'));
 
   const openAlertModal = (message: string, title = 'Notice') => {
     setAlertModal({
@@ -1309,7 +1318,7 @@ export default function FinanceApprovalsPage() {
 
   const updateStatus = async (
     id: number,
-    action: 'approve' | 'reject' | 'send_back',
+    action: 'approve' | 'reject' | 'send_back' | 'direct_approve',
     options?: { target_step?: number; note?: string }
   ) => {
     if (!token) return false;
@@ -1391,6 +1400,8 @@ export default function FinanceApprovalsPage() {
 
       if (action === 'approve') {
         openAlertModal(String(response.data?.message || 'Finance approved successfully.'), 'Final Approval Complete');
+      } else if (action === 'direct_approve') {
+        openAlertModal(String(response.data?.message || 'Finance granted directly without workflow steps.'), 'Direct Approval Complete');
       } else if (action === 'reject') {
         openAlertModal(String(response.data?.message || 'Finance rejected successfully.'), 'Rejected');
       }
@@ -3638,6 +3649,17 @@ export default function FinanceApprovalsPage() {
                 >
                   <CheckCircle2 className="h-4 w-4" />
                   Approve Final
+                </button>
+              )}
+              {canDirectApprove && selectedFinance && selectedFinance.status !== 'active' && (
+                <button
+                  type="button"
+                  onClick={() => updateStatus(selectedFinance.id, 'direct_approve')}
+                  disabled={!selectedFinance || detailLoading || processingId === selectedFinance?.id}
+                  className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-700 border border-violet-700 text-white text-sm font-semibold disabled:opacity-60 inline-flex items-center gap-1.5"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Direct Approve
                 </button>
               )}
             </div>

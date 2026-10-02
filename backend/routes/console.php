@@ -17,3 +17,8 @@ Schedule::command('microfinance:recalculate-arrears')
     ->dailyAt('00:10')
     ->withoutOverlapping()
     ->name('microfinance-recalculate-arrears');
+
+Schedule::command('cache:prune-expired-database --chunk=1000')
+    ->everyThirtyMinutes()
+    ->withoutOverlapping()
+    ->name('cache-prune-expired-database');

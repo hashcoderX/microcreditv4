@@ -17,22 +17,10 @@ use Illuminate\Support\Facades\Log;
 
 class LoanCollectionController extends Controller
 {
-    private const CACHE_VERSION_KEY = 'mf_collections:version';
+    private const INDEX_CACHE_REGISTRY_KEY = 'mf_collections:index:cache_keys';
     private const INDEX_CACHE_TTL_SECONDS = 20;
-
-    private function cacheVersion(): int
-    {
-        return max((int) Cache::get(self::CACHE_VERSION_KEY, 1), 1);
-    }
-
-    private function bumpCacheVersion(): void
-    {
-        if (!Cache::has(self::CACHE_VERSION_KEY)) {
-            Cache::forever(self::CACHE_VERSION_KEY, 1);
-        }
-
-        Cache::increment(self::CACHE_VERSION_KEY);
-    }
+    private const INDEX_CACHE_MAX_KEYS = 200;
+    private const INDEX_CACHE_MAX_LIMIT = 500;
 
     private function cacheScopeKey(Request $request, bool $includeDeleted, bool $compact, int $limit, int $loanRequestId): string
     {
@@ -44,13 +32,50 @@ class LoanCollectionController extends Controller
         return implode(':', [
             'mf_collections',
             'index',
-            'v' . $this->cacheVersion(),
             $scope,
             'deleted_' . ($includeDeleted ? '1' : '0'),
             'compact_' . ($compact ? '1' : '0'),
             'loan_' . ($loanRequestId > 0 ? $loanRequestId : 'all'),
             'limit_' . ($limit > 0 ? $limit : 'all'),
+            'page_' . max((int) $request->get('page', 1), 1),
+            'per_page_' . max((int) $request->get('per_page', 0), 0),
         ]);
+    }
+
+    private function trackIndexCacheKey(string $cacheKey): void
+    {
+        $registry = Cache::get(self::INDEX_CACHE_REGISTRY_KEY, []);
+        if (!is_array($registry)) {
+            $registry = [];
+        }
+
+        $registry[$cacheKey] = now()->getTimestamp();
+
+        if (count($registry) > self::INDEX_CACHE_MAX_KEYS) {
+            asort($registry);
+            $keysToDrop = array_slice(array_keys($registry), 0, count($registry) - self::INDEX_CACHE_MAX_KEYS);
+
+            foreach ($keysToDrop as $keyToDrop) {
+                Cache::forget((string) $keyToDrop);
+                unset($registry[$keyToDrop]);
+            }
+        }
+
+        Cache::forever(self::INDEX_CACHE_REGISTRY_KEY, $registry);
+    }
+
+    private function invalidateIndexCache(): void
+    {
+        $registry = Cache::get(self::INDEX_CACHE_REGISTRY_KEY, []);
+        if (!is_array($registry) || empty($registry)) {
+            return;
+        }
+
+        foreach (array_keys($registry) as $cacheKey) {
+            Cache::forget((string) $cacheKey);
+        }
+
+        Cache::forget(self::INDEX_CACHE_REGISTRY_KEY);
     }
 
     private function buildBaseWalletNo(int $employeeId): string
@@ -386,10 +411,16 @@ class LoanCollectionController extends Controller
         if ($limit > 2000) {
             $limit = 2000;
         }
+        $page = max((int) $request->get('page', 1), 1);
+        $perPage = max((int) $request->get('per_page', 0), 0);
+        if ($perPage > 500) {
+            $perPage = 500;
+        }
+        $usePagination = $perPage > 0;
 
         $cacheKey = $this->cacheScopeKey($request, $includeDeleted, $compact, $limit, $loanRequestId);
 
-        $payload = Cache::remember($cacheKey, now()->addSeconds(self::INDEX_CACHE_TTL_SECONDS), function () use ($request, $includeDeleted, $compact, $limit, $loanRequestId) {
+        $buildPayload = function () use ($request, $includeDeleted, $compact, $limit, $loanRequestId, $usePagination, $perPage, $page) {
             $query = MicrofinanceLoanCollection::query()
                 ->orderByDesc('id');
 
@@ -422,6 +453,55 @@ class LoanCollectionController extends Controller
 
             if ($limit > 0) {
                 $query->limit($limit);
+            }
+
+            if ($usePagination) {
+                $total = (clone $query)->count();
+                $query->forPage($page, $perPage);
+
+                if ($compact) {
+                    $rows = $query->get()->map(function (MicrofinanceLoanCollection $collection) {
+                        $collectionDate = $collection->collection_date;
+                        if ($collectionDate instanceof \DateTimeInterface) {
+                            $collectionDate = $collectionDate->format('Y-m-d');
+                        }
+
+                        return [
+                            'id' => (int) $collection->id,
+                            'mf_loan_request_id' => (int) $collection->mf_loan_request_id,
+                            'collected_amount' => (float) ($collection->collected_amount ?? 0),
+                            'collection_date' => $collectionDate ? (string) $collectionDate : null,
+                        ];
+                    })->values()->all();
+                } else {
+                    $rows = $query->get()->map(function (MicrofinanceLoanCollection $collection) {
+                        $payload = $collection->toArray();
+                        $collectionDate = $collection->collection_date;
+                        if ($collectionDate instanceof \DateTimeInterface) {
+                            $payload['collection_date'] = $collectionDate->format('Y-m-d');
+                        } else {
+                            $payload['collection_date'] = $collectionDate ? (string) $collectionDate : null;
+                        }
+                        $interestAmount = (float) ($collection->interest_amount ?? 0);
+                        $penaltyAmount = (float) ($collection->penalty_amount ?? 0);
+                        $payload['profit_amount'] = round($interestAmount + $penaltyAmount, 2);
+                        $payload['is_deleted'] = $collection->trashed();
+                        $payload['deleted_by_name'] = $collection->deletedByUser?->name;
+                        $payload['deleted_by_email'] = $collection->deletedByUser?->email;
+
+                        return $payload;
+                    })->values()->all();
+                }
+
+                return [
+                    'data' => $rows,
+                    'meta' => [
+                        'total' => (int) $total,
+                        'page' => (int) $page,
+                        'per_page' => (int) $perPage,
+                        'last_page' => (int) max((int) ceil($total / max($perPage, 1)), 1),
+                    ],
+                ];
             }
 
             if ($compact) {
@@ -457,7 +537,16 @@ class LoanCollectionController extends Controller
 
                 return $payload;
             })->values()->all();
-        });
+        };
+
+        // Keep cache only for small compact payloads; avoid caching heavy full responses.
+        $shouldCache = $compact && !$usePagination && $limit > 0 && $limit <= self::INDEX_CACHE_MAX_LIMIT;
+        if (!$shouldCache) {
+            return response()->json($buildPayload());
+        }
+
+        $payload = Cache::remember($cacheKey, now()->addSeconds(self::INDEX_CACHE_TTL_SECONDS), $buildPayload);
+        $this->trackIndexCacheKey($cacheKey);
 
         return response()->json($payload);
     }
@@ -698,7 +787,7 @@ class LoanCollectionController extends Controller
             ], 500);
         }
 
-        $this->bumpCacheVersion();
+        $this->invalidateIndexCache();
 
         $this->dispatchCollectionSmsAlert(
             $loanRequest,
@@ -788,7 +877,7 @@ class LoanCollectionController extends Controller
             $this->rebuildLoanStateFromCollections($loanRequest);
         });
 
-        $this->bumpCacheVersion();
+        $this->invalidateIndexCache();
 
         return response()->json([
             'message' => 'Invoice deleted successfully. Loan balances and related totals were reversed.',

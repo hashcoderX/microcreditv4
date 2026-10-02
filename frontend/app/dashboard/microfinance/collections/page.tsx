@@ -746,21 +746,44 @@ export default function CollectionManagementPage() {
     if (!isFieldOfficer) return loans;
 
     const branchId = Number(authUser?.branch_id || 0);
+    const authUserId = Number(authUser?.id || 0);
     const authOfficerId = Number(authUser?.employee?.id || 0);
 
     return loans.filter((loan) => {
       const loanBranchId = Number(loan.branch_id || 0);
       const loanOfficer = normalizeText(String(loan.field_officer || ''));
       const loanOfficerId = Number(loan.field_officer_id || 0);
+      const loanApprovalOfficerId = Number(loan.approval_employee_id || 0);
+      const loanCreatedByUserId = Number(loan.createdBy?.id || 0);
+      const loanCreatedByEmployeeName = normalizeText(
+        [
+          String(loan.createdBy?.employee?.first_name || ''),
+          String(loan.createdBy?.employee?.last_name || ''),
+        ]
+          .join(' ')
+          .trim()
+      );
 
       const isBranchMatch = branchId > 0 ? loanBranchId === branchId : true;
       const isOfficerIdMatch = authOfficerId > 0 && loanOfficerId > 0 ? loanOfficerId === authOfficerId : false;
       const isOfficerNameMatch = loanOfficer !== '' ? officerNameCandidates.includes(loanOfficer) : false;
-      const isOfficerMatch = isOfficerIdMatch || isOfficerNameMatch;
+      const isApprovalOfficerMatch = authOfficerId > 0 && loanApprovalOfficerId > 0
+        ? loanApprovalOfficerId === authOfficerId
+        : false;
+      const isCreatorUserMatch = authUserId > 0 && loanCreatedByUserId > 0 ? loanCreatedByUserId === authUserId : false;
+      const isCreatorEmployeeNameMatch =
+        loanCreatedByEmployeeName !== '' && officerNameCandidates.includes(loanCreatedByEmployeeName);
+
+      const isOfficerMatch =
+        isOfficerIdMatch ||
+        isOfficerNameMatch ||
+        isApprovalOfficerMatch ||
+        isCreatorUserMatch ||
+        isCreatorEmployeeNameMatch;
 
       return isBranchMatch && isOfficerMatch;
     });
-  }, [loans, isFieldOfficer, authUser?.branch_id, authUser?.employee?.id, officerNameCandidates]);
+  }, [loans, isFieldOfficer, authUser?.branch_id, authUser?.id, authUser?.employee?.id, officerNameCandidates]);
 
   const paidTotalByLoan = useMemo(() => {
     const map = new Map<number, number>();
@@ -1209,12 +1232,52 @@ export default function CollectionManagementPage() {
       }
     ).BarcodeDetector;
 
-    if (!BarcodeDetectorCtor) {
-      setQrScanModal((prev) => ({
-        ...prev,
-        error: 'QR scanning is not supported in this browser. Please use a modern Chrome/Edge browser.',
-      }));
-      return;
+    let scanWithBarcodeDetector: ((video: HTMLVideoElement) => Promise<string | null>) | null = null;
+    let scanWithJsQr: ((video: HTMLVideoElement) => string | null) | null = null;
+
+    if (BarcodeDetectorCtor) {
+      const detector = new BarcodeDetectorCtor({ formats: ['qr_code'] });
+      scanWithBarcodeDetector = async (video: HTMLVideoElement) => {
+        const barcodes = await detector.detect(video);
+        const first = barcodes.find((code) => String(code.rawValue || '').trim() !== '');
+        return first?.rawValue ? String(first.rawValue) : null;
+      };
+    } else {
+      try {
+        const jsQrModule = await import('jsqr');
+        const decodeQr = jsQrModule.default;
+
+        const fallbackCanvas = document.createElement('canvas');
+        const fallbackContext = fallbackCanvas.getContext('2d', { willReadFrequently: true });
+
+        if (!fallbackContext) {
+          setQrScanModal((prev) => ({
+            ...prev,
+            error: 'QR scanner could not initialize image decoder. Please refresh and try again.',
+          }));
+          return;
+        }
+
+        scanWithJsQr = (video: HTMLVideoElement) => {
+          const width = video.videoWidth || 0;
+          const height = video.videoHeight || 0;
+          if (width <= 0 || height <= 0) return null;
+
+          fallbackCanvas.width = width;
+          fallbackCanvas.height = height;
+          fallbackContext.drawImage(video, 0, 0, width, height);
+
+          const imageData = fallbackContext.getImageData(0, 0, width, height);
+          const result = decodeQr(imageData.data, width, height, { inversionAttempts: 'attemptBoth' });
+          return result?.data ? String(result.data) : null;
+        };
+      } catch {
+        setQrScanModal((prev) => ({
+          ...prev,
+          error: 'QR scanning is not available right now. Please update Chrome/Edge and retry.',
+        }));
+        return;
+      }
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -1233,8 +1296,6 @@ export default function CollectionManagementPage() {
         qrVideoRef.current.srcObject = stream;
         await qrVideoRef.current.play();
       }
-
-      const detector = new BarcodeDetectorCtor({ formats: ['qr_code'] });
       setQrScanModal((prev) => ({ ...prev, scanning: true, error: '' }));
 
       const scanFrame = async () => {
@@ -1243,10 +1304,13 @@ export default function CollectionManagementPage() {
         }
 
         try {
-          const barcodes = await detector.detect(qrVideoRef.current);
-          const first = barcodes.find((code) => String(code.rawValue || '').trim() !== '');
-          if (first?.rawValue) {
-            applyScannedQrToTarget(String(first.rawValue));
+          const video = qrVideoRef.current;
+          const detectorPayload = scanWithBarcodeDetector ? await scanWithBarcodeDetector(video) : null;
+          const fallbackPayload = detectorPayload ? null : scanWithJsQr ? scanWithJsQr(video) : null;
+          const payload = detectorPayload || fallbackPayload;
+
+          if (payload) {
+            applyScannedQrToTarget(payload);
             return;
           }
         } catch {

@@ -13,6 +13,7 @@ import {
   CalendarDays,
   ChevronRight,
   FileText,
+  Download,
   History,
   LayoutGrid,
   List,
@@ -86,6 +87,8 @@ export default function MortgagePayments() {
   const [viewMode, setViewMode] = useState<ViewMode>('cards');
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [widgetNotice, setWidgetNotice] = useState('');
+  const [downloadingCsv, setDownloadingCsv] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const id = params?.id as string;
   const widgetPrefix = 'mortgages_payments_widget_';
 
@@ -222,6 +225,69 @@ export default function MortgagePayments() {
   const totalPaid = useMemo(() => {
     return payments.reduce((sum, p) => sum + toNumber(p.amount), 0);
   }, [payments]);
+
+  const parseFileNameFromHeader = (headerValue: string | null, fallback: string): string => {
+    if (!headerValue) return fallback;
+    const utfMatch = headerValue.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utfMatch && utfMatch[1]) {
+      try {
+        return decodeURIComponent(utfMatch[1]);
+      } catch {
+        return utfMatch[1];
+      }
+    }
+
+    const basicMatch = headerValue.match(/filename="?([^";]+)"?/i);
+    if (basicMatch && basicMatch[1]) {
+      return basicMatch[1];
+    }
+
+    return fallback;
+  };
+
+  const downloadPaymentHistory = async (format: 'csv' | 'pdf') => {
+    if (!token || !id) return;
+
+    if (format === 'csv') {
+      setDownloadingCsv(true);
+    } else {
+      setDownloadingPdf(true);
+    }
+
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/mortgages/${id}/payments/export/${format}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: format === 'pdf' ? 'application/pdf' : 'text/csv',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to download ${format.toUpperCase()}`);
+      }
+
+      const blob = await response.blob();
+      const fallbackName = `mortgage_${id}_payment_history.${format}`;
+      const fileName = parseFileNameFromHeader(response.headers.get('Content-Disposition'), fallbackName);
+      const objectUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      console.error(error);
+      alert(`Unable to download ${format.toUpperCase()} right now.`);
+    } finally {
+      if (format === 'csv') {
+        setDownloadingCsv(false);
+      } else {
+        setDownloadingPdf(false);
+      }
+    }
+  };
 
   const monthlyRate = useMemo(() => {
     const annual = toNumber(mortgage?.interest_rate) / 100;
@@ -673,6 +739,24 @@ export default function MortgagePayments() {
                 >
                   <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                   Refresh
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void downloadPaymentHistory('csv')}
+                  disabled={downloadingCsv || downloadingPdf || loading || enriched.rows.length === 0}
+                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-60"
+                >
+                  <Download className={`h-4 w-4 ${downloadingCsv ? 'animate-pulse' : ''}`} />
+                  {downloadingCsv ? 'Downloading CSV...' : 'Download CSV'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void downloadPaymentHistory('pdf')}
+                  disabled={downloadingPdf || downloadingCsv || loading || enriched.rows.length === 0}
+                  className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-800 transition hover:bg-rose-100 disabled:opacity-60"
+                >
+                  <FileText className={`h-4 w-4 ${downloadingPdf ? 'animate-pulse' : ''}`} />
+                  {downloadingPdf ? 'Downloading PDF...' : 'Download PDF'}
                 </button>
               </div>
             </div>

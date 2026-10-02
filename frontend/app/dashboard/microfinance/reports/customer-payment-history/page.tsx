@@ -36,6 +36,27 @@ type CollectionRow = {
   payment_reference?: string | null;
 };
 
+type LoanApiRow = {
+  id?: number | string | null;
+  loan_code?: string | null;
+  customer_no?: string | null;
+  customer_name?: string | null;
+  field_officer?: string | null;
+  route_name?: string | null;
+  route?: { name?: string | null } | null;
+  center?: { name?: string | null } | null;
+  group?: { name?: string | null } | null;
+  status?: string | null;
+  net_disbursed_amount?: number | string | null;
+  loan_amount?: number | string | null;
+  refundable_amount?: number | string | null;
+  total_paid_amount?: number | string | null;
+  collections_sum_collected_amount?: number | string | null;
+  last_pay_date?: string | null;
+  loan_request_date?: string | null;
+  created_at?: string | null;
+};
+
 type HistoryRow = {
   id: number;
   date: string;
@@ -164,7 +185,11 @@ export default function CustomerPaymentHistoryReportPage() {
       setLoansLoading(true);
       try {
         const loanRes = await axios.get(`${API_BASE}/microfinance/loan-requests`, { headers });
-        const loansRaw = Array.isArray(loanRes.data) ? loanRes.data : [];
+        const loansRaw: LoanApiRow[] = Array.isArray(loanRes.data)
+          ? loanRes.data
+          : Array.isArray(loanRes.data?.data)
+            ? loanRes.data.data
+            : [];
 
         const mapped: IssuedLoanRow[] = loansRaw
           .filter((loan) => ISSUED_STATUSES.has(String(loan.status || '').toLowerCase()))
@@ -225,7 +250,11 @@ export default function CustomerPaymentHistoryReportPage() {
           params: { loan_request_id: loan.id },
         });
 
-        const collections: CollectionRow[] = Array.isArray(collectionRes.data) ? collectionRes.data : [];
+        const collections: CollectionRow[] = Array.isArray(collectionRes.data)
+          ? collectionRes.data
+          : Array.isArray(collectionRes.data?.data)
+            ? collectionRes.data.data
+            : [];
 
         const mapped = collections
           .map((collection) => mapCollectionToHistory(collection, loan))

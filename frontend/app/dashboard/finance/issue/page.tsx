@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import axios from 'axios';
 import { ArrowLeft, Banknote, Bell, Calculator, Car, Check, FileText, Plus, Shield, User, X } from 'lucide-react';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
@@ -283,6 +283,53 @@ type ConfirmModalState = {
   draftId?: string;
 };
 
+type EditableFinanceRecord = {
+  id: number;
+  customer?: {
+    id?: number;
+    customer_code?: string | null;
+    nic_passport?: string | null;
+    passport_no?: string | null;
+    first_name?: string | null;
+    last_name?: string | null;
+    phone?: string | null;
+    email?: string | null;
+    date_of_birth?: string | null;
+    gender?: 'male' | 'female' | 'other' | null;
+    marital_status?: 'single' | 'married' | 'divorced' | 'widowed' | null;
+    nationality?: string | null;
+    permanent_address?: string | null;
+    current_address?: string | null;
+    employment_type?: 'salaried' | 'self_employed' | 'business' | null;
+    employer_name?: string | null;
+    job_title?: string | null;
+    monthly_income?: number | string | null;
+    other_income_sources?: string | null;
+    existing_loans?: boolean | null;
+    monthly_loan_obligations?: number | string | null;
+    credit_score?: number | string | null;
+  } | null;
+  finance_type?: string | null;
+  product_type?: string | null;
+  asset_reference?: string | null;
+  amount?: number | string | null;
+  down_payment?: number | string | null;
+  interest_rate?: number | string | null;
+  interest_type?: 'fixed' | 'reducing' | null;
+  tenure_months?: number | string | null;
+  installment_frequency?: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' | null;
+  installment_amount?: number | string | null;
+  start_date?: string | null;
+  responsible_officer_employee_id?: number | string | null;
+  vehicle_details?: Record<string, unknown> | null;
+  valuation_details?: Record<string, unknown> | null;
+  guarantor_details?: Array<Record<string, unknown>> | null;
+  family_financial_details?: Record<string, unknown> | null;
+  evaluation_payload?: Record<string, unknown> | null;
+  evaluation_payload_version?: number | string | null;
+  repayment_plan?: Record<string, unknown> | null;
+};
+
 const FINANCE_ISSUE_DRAFTS_KEY = 'finance_issue_wizard_drafts_v1';
 
 function isCustomerDetail(value: unknown): value is CustomerDetail {
@@ -329,8 +376,30 @@ function resolveAuthBranchId(user: AuthUser | null): number | undefined {
   return candidates[0] || undefined;
 }
 
+function asText(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value);
+}
+
+function asMoneyText(value: unknown): string {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '';
+  return num.toFixed(2);
+}
+
+function asDateInput(value: unknown): string {
+  if (!value) return '';
+  const d = new Date(String(value));
+  if (Number.isNaN(d.getTime())) return '';
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 export default function IssueFinancePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [token, setToken] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
@@ -476,6 +545,9 @@ export default function IssueFinancePage() {
     message: '',
     action: null,
   });
+  const [editFinanceId, setEditFinanceId] = useState<number | null>(null);
+  const [loadingEditFinance, setLoadingEditFinance] = useState(false);
+  const [loadedEditFinanceId, setLoadedEditFinanceId] = useState<number | null>(null);
 
   const fetchNotificationPreview = async (authToken: string) => {
     try {
@@ -569,7 +641,13 @@ export default function IssueFinancePage() {
   };
 
   const requestSubmitRegister = () => {
-    openConfirmModal('submit_register', 'Complete Registration', 'Do you want to submit this finance registration now?');
+    openConfirmModal(
+      'submit_register',
+      isEditMode ? 'Save Finance Changes' : 'Complete Registration',
+      isEditMode
+        ? 'Do you want to save these changes to the existing finance record now?'
+        : 'Do you want to submit this finance registration now?'
+    );
   };
 
   const requestSaveProductType = () => {
@@ -578,6 +656,196 @@ export default function IssueFinancePage() {
 
   const requestDeleteDraft = (draftId: string) => {
     openConfirmModal('delete_draft', 'Delete Draft', 'Do you want to permanently delete this draft?', draftId);
+  };
+
+  const isEditMode = Number.isFinite(Number(editFinanceId || 0)) && Number(editFinanceId || 0) > 0;
+
+  const applyFinanceRecordToForm = (finance: EditableFinanceRecord) => {
+    const customer = finance.customer || null;
+    const repaymentPlan = (finance.repayment_plan && typeof finance.repayment_plan === 'object')
+      ? finance.repayment_plan
+      : {};
+    const evaluation = (finance.evaluation_payload && typeof finance.evaluation_payload === 'object')
+      ? finance.evaluation_payload
+      : {};
+    const familyFinancial = (finance.family_financial_details && typeof finance.family_financial_details === 'object')
+      ? finance.family_financial_details
+      : {};
+    const vehicleDetails = (finance.vehicle_details && typeof finance.vehicle_details === 'object')
+      ? finance.vehicle_details
+      : {};
+    const valuationDetails = (finance.valuation_details && typeof finance.valuation_details === 'object')
+      ? finance.valuation_details
+      : {};
+
+    const repaymentInstallmentsRaw = Array.isArray(repaymentPlan.installments) ? repaymentPlan.installments : [];
+    const repaymentInstallments: RepaymentInstallmentRow[] = repaymentInstallmentsRaw
+      .map((row, idx) => {
+        const record = (row && typeof row === 'object') ? row as Record<string, unknown> : {};
+        const installmentNo = Number(record.installment_no || idx + 1);
+        return {
+          installment_no: Number.isFinite(installmentNo) && installmentNo > 0 ? installmentNo : (idx + 1),
+          payment_date: asDateInput(record.payment_date),
+          amount: asMoneyText(record.amount),
+        };
+      })
+      .filter((row) => row.payment_date && Number(row.amount) > 0);
+
+    const customerCode = asText(customer?.customer_code).trim();
+    const nicOrPassport = asText(customer?.nic_passport || customer?.passport_no).trim();
+
+    setActiveDraftId('');
+    setRegisterStep(1);
+    setRegCustomerNo(customerCode);
+    setRegCustomerSearchBy('nic_passport');
+    setRegCustomerSearchValue(nicOrPassport || customerCode);
+    setRegMatchedInvestmentAccountNo('');
+    setRegFinanceType(asText(finance.finance_type || 'vehicle') || 'vehicle');
+    setRegProductType(asText(finance.product_type));
+    setRegStartDate(asDateInput(finance.start_date));
+    setRegResponsibleOfficerId(asText(finance.responsible_officer_employee_id));
+    setRegInterestRate(asText(finance.interest_rate || '0'));
+    setRegInterestRatePeriod('yearly');
+    setRegInterestType((asText(finance.interest_type || 'fixed') as 'fixed' | 'reducing') || 'fixed');
+    setRegTenureMonths(asText(finance.tenure_months));
+    setRegFrequency(asText(finance.installment_frequency || 'monthly') || 'monthly');
+    setRegScheduleMode((asText(repaymentPlan.schedule_mode || 'auto') as 'auto' | 'fixed_day' | 'custom_date') || 'auto');
+    setRegFirstInstallmentDate(asDateInput(repaymentPlan.first_installment_date));
+    setRegCollectionDayOfMonth(asText(repaymentPlan.collection_day_of_month || '1') || '1');
+    setRegGraceDays(asText(repaymentPlan.grace_period_days || '0') || '0');
+    setRegInstallmentMode((asText(repaymentPlan.installment_mode || 'auto') as 'auto' | 'manual') || 'auto');
+    setRegManualInstallmentAmount(asMoneyText(repaymentPlan.manual_installment_amount || finance.installment_amount));
+    setRegInstallmentPlan(repaymentInstallments);
+
+    setRegVehicleNo(asText(vehicleDetails.vehicle_no));
+    setRegChassisNo(asText(vehicleDetails.chassis_no));
+    setRegEngineNo(asText(vehicleDetails.engine_no));
+    setRegMakeModel(asText(vehicleDetails.make_model || vehicleDetails.loan_details));
+    setRegVehicleYear(asText(vehicleDetails.year));
+    setRegAssetRef(asText(finance.asset_reference));
+    setRegAmount(asMoneyText(finance.amount));
+    setRegLoanAmount(asMoneyText(finance.amount));
+    setRegLoanDetails(asText(vehicleDetails.loan_details));
+    setRegDraftValue('');
+    setRegDownPayment(asMoneyText(finance.down_payment));
+    setRegValuationAmount(asMoneyText(valuationDetails.valuation_amount));
+    setRegValuationDate(asDateInput(valuationDetails.valuation_date));
+    setRegValuerName(asText(valuationDetails.valuer_name));
+
+    const guarantorRowsRaw = Array.isArray(finance.guarantor_details) ? finance.guarantor_details : [];
+    const guarantorRows = guarantorRowsRaw
+      .map((item) => {
+        const g = (item && typeof item === 'object') ? item as Record<string, unknown> : {};
+        return {
+          name: asText(g.name),
+          nic: asText(g.nic),
+          phone: asText(g.phone),
+          address: asText(g.address),
+        };
+      })
+      .filter((g) => g.name || g.nic || g.phone || g.address);
+    setRegGuarantors(guarantorRows.length > 0 ? guarantorRows : [{ name: '', nic: '', phone: '', address: '' }]);
+
+    setRegFamilyMembersCount(asText(familyFinancial.family_members_count));
+    setRegDependentsCount(asText(familyFinancial.dependents_count));
+    setRegEmploymentType(asText(familyFinancial.employment_type));
+    setRegMainIncomeSource(asText(familyFinancial.main_income_source));
+    setRegMonthlyHouseholdIncome(asText(familyFinancial.monthly_household_income));
+    setRegMonthlyHouseholdExpenses(asText(familyFinancial.monthly_household_expenses));
+    setRegExistingLoanCommitments(asText(familyFinancial.existing_loan_commitments));
+    setRegBankingRelationship(asText(familyFinancial.banking_relationship));
+    setRegFamilyFinancialNotes(asText(familyFinancial.notes));
+
+    setRegEvaluationIncomeActivities(Array.isArray(evaluation.income_generation_activities)
+      ? evaluation.income_generation_activities.map((value) => asText(value)).filter((value) => value.trim() !== '')
+      : []);
+    setRegEvaluationBusiness1(asText(evaluation.business_1));
+    setRegEvaluationBusiness1MonthlyIncome(asText(evaluation.business_1_monthly_income));
+    setRegEvaluationBusiness2(asText(evaluation.business_2));
+    setRegEvaluationBusiness2MonthlyIncome(asText(evaluation.business_2_monthly_income));
+    setRegEvaluationLoanReason(asText(evaluation.loan_reason));
+    setRegEvaluationHouseOwnership(asText(evaluation.house_ownership));
+    setRegEvaluationWallMaterial(asText(evaluation.wall_material));
+    setRegEvaluationFloorMaterial(asText(evaluation.floor_material));
+    setRegEvaluationRoofMaterial(asText(evaluation.roof_material));
+    setRegEvaluationVehicleAssets(asText(evaluation.vehicle_assets));
+    setRegEvaluationOtherLoansDetails(asText(evaluation.other_loans_details));
+    setRegEvaluationOtherLoansMonthlyInstallment(asText(evaluation.other_loans_monthly_installment));
+    setRegEvaluationLeasingDetails(asText(evaluation.leasing_details));
+    setRegEvaluationLeasingMonthlyInstallment(asText(evaluation.leasing_monthly_installment));
+    setRegEvaluationOtherLiabilities(asText(evaluation.liabilities_summary));
+    setRegEvaluationFamilyExpenseBreakdown(
+      evaluation.family_expense_breakdown && typeof evaluation.family_expense_breakdown === 'object'
+        ? Object.fromEntries(
+          Object.entries(evaluation.family_expense_breakdown as Record<string, unknown>)
+            .map(([key, value]) => [key, asText(value)])
+        )
+        : {}
+    );
+    setRegEvaluationBusinessExpenseBreakdown(
+      evaluation.business_expense_breakdown && typeof evaluation.business_expense_breakdown === 'object'
+        ? Object.fromEntries(
+          Object.entries(evaluation.business_expense_breakdown as Record<string, unknown>)
+            .map(([key, value]) => [key, asText(value)])
+        )
+        : {}
+    );
+    setRegEvaluationFamilyIncomeWithoutBusiness(asText(evaluation.family_income_without_business));
+    setRegEvaluationFamilyIncomeItem1(asText(evaluation.family_income_item_1));
+    setRegEvaluationFamilyIncomeItem2(asText(evaluation.family_income_item_2));
+    setRegEvaluationFamilyIncomeItem3(asText(evaluation.family_income_item_3));
+
+    const wageEarners = Array.isArray(evaluation.family_wage_earners) ? evaluation.family_wage_earners : [];
+    const wage1 = (wageEarners[0] && typeof wageEarners[0] === 'object') ? wageEarners[0] as Record<string, unknown> : {};
+    const wage2 = (wageEarners[1] && typeof wageEarners[1] === 'object') ? wageEarners[1] as Record<string, unknown> : {};
+    const wage3 = (wageEarners[2] && typeof wageEarners[2] === 'object') ? wageEarners[2] as Record<string, unknown> : {};
+    setRegEvaluationWageEarner1Name(asText(wage1.name));
+    setRegEvaluationWageEarner1Salary(asText(wage1.salary));
+    setRegEvaluationWageEarner2Name(asText(wage2.name));
+    setRegEvaluationWageEarner2Salary(asText(wage2.salary));
+    setRegEvaluationWageEarner3Name(asText(wage3.name));
+    setRegEvaluationWageEarner3Salary(asText(wage3.salary));
+    setRegEvaluationRentOutHouse(asText(evaluation.family_rent_out_house));
+    setRegEvaluationRentOutVehicle(asText(evaluation.family_rent_out_vehicle));
+    setRegEvaluationInterestCommission(asText(evaluation.family_interest_commission));
+    setRegEvaluationOtherIncome(asText(evaluation.other_income));
+    setRegEvaluationBusiness1UnitPrice(asText(evaluation.business_1_unit_selling_price));
+    setRegEvaluationBusiness1Units(asText(evaluation.business_1_units));
+    setRegEvaluationBusiness2UnitPrice(asText(evaluation.business_2_unit_selling_price));
+    setRegEvaluationBusiness2Units(asText(evaluation.business_2_units));
+    setRegEvaluationRecommendation(asText(evaluation.recommendation));
+
+    setRegVehicleImages([]);
+    setRegVehicleCrFile(null);
+    setRegResidenceImages([]);
+    setRegDocuments([]);
+
+    if (customer && Number(customer.id || 0) > 0) {
+      setRegCustomerDetail({
+        id: Number(customer.id || 0),
+        customer_code: customer.customer_code ?? null,
+        first_name: customer.first_name ?? null,
+        last_name: customer.last_name ?? null,
+        nic_passport: customer.nic_passport ?? null,
+        passport_no: customer.passport_no ?? null,
+        date_of_birth: customer.date_of_birth ?? null,
+        gender: customer.gender ?? null,
+        marital_status: customer.marital_status ?? null,
+        nationality: customer.nationality ?? null,
+        email: customer.email ?? null,
+        phone: customer.phone ?? null,
+        permanent_address: customer.permanent_address ?? null,
+        current_address: customer.current_address ?? null,
+        employment_type: customer.employment_type ?? null,
+        employer_name: customer.employer_name ?? null,
+        job_title: customer.job_title ?? null,
+        monthly_income: customer.monthly_income ?? null,
+        other_income_sources: customer.other_income_sources ?? null,
+        existing_loans: customer.existing_loans ?? null,
+        monthly_loan_obligations: customer.monthly_loan_obligations ?? null,
+        credit_score: customer.credit_score ?? null,
+      });
+    }
   };
 
   const wizardStep3Label = regFinanceType === 'other'
@@ -1082,6 +1350,50 @@ export default function IssueFinancePage() {
       }
     }
   }, [router]);
+
+  useEffect(() => {
+    const raw = searchParams.get('edit_finance_id');
+    const parsed = Number(raw || 0);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      setEditFinanceId(parsed);
+      return;
+    }
+    setEditFinanceId(null);
+    setLoadedEditFinanceId(null);
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!token || !editFinanceId) return;
+    if (loadedEditFinanceId === editFinanceId) return;
+
+    const run = async () => {
+      try {
+        setLoadingEditFinance(true);
+        setErrorMessage('');
+        const response = await axios.get(`/api/finances/${editFinanceId}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+        });
+
+        const finance = response.data as EditableFinanceRecord;
+        if (!Number.isFinite(Number(finance?.id || 0)) || Number(finance.id) <= 0) {
+          setErrorMessage('Requested finance record could not be loaded for editing.');
+          return;
+        }
+
+        applyFinanceRecordToForm(finance);
+        setLoadedEditFinanceId(editFinanceId);
+      } catch (error: unknown) {
+        setErrorMessage(extractApiErrorMessage(error, 'Failed to load finance record for edit wizard.'));
+      } finally {
+        setLoadingEditFinance(false);
+      }
+    };
+
+    run();
+  }, [token, editFinanceId, loadedEditFinanceId]);
 
   const showAddProductTypeWidget = !hiddenWidgetKeys.has(`${widgetPrefix}add_product_type`);
   const showInterestTermsWidget = !hiddenWidgetKeys.has(`${widgetPrefix}interest_terms`);
@@ -1868,145 +2180,163 @@ export default function IssueFinancePage() {
         ? 'finance_gold_image'
         : 'finance_vehicle_image';
 
+    const financePayload = {
+      customer_no: regCustomerNo.trim(),
+      finance_type: regFinanceType,
+      product_type: regProductType,
+      asset_reference: isOtherFinanceSelected
+        ? (regAssetRef || undefined)
+        : (regAssetRef || regVehicleNo || undefined),
+      amount,
+      down_payment: effectiveDownPayment,
+      interest_rate: rate,
+      interest_type: regInterestType,
+      tenure_months: tenure,
+      installment_frequency: regFrequency,
+      manual_installment_amount: !isDraftLoanSelected && regInstallmentMode === 'manual'
+        ? Number(normalizedManualRows[0]?.amount || manualInstallment)
+        : undefined,
+      start_date: regStartDate || undefined,
+      status: 'pending_approval',
+      responsible_officer_employee_id: Number(regResponsibleOfficerId || 0) || undefined,
+      vehicle_details: isVehicleFinanceSelected
+        ? {
+          vehicle_no: regVehicleNo || null,
+          chassis_no: regChassisNo || null,
+          engine_no: regEngineNo || null,
+          make_model: regMakeModel || null,
+          year: regVehicleYear || null,
+          asset_category: regFinanceType,
+        }
+        : isOtherFinanceSelected
+          ? {
+            loan_details: regLoanDetails || null,
+          }
+          : {
+            vehicle_no: regVehicleNo || null,
+            chassis_no: regChassisNo || null,
+            engine_no: regEngineNo || null,
+            make_model: regMakeModel || null,
+            year: regVehicleYear || null,
+            asset_category: regFinanceType,
+          },
+      valuation_details: isOtherFinanceSelected
+        ? null
+        : {
+          valuation_amount: regValuationAmount || null,
+          valuation_date: regValuationDate || null,
+          valuer_name: regValuerName || null,
+        },
+      guarantor_details: regGuarantors
+        .filter((g) => g.name.trim() !== '' || g.nic.trim() !== '' || g.phone.trim() !== '' || g.address.trim() !== '')
+        .map((g) => ({
+          name: g.name || null,
+          nic: g.nic || null,
+          phone: g.phone || null,
+          address: g.address || null,
+        })),
+      family_financial_details: {
+        family_members_count: Number(regFamilyMembersCount || 0) || null,
+        dependents_count: Number(regDependentsCount || 0) || null,
+        employment_type: regEmploymentType || null,
+        main_income_source: regMainIncomeSource || null,
+        monthly_household_income: Number(regMonthlyHouseholdIncome || 0) || null,
+        monthly_household_expenses: Number(regMonthlyHouseholdExpenses || 0) || null,
+        existing_loan_commitments: Number(regExistingLoanCommitments || 0) || null,
+        banking_relationship: regBankingRelationship || null,
+        notes: regFamilyFinancialNotes || null,
+      },
+      evaluation_payload_version: 2,
+      evaluation_payload: {
+        income_generation_activities: regEvaluationIncomeActivities,
+        business_1: regEvaluationBusiness1 || null,
+        business_1_monthly_income: Number(regEvaluationBusiness1MonthlyIncome || 0) || null,
+        business_2: regEvaluationBusiness2 || null,
+        business_2_monthly_income: Number(regEvaluationBusiness2MonthlyIncome || 0) || null,
+        loan_reason: regEvaluationLoanReason || null,
+        house_ownership: regEvaluationHouseOwnership || null,
+        wall_material: regEvaluationWallMaterial || null,
+        floor_material: regEvaluationFloorMaterial || null,
+        roof_material: regEvaluationRoofMaterial || null,
+        vehicle_assets: regEvaluationVehicleAssets || null,
+        other_loans_details: regEvaluationOtherLoansDetails || null,
+        other_loans_monthly_installment: Number(regEvaluationOtherLoansMonthlyInstallment || 0) || null,
+        leasing_details: regEvaluationLeasingDetails || null,
+        leasing_monthly_installment: Number(regEvaluationLeasingMonthlyInstallment || 0) || null,
+        family_expense_breakdown: regEvaluationFamilyExpenseBreakdown,
+        business_expense_breakdown: regEvaluationBusinessExpenseBreakdown,
+        family_income_without_business: Number(regEvaluationFamilyIncomeWithoutBusiness || 0) || null,
+        family_income_item_1: Number(regEvaluationFamilyIncomeItem1 || 0) || null,
+        family_income_item_2: Number(regEvaluationFamilyIncomeItem2 || 0) || null,
+        family_income_item_3: Number(regEvaluationFamilyIncomeItem3 || 0) || null,
+        family_wage_earners: [
+          { name: regEvaluationWageEarner1Name || null, salary: Number(regEvaluationWageEarner1Salary || 0) || null },
+          { name: regEvaluationWageEarner2Name || null, salary: Number(regEvaluationWageEarner2Salary || 0) || null },
+          { name: regEvaluationWageEarner3Name || null, salary: Number(regEvaluationWageEarner3Salary || 0) || null },
+        ],
+        family_rent_out_house: Number(regEvaluationRentOutHouse || 0) || null,
+        family_rent_out_vehicle: Number(regEvaluationRentOutVehicle || 0) || null,
+        family_interest_commission: Number(regEvaluationInterestCommission || 0) || null,
+        other_income: Number(regEvaluationOtherIncome || 0) || null,
+        business_1_unit_selling_price: Number(regEvaluationBusiness1UnitPrice || 0) || null,
+        business_1_units: Number(regEvaluationBusiness1Units || 0) || null,
+        business_2_unit_selling_price: Number(regEvaluationBusiness2UnitPrice || 0) || null,
+        business_2_units: Number(regEvaluationBusiness2Units || 0) || null,
+        total_family_expenses_a: Number(familyExpenseTotal.toFixed(2)),
+        total_business_expenses_b: Number(businessExpenseTotal.toFixed(2)),
+        total_income_family_c: Number(totalIncomeWithBusiness.toFixed(2)),
+        loan_payments_and_family_expenses_d: Number(loanPaymentsAndFamilyExpensesTotal.toFixed(2)),
+        remaining_cash_with_family_e: Number(remainingCashWithFamily.toFixed(2)),
+        average_cash_per_week: Number(averageCashPerWeek.toFixed(2)),
+        assets_summary: regEvaluationVehicleAssets || null,
+        liabilities_summary: regEvaluationOtherLiabilities || null,
+        recommendation: regEvaluationRecommendation || null,
+      },
+      repayment_plan: isDraftLoanSelected ? undefined : {
+        schedule_mode: regScheduleMode,
+        first_installment_date: regFirstInstallmentDate || null,
+        collection_day_of_month: regScheduleMode === 'fixed_day' ? Number(regCollectionDayOfMonth || 1) : null,
+        grace_period_days: Number(regGraceDays || 0),
+        installment_frequency: regFrequency,
+        installment_mode: regInstallmentMode,
+        manual_installment_amount: regInstallmentMode === 'manual' ? Number(normalizedManualRows[0]?.amount || manualInstallment) : null,
+        installments: regInstallmentMode === 'manual' ? normalizedManualRows : [],
+        total_planned_amount: regInstallmentMode === 'manual' ? Number(totalPlannedInstallments.toFixed(2)) : null,
+      },
+    };
+
     try {
       setSavingRegister(true);
       setErrorMessage('');
 
-      const createResponse = await axios.post(
-        '/api/finances',
-        {
-          customer_no: regCustomerNo.trim(),
-          finance_type: regFinanceType,
-          product_type: regProductType,
-          asset_reference: isOtherFinanceSelected
-            ? (regAssetRef || undefined)
-            : (regAssetRef || regVehicleNo || undefined),
-          amount,
-          down_payment: effectiveDownPayment,
-          interest_rate: rate,
-          interest_type: regInterestType,
-          tenure_months: tenure,
-          installment_frequency: regFrequency,
-          manual_installment_amount: !isDraftLoanSelected && regInstallmentMode === 'manual'
-            ? Number(normalizedManualRows[0]?.amount || manualInstallment)
-            : undefined,
-          start_date: regStartDate || undefined,
-          status: 'pending_approval',
-          responsible_officer_employee_id: Number(regResponsibleOfficerId || 0) || undefined,
-          vehicle_details: isVehicleFinanceSelected
-            ? {
-              vehicle_no: regVehicleNo || null,
-              chassis_no: regChassisNo || null,
-              engine_no: regEngineNo || null,
-              make_model: regMakeModel || null,
-              year: regVehicleYear || null,
-              asset_category: regFinanceType,
-            }
-            : isOtherFinanceSelected
-              ? {
-                loan_details: regLoanDetails || null,
-              }
-              : {
-                vehicle_no: regVehicleNo || null,
-                chassis_no: regChassisNo || null,
-                engine_no: regEngineNo || null,
-                make_model: regMakeModel || null,
-                year: regVehicleYear || null,
-                asset_category: regFinanceType,
-              },
-          valuation_details: isOtherFinanceSelected
-            ? null
-            : {
-              valuation_amount: regValuationAmount || null,
-              valuation_date: regValuationDate || null,
-              valuer_name: regValuerName || null,
+      const createOrUpdateResponse = isEditMode && editFinanceId
+        ? await axios.put(
+          `/api/finances/${editFinanceId}`,
+          financePayload,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/json',
             },
-          guarantor_details: regGuarantors
-            .filter((g) => g.name.trim() !== '' || g.nic.trim() !== '' || g.phone.trim() !== '' || g.address.trim() !== '')
-            .map((g) => ({
-              name: g.name || null,
-              nic: g.nic || null,
-              phone: g.phone || null,
-              address: g.address || null,
-            })),
-          family_financial_details: {
-            family_members_count: Number(regFamilyMembersCount || 0) || null,
-            dependents_count: Number(regDependentsCount || 0) || null,
-            employment_type: regEmploymentType || null,
-            main_income_source: regMainIncomeSource || null,
-            monthly_household_income: Number(regMonthlyHouseholdIncome || 0) || null,
-            monthly_household_expenses: Number(regMonthlyHouseholdExpenses || 0) || null,
-            existing_loan_commitments: Number(regExistingLoanCommitments || 0) || null,
-            banking_relationship: regBankingRelationship || null,
-            notes: regFamilyFinancialNotes || null,
           },
-          evaluation_payload_version: 2,
-          evaluation_payload: {
-            income_generation_activities: regEvaluationIncomeActivities,
-            business_1: regEvaluationBusiness1 || null,
-            business_1_monthly_income: Number(regEvaluationBusiness1MonthlyIncome || 0) || null,
-            business_2: regEvaluationBusiness2 || null,
-            business_2_monthly_income: Number(regEvaluationBusiness2MonthlyIncome || 0) || null,
-            loan_reason: regEvaluationLoanReason || null,
-            house_ownership: regEvaluationHouseOwnership || null,
-            wall_material: regEvaluationWallMaterial || null,
-            floor_material: regEvaluationFloorMaterial || null,
-            roof_material: regEvaluationRoofMaterial || null,
-            vehicle_assets: regEvaluationVehicleAssets || null,
-            other_loans_details: regEvaluationOtherLoansDetails || null,
-            other_loans_monthly_installment: Number(regEvaluationOtherLoansMonthlyInstallment || 0) || null,
-            leasing_details: regEvaluationLeasingDetails || null,
-            leasing_monthly_installment: Number(regEvaluationLeasingMonthlyInstallment || 0) || null,
-            family_expense_breakdown: regEvaluationFamilyExpenseBreakdown,
-            business_expense_breakdown: regEvaluationBusinessExpenseBreakdown,
-            family_income_without_business: Number(regEvaluationFamilyIncomeWithoutBusiness || 0) || null,
-            family_income_item_1: Number(regEvaluationFamilyIncomeItem1 || 0) || null,
-            family_income_item_2: Number(regEvaluationFamilyIncomeItem2 || 0) || null,
-            family_income_item_3: Number(regEvaluationFamilyIncomeItem3 || 0) || null,
-            family_wage_earners: [
-              { name: regEvaluationWageEarner1Name || null, salary: Number(regEvaluationWageEarner1Salary || 0) || null },
-              { name: regEvaluationWageEarner2Name || null, salary: Number(regEvaluationWageEarner2Salary || 0) || null },
-              { name: regEvaluationWageEarner3Name || null, salary: Number(regEvaluationWageEarner3Salary || 0) || null },
-            ],
-            family_rent_out_house: Number(regEvaluationRentOutHouse || 0) || null,
-            family_rent_out_vehicle: Number(regEvaluationRentOutVehicle || 0) || null,
-            family_interest_commission: Number(regEvaluationInterestCommission || 0) || null,
-            other_income: Number(regEvaluationOtherIncome || 0) || null,
-            business_1_unit_selling_price: Number(regEvaluationBusiness1UnitPrice || 0) || null,
-            business_1_units: Number(regEvaluationBusiness1Units || 0) || null,
-            business_2_unit_selling_price: Number(regEvaluationBusiness2UnitPrice || 0) || null,
-            business_2_units: Number(regEvaluationBusiness2Units || 0) || null,
-            total_family_expenses_a: Number(familyExpenseTotal.toFixed(2)),
-            total_business_expenses_b: Number(businessExpenseTotal.toFixed(2)),
-            total_income_family_c: Number(totalIncomeWithBusiness.toFixed(2)),
-            loan_payments_and_family_expenses_d: Number(loanPaymentsAndFamilyExpensesTotal.toFixed(2)),
-            remaining_cash_with_family_e: Number(remainingCashWithFamily.toFixed(2)),
-            average_cash_per_week: Number(averageCashPerWeek.toFixed(2)),
-            assets_summary: regEvaluationVehicleAssets || null,
-            liabilities_summary: regEvaluationOtherLiabilities || null,
-            recommendation: regEvaluationRecommendation || null,
+        )
+        : await axios.post(
+          '/api/finances',
+          financePayload,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/json',
+            },
           },
-          repayment_plan: isDraftLoanSelected ? undefined : {
-            schedule_mode: regScheduleMode,
-            first_installment_date: regFirstInstallmentDate || null,
-            collection_day_of_month: regScheduleMode === 'fixed_day' ? Number(regCollectionDayOfMonth || 1) : null,
-            grace_period_days: Number(regGraceDays || 0),
-            installment_frequency: regFrequency,
-            installment_mode: regInstallmentMode,
-            manual_installment_amount: regInstallmentMode === 'manual' ? Number(normalizedManualRows[0]?.amount || manualInstallment) : null,
-            installments: regInstallmentMode === 'manual' ? normalizedManualRows : [],
-            total_planned_amount: regInstallmentMode === 'manual' ? Number(totalPlannedInstallments.toFixed(2)) : null,
-          },
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/json',
-          },
-        },
-      );
+        );
 
-      const financeId = Number(createResponse?.data?.id || 0);
+      const financeId = Number(
+        createOrUpdateResponse?.data?.data?.id
+        || createOrUpdateResponse?.data?.id
+        || editFinanceId
+        || 0
+      );
 
       if (financeId > 0 && regVehicleCrFile) {
         const formData = new FormData();
@@ -2086,9 +2416,9 @@ export default function IssueFinancePage() {
         }
       }
 
-      router.push('/dashboard/action-center');
+      router.push(isEditMode ? '/dashboard/finance/customers' : '/dashboard/action-center');
     } catch (error: unknown) {
-      setErrorMessage(extractApiErrorMessage(error, 'Failed to register finance agreement.'));
+      setErrorMessage(extractApiErrorMessage(error, isEditMode ? 'Failed to update finance agreement.' : 'Failed to register finance agreement.'));
     } finally {
       setSavingRegister(false);
     }
@@ -2184,6 +2514,12 @@ export default function IssueFinancePage() {
           </div>
         ) : null}
 
+        {loadingEditFinance ? (
+          <div className="rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900">
+            Loading finance record into edit wizard...
+          </div>
+        ) : null}
+
         <div className="rounded-3xl border border-white/80 bg-white/88 backdrop-blur-md shadow-[0_22px_40px_rgba(14,116,144,0.14)] overflow-hidden">
           <div className="bg-gradient-to-r from-cyan-700 via-sky-700 to-teal-600 px-5 py-5 sm:px-6 sm:py-6">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -2193,9 +2529,11 @@ export default function IssueFinancePage() {
                 </div>
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-100">Finance Module</p>
-                  <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">Issue Finance</h1>
+                  <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">{isEditMode ? 'Edit Finance' : 'Issue Finance'}</h1>
                   <p className="mt-1 max-w-xl text-xs text-cyan-50/95 sm:text-[13px]">
-                    Register vehicle and asset finance with customer onboarding, terms, and repayment planning.
+                    {isEditMode
+                      ? 'Update finance using the same step-by-step workflow used at issue time.'
+                      : 'Register vehicle and asset finance with customer onboarding, terms, and repayment planning.'}
                   </p>
                 </div>
               </div>
@@ -3596,7 +3934,7 @@ export default function IssueFinancePage() {
                   className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:from-cyan-700 hover:to-blue-700 disabled:opacity-60 transition"
                 >
                   <Banknote className="h-4 w-4" />
-                  {savingRegister ? 'Saving…' : 'Complete registration'}
+                  {savingRegister ? 'Saving…' : (isEditMode ? 'Save finance changes' : 'Complete registration')}
                 </button>
               )}
             </div>

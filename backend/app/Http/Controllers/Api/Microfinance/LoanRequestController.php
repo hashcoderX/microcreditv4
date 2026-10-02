@@ -2352,6 +2352,42 @@ class LoanRequestController extends Controller
         return $branchId > 0 ? $branchId : null;
     }
 
+    /**
+     * @return array<int, string>
+     */
+    private function resolveViewerFieldOfficerKeys(?object $user): array
+    {
+        if (!$user) {
+            return [];
+        }
+
+        $keys = [];
+
+        $userName = trim((string) ($user->name ?? ''));
+        if ($userName !== '') {
+            $keys[] = mb_strtolower($userName);
+        }
+
+        $employeeId = (int) ($user->employee_id ?? 0);
+        if ($employeeId > 0) {
+            $employee = Employee::query()->find($employeeId);
+            if ($employee) {
+                $fullName = trim((string) (($employee->first_name ?? '') . ' ' . ($employee->last_name ?? '')));
+                if ($fullName !== '') {
+                    $keys[] = mb_strtolower($fullName);
+                }
+
+                $employeeCode = trim((string) ($employee->employee_code ?? ''));
+                if ($employeeCode !== '') {
+                    $keys[] = mb_strtolower($employeeCode);
+                }
+            }
+        }
+
+        $keys = array_values(array_unique(array_filter($keys, static fn ($value) => $value !== '')));
+        return $keys;
+    }
+
     public function index(Request $request)
     {
         $status = $request->get('status');
@@ -2467,6 +2503,7 @@ class LoanRequestController extends Controller
                 $viewerUserId = (int) ($viewer?->id ?? 0);
                 $viewerEmployeeId = (int) ($viewer?->employee_id ?? 0);
                 $viewerBranchId = $this->resolveUserBranchId($viewer);
+                $viewerFieldOfficerKeys = $this->resolveViewerFieldOfficerKeys($viewer);
                 $allowedBranchSteps = $this->allowedActionCenterStepsForUser($viewer);
                 $hasBranchWorkflowScope = $viewerBranchId > 0 && count($allowedBranchSteps) > 0;
 
@@ -2476,13 +2513,17 @@ class LoanRequestController extends Controller
                     }
                 }
 
-                $query->where(function ($scope) use ($viewerUserId, $viewerEmployeeId, $viewerBranchId, $allowedBranchSteps, $hasBranchWorkflowScope) {
+                $query->where(function ($scope) use ($viewerUserId, $viewerEmployeeId, $viewerBranchId, $allowedBranchSteps, $hasBranchWorkflowScope, $viewerFieldOfficerKeys) {
                     if ($viewerUserId > 0) {
                         $scope->orWhere('created_by', $viewerUserId);
                     }
 
                     if ($viewerEmployeeId > 0) {
                         $scope->orWhere('approval_employee_id', $viewerEmployeeId);
+                    }
+
+                    if (!empty($viewerFieldOfficerKeys)) {
+                        $scope->orWhereIn(DB::raw('LOWER(TRIM(field_officer))'), $viewerFieldOfficerKeys);
                     }
 
                     if ($hasBranchWorkflowScope) {

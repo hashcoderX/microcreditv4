@@ -19,7 +19,9 @@ use App\Models\MortgageDocument;
 use App\Models\User;
 use App\Services\SmsGatewayService;
 use App\Services\WhatsappGatewayService;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Illuminate\Support\Str;
 
 class MortgageController extends Controller
@@ -579,6 +581,179 @@ class MortgageController extends Controller
             });
 
         return response()->json(['data' => $payments]);
+    }
+
+    public function exportPaymentsCsv(Request $request, int $id): StreamedResponse
+    {
+        $mortgage = $this->resolveMortgageOrFail($request, $id);
+        $mortgage->loadMissing(
+            'customer:id,customer_code,first_name,last_name',
+            'asset:id,mortgage_id,asset_type,description,ownership_type,address,deed_number,survey_plan_number,registration_office,land_size_or_area,vehicle_reg_no,engine_no,chassis_no'
+        );
+
+        $payments = MortgagePayment::query()
+            ->where('mortgage_id', $mortgage->id)
+            ->orderBy('paid_date', 'asc')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        $customerCode = (string) ($mortgage->customer?->customer_code ?? 'NA');
+        $asset = $mortgage->asset;
+        $assetType = (string) ($asset?->asset_type ?? '');
+        $assetDescription = (string) ($asset?->description ?? '');
+        $assetOwnershipType = (string) ($asset?->ownership_type ?? '');
+        $assetAddress = (string) ($asset?->address ?? '');
+        $assetDeedNumber = (string) ($asset?->deed_number ?? '');
+        $assetSurveyPlanNumber = (string) ($asset?->survey_plan_number ?? '');
+        $assetRegistrationOffice = (string) ($asset?->registration_office ?? '');
+        $assetLandSize = (string) ($asset?->land_size_or_area ?? '');
+        $assetVehicleRegNo = (string) ($asset?->vehicle_reg_no ?? '');
+        $assetEngineNo = (string) ($asset?->engine_no ?? '');
+        $assetChassisNo = (string) ($asset?->chassis_no ?? '');
+        $fileName = sprintf('mortgage_%d_payment_history_%s.csv', (int) $mortgage->id, $customerCode);
+
+        return response()->streamDownload(function () use (
+            $payments,
+            $assetType,
+            $assetDescription,
+            $assetOwnershipType,
+            $assetAddress,
+            $assetDeedNumber,
+            $assetSurveyPlanNumber,
+            $assetRegistrationOffice,
+            $assetLandSize,
+            $assetVehicleRegNo,
+            $assetEngineNo,
+            $assetChassisNo
+        ): void {
+            $out = fopen('php://output', 'w');
+            if ($out === false) {
+                return;
+            }
+
+            fputcsv($out, [
+                'Payment ID',
+                'Paid Date',
+                'Amount',
+                'Interest Amount',
+                'Principal Amount',
+                'Profit Amount',
+                'Outstanding Principal After',
+                'Payment Method',
+                'Remarks',
+                'Asset Type',
+                'Asset Description',
+                'Asset Ownership Type',
+                'Asset Address',
+                'Asset Deed Number',
+                'Asset Survey Plan Number',
+                'Asset Registration Office',
+                'Asset Land Size / Area',
+                'Asset Vehicle Reg No',
+                'Asset Engine No',
+                'Asset Chassis No',
+            ]);
+
+            foreach ($payments as $payment) {
+                fputcsv($out, [
+                    (int) $payment->id,
+                    !empty($payment->paid_date) ? Carbon::parse((string) $payment->paid_date)->format('Y-m-d') : '',
+                    number_format((float) ($payment->amount ?? 0), 2, '.', ''),
+                    number_format((float) ($payment->interest_amount ?? 0), 2, '.', ''),
+                    number_format((float) ($payment->principal_amount ?? 0), 2, '.', ''),
+                    number_format((float) ($payment->profit_amount ?? 0), 2, '.', ''),
+                    number_format((float) ($payment->outstanding_principal_after ?? 0), 2, '.', ''),
+                    (string) ($payment->payment_method ?? ''),
+                    (string) ($payment->remarks ?? ''),
+                    $assetType,
+                    $assetDescription,
+                    $assetOwnershipType,
+                    $assetAddress,
+                    $assetDeedNumber,
+                    $assetSurveyPlanNumber,
+                    $assetRegistrationOffice,
+                    $assetLandSize,
+                    $assetVehicleRegNo,
+                    $assetEngineNo,
+                    $assetChassisNo,
+                ]);
+            }
+
+            fclose($out);
+        }, $fileName, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+        ]);
+    }
+
+    public function exportPaymentsPdf(Request $request, int $id)
+    {
+        $mortgage = $this->resolveMortgageOrFail($request, $id);
+        $mortgage->loadMissing(
+            'customer:id,customer_code,first_name,last_name',
+            'asset:id,mortgage_id,asset_type,description,ownership_type,address,deed_number,survey_plan_number,registration_office,land_size_or_area,vehicle_reg_no,engine_no,chassis_no'
+        );
+
+        $payments = MortgagePayment::query()
+            ->where('mortgage_id', $mortgage->id)
+            ->orderBy('paid_date', 'asc')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        $customer = trim((string) (($mortgage->customer?->first_name ?? '') . ' ' . ($mortgage->customer?->last_name ?? '')));
+        $customerCode = (string) ($mortgage->customer?->customer_code ?? 'NA');
+        $asset = $mortgage->asset;
+        $totalAmount = (float) $payments->sum(static fn (MortgagePayment $payment) => (float) ($payment->amount ?? 0));
+        $totalInterest = (float) $payments->sum(static fn (MortgagePayment $payment) => (float) ($payment->interest_amount ?? 0));
+        $totalPrincipal = (float) $payments->sum(static fn (MortgagePayment $payment) => (float) ($payment->principal_amount ?? 0));
+
+        $rowsHtml = '';
+        foreach ($payments as $payment) {
+            $rowsHtml .= '<tr>'
+                . '<td>' . (int) $payment->id . '</td>'
+                . '<td>' . e(!empty($payment->paid_date) ? Carbon::parse((string) $payment->paid_date)->format('Y-m-d') : '') . '</td>'
+                . '<td style="text-align:right;">' . number_format((float) ($payment->amount ?? 0), 2, '.', ',') . '</td>'
+                . '<td style="text-align:right;">' . number_format((float) ($payment->interest_amount ?? 0), 2, '.', ',') . '</td>'
+                . '<td style="text-align:right;">' . number_format((float) ($payment->principal_amount ?? 0), 2, '.', ',') . '</td>'
+                . '<td>' . e((string) ($payment->payment_method ?? '')) . '</td>'
+                . '<td>' . e((string) ($payment->remarks ?? '')) . '</td>'
+                . '</tr>';
+        }
+
+        if ($rowsHtml === '') {
+            $rowsHtml = '<tr><td colspan="7" style="text-align:center; color:#666;">No payments recorded.</td></tr>';
+        }
+
+        $html = '<!doctype html><html><head><meta charset="utf-8"><style>'
+            . 'body{font-family: DejaVu Sans, sans-serif; font-size:12px; color:#111;}'
+            . 'h1{font-size:18px; margin:0 0 6px;}'
+            . '.meta{margin:0 0 10px; color:#444;}'
+            . '.summary{margin:10px 0 14px;}'
+            . '.summary td{padding:4px 8px; border:1px solid #ddd;}'
+            . 'table{width:100%; border-collapse:collapse;}'
+            . 'th,td{border:1px solid #ddd; padding:6px 8px; font-size:11px;}'
+            . 'th{background:#f3f4f6; text-align:left;}'
+            . '</style></head><body>'
+            . '<h1>Mortgage Payment History</h1>'
+            . '<p class="meta">Mortgage ID: ' . (int) $mortgage->id . ' | Customer Code: ' . e($customerCode) . ' | Customer: ' . e($customer !== '' ? $customer : 'N/A') . '</p>'
+            . '<table class="summary"><tr><td><strong>Total Payments</strong></td><td>' . (int) $payments->count() . '</td><td><strong>Total Amount</strong></td><td>' . number_format($totalAmount, 2, '.', ',') . '</td></tr>'
+            . '<tr><td><strong>Total Interest</strong></td><td>' . number_format($totalInterest, 2, '.', ',') . '</td><td><strong>Total Principal</strong></td><td>' . number_format($totalPrincipal, 2, '.', ',') . '</td></tr></table>'
+            . '<h3 style="font-size:13px; margin:10px 0 6px;">Asset Details</h3>'
+            . '<table class="summary">'
+            . '<tr><td><strong>Type</strong></td><td>' . e((string) ($asset?->asset_type ?? 'N/A')) . '</td><td><strong>Ownership</strong></td><td>' . e((string) ($asset?->ownership_type ?? 'N/A')) . '</td></tr>'
+            . '<tr><td><strong>Description</strong></td><td colspan="3">' . e((string) ($asset?->description ?? 'N/A')) . '</td></tr>'
+            . '<tr><td><strong>Address</strong></td><td colspan="3">' . e((string) ($asset?->address ?? 'N/A')) . '</td></tr>'
+            . '<tr><td><strong>Deed No</strong></td><td>' . e((string) ($asset?->deed_number ?? 'N/A')) . '</td><td><strong>Survey Plan No</strong></td><td>' . e((string) ($asset?->survey_plan_number ?? 'N/A')) . '</td></tr>'
+            . '<tr><td><strong>Registration Office</strong></td><td>' . e((string) ($asset?->registration_office ?? 'N/A')) . '</td><td><strong>Land Size/Area</strong></td><td>' . e((string) ($asset?->land_size_or_area ?? 'N/A')) . '</td></tr>'
+            . '<tr><td><strong>Vehicle Reg No</strong></td><td>' . e((string) ($asset?->vehicle_reg_no ?? 'N/A')) . '</td><td><strong>Engine / Chassis</strong></td><td>' . e(trim((string) (($asset?->engine_no ?? 'N/A') . ' / ' . ($asset?->chassis_no ?? 'N/A')))) . '</td></tr>'
+            . '</table>'
+            . '<table><thead><tr><th>ID</th><th>Paid Date</th><th>Amount</th><th>Interest</th><th>Principal</th><th>Method</th><th>Remarks</th></tr></thead><tbody>'
+            . $rowsHtml
+            . '</tbody></table>'
+            . '</body></html>';
+
+        $fileName = sprintf('mortgage_%d_payment_history_%s.pdf', (int) $mortgage->id, $customerCode);
+
+        return Pdf::loadHTML($html)->download($fileName);
     }
 
     public function collectionReport(Request $request): JsonResponse

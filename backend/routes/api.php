@@ -197,6 +197,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::put('companies/{company}/accounts/{account}', [CompanyAccountController::class, 'update']);
     Route::delete('companies/{company}/accounts/{account}', [CompanyAccountController::class, 'destroy']);
     Route::get('companies/{company}/expenses', [AccountingExpenseController::class, 'index']);
+    Route::get('reports/all-branch-expenses', [AccountingExpenseController::class, 'allBranchReport']);
     Route::post('companies/{company}/expenses', [AccountingExpenseController::class, 'store']);
     Route::delete('companies/{company}/expenses/{accountingExpense}', [AccountingExpenseController::class, 'destroy']);
     Route::get('companies/{company}/refunds', [AccountingRefundController::class, 'index']);
@@ -335,6 +336,8 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('mortgages/reports/arrears', [MortgageController::class, 'arrearsReport']);
     Route::get('mortgages/reports/portfolio', [MortgageController::class, 'portfolioReport']);
     Route::get('mortgages/{mortgage}/payments', [MortgageController::class, 'payments']);
+    Route::get('mortgages/{mortgage}/payments/export/csv', [MortgageController::class, 'exportPaymentsCsv']);
+    Route::get('mortgages/{mortgage}/payments/export/pdf', [MortgageController::class, 'exportPaymentsPdf']);
     Route::post('mortgages/{mortgage}/payments', [MortgageController::class, 'storePayment']);
     Route::post('mortgages/{mortgage}/interest-adjustments', [MortgageController::class, 'adjustInterest']);
     Route::get('mortgages/{mortgage}/documents', [MortgageController::class, 'documents']);
@@ -350,7 +353,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('finances/reports/interest-income', [AccountingReportsController::class, 'interestIncomeReport']);
     Route::get('finances/reports/loan-disbursement', [AccountingReportsController::class, 'loanDisbursementReport']);
     Route::get('finances/assignment-options', [FinanceController::class, 'assignmentOptions']);
-    Route::apiResource('finances', FinanceController::class)->only(['index', 'store', 'show']);
+    Route::apiResource('finances', FinanceController::class)->only(['index', 'store', 'show', 'update']);
     Route::delete('finances/{finance}', [FinanceController::class, 'destroy']);
     Route::post('finances/{finance}/status', [FinanceController::class, 'updateStatus']);
     Route::get('finances/{finance}/collections', [FinanceController::class, 'collections']);
@@ -363,6 +366,8 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
 
     // Reports
     Route::get('reports/branch-performance', [BranchPerformanceReportController::class, 'index']);
+    Route::get('reports/overall-credit-summary', [BranchPerformanceReportController::class, 'overallCreditSummary']);
+    Route::get('reports/top-management-overview', [BranchPerformanceReportController::class, 'topManagementOverview']);
     Route::get('reports/branch-profitability', [AccountingReportsController::class, 'branchProfitabilityReport']);
     Route::get('reports/investor-funding', [AccountingReportsController::class, 'investorFundingReport']);
     Route::get('reports/collector-wallet-deposits', [AccountingReportsController::class, 'collectorWalletDepositsReport']);

@@ -278,6 +278,11 @@ export default function ReportsHubPage() {
             description: 'Branch operating expenses by category, payment method, and date range.',
             path: '/dashboard/reports/expenses',
           },
+          {
+            title: 'All Branch Expense Report',
+            description: 'Top-management report to compare expense totals and trends across all branches.',
+            path: '/dashboard/reports/all-branch-expenses',
+          },
         ],
       },
       {
@@ -324,6 +329,16 @@ export default function ReportsHubPage() {
         badge: 'bg-slate-50 text-slate-800 border-slate-200',
         iconBg: 'from-slate-600 to-zinc-700',
         reports: [
+          {
+            title: 'Overall Credit Summary',
+            description: 'Business-owner level summary for Micro Finance, Finance, and Mortgage: due, received, outstanding, and profit.',
+            path: '/dashboard/reports/overall-credit-summary',
+          },
+          {
+            title: 'Top Management Overview',
+            description: 'Executive dashboard for owner, CEO, and regional managers with branch collection, arrears, expenses, and net profit.',
+            path: '/dashboard/reports/top-management-overview',
+          },
           {
             title: 'Branch Profitability Report',
             description: 'Income, expense, and profit comparison by branch.',

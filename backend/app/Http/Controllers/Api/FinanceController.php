@@ -142,6 +142,40 @@ class FinanceController extends Controller
             || $this->userMatchesRoleKeyword($user, 'md');
     }
 
+    private function isSuperAdminUser(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if (method_exists($user, 'isSystemAdmin') && $user->isSystemAdmin()) {
+            return true;
+        }
+
+        return $this->userMatchesRoleKeyword($user, 'super admin');
+    }
+
+    private function canDirectApproveFinance(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if ($this->isSuperAdminUser($user)) {
+            return true;
+        }
+
+        // Level 1 employees are users allowed to handle Step 1.
+        $configuredLevelOneAccess = $this->userHasConfiguredFinanceStepAccess($user, 1);
+        if ($configuredLevelOneAccess !== null) {
+            return $configuredLevelOneAccess;
+        }
+
+        return $this->userMatchesRoleKeyword($user, 'cro')
+            || $this->userMatchesRoleKeyword($user, 'loan approver')
+            || $this->userMatchesRoleKeyword($user, 'finance manager');
+    }
+
     private function canRemoveFinanceLoan(?User $user): bool
     {
         if (!$user) {
@@ -153,6 +187,21 @@ class FinanceController extends Controller
         }
 
         return $this->userMatchesRoleKeyword($user, 'super admin');
+    }
+
+    private function canEditFinanceTerms(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if ($this->hasPrivilegedFinanceApprovalAccess($user)) {
+            return true;
+        }
+
+        return $this->userMatchesRoleKeyword($user, 'finance manager')
+            || $this->userMatchesRoleKeyword($user, 'loan approver')
+            || $this->userMatchesRoleKeyword($user, 'branch manager');
     }
 
     private function canUserHandleFinanceStep(?User $user, int $step, string $action): bool
@@ -370,6 +419,8 @@ class FinanceController extends Controller
         $canSendBackCurrentStep = $this->canUserHandleFinanceStep($viewer, $currentStep, 'send_back') && $currentStep > 1;
         $canRejectCurrentStep = $this->canUserHandleFinanceStep($viewer, $currentStep, 'reject');
         $canFinalApprove = $currentStep >= $maxSteps && $isPrivileged;
+        $canDirectApprove = $this->canDirectApproveFinance($viewer);
+        $canEditTerms = $this->canEditFinanceTerms($viewer);
 
         $finance->setAttribute('workflow_permissions', [
             'current_step' => $currentStep,
@@ -380,6 +431,8 @@ class FinanceController extends Controller
             'can_send_back_current_step' => $canSendBackCurrentStep,
             'can_reject_current_step' => $canRejectCurrentStep,
             'can_final_approve' => $canFinalApprove,
+            'can_direct_approve' => $canDirectApprove,
+            'can_edit_terms' => $canEditTerms,
             'allowed_configured_steps' => $this->allowedConfiguredFinanceSteps($viewer),
         ]);
 
@@ -671,6 +724,357 @@ class FinanceController extends Controller
         $this->appendFinanceWorkflowPermissions($finance, $viewerUser);
 
         return response()->json($finance);
+    }
+
+    public function update(Request $request, int $id): JsonResponse
+    {
+        $viewer = $request->user();
+        $viewerUser = $viewer instanceof User ? $viewer : null;
+
+        if (!$this->canEditFinanceTerms($viewerUser)) {
+            return response()->json([
+                'message' => 'You do not have permission to edit finance terms.',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'finance_type' => ['nullable', 'string', 'max:100'],
+            'product_type' => ['nullable', 'string', 'max:100'],
+            'asset_reference' => ['nullable', 'string', 'max:190'],
+            'amount' => ['nullable', 'numeric', 'min:0.01'],
+            'down_payment' => ['nullable', 'numeric', 'min:0'],
+            'interest_rate' => ['nullable', 'numeric', 'min:0'],
+            'interest_type' => ['nullable', 'in:fixed,reducing'],
+            'start_date' => ['nullable', 'date'],
+            'next_due_date' => ['nullable', 'date'],
+            'tenure_months' => ['nullable', 'integer', 'min:1', 'max:600'],
+            'installment_frequency' => ['nullable', 'in:daily,weekly,monthly,quarterly,yearly'],
+            'manual_installment_amount' => ['nullable', 'numeric', 'min:0.01'],
+            'installment_amount' => ['nullable', 'numeric', 'min:0.01'],
+            'responsible_officer_employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+            'vehicle_details' => ['nullable', 'array'],
+            'valuation_details' => ['nullable', 'array'],
+            'guarantor_details' => ['nullable', 'array'],
+            'family_financial_details' => ['nullable', 'array'],
+            'evaluation_payload_version' => ['nullable', 'integer', 'min:1', 'max:10'],
+            'evaluation_payload' => ['nullable', 'array'],
+            'repayment_plan' => ['nullable', 'array'],
+            'repayment_plan.installments' => ['nullable', 'array'],
+            'repayment_plan.installments.*.installment_no' => ['nullable', 'integer', 'min:1'],
+            'repayment_plan.installments.*.payment_date' => ['required_with:repayment_plan.installments', 'date'],
+            'repayment_plan.installments.*.amount' => ['required_with:repayment_plan.installments', 'numeric', 'min:0.01'],
+            'note' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $hasUpdateFields =
+            array_key_exists('start_date', $validated)
+            || array_key_exists('next_due_date', $validated)
+            || array_key_exists('tenure_months', $validated)
+            || array_key_exists('installment_frequency', $validated)
+            || array_key_exists('manual_installment_amount', $validated)
+            || array_key_exists('installment_amount', $validated)
+            || array_key_exists('repayment_plan', $validated)
+            || array_key_exists('finance_type', $validated)
+            || array_key_exists('product_type', $validated)
+            || array_key_exists('asset_reference', $validated)
+            || array_key_exists('amount', $validated)
+            || array_key_exists('down_payment', $validated)
+            || array_key_exists('interest_rate', $validated)
+            || array_key_exists('interest_type', $validated)
+            || array_key_exists('responsible_officer_employee_id', $validated)
+            || array_key_exists('vehicle_details', $validated)
+            || array_key_exists('valuation_details', $validated)
+            || array_key_exists('guarantor_details', $validated)
+            || array_key_exists('family_financial_details', $validated)
+            || array_key_exists('evaluation_payload_version', $validated)
+            || array_key_exists('evaluation_payload', $validated);
+
+        if (!$hasUpdateFields) {
+            return response()->json([
+                'message' => 'Provide at least one editable field to update the finance record.',
+            ], 422);
+        }
+
+        $finance = $this->resolveFinanceOrFail($request, $id);
+
+        if (array_key_exists('responsible_officer_employee_id', $validated) && (int) ($validated['responsible_officer_employee_id'] ?? 0) > 0) {
+            $officer = Employee::query()->find((int) $validated['responsible_officer_employee_id']);
+            if (!$officer) {
+                return response()->json([
+                    'message' => 'Selected responsible officer was not found.',
+                ], 422);
+            }
+
+            if ((int) ($finance->branch_id ?? 0) > 0 && (int) ($officer->branch_id ?? 0) !== (int) ($finance->branch_id ?? 0)) {
+                return response()->json([
+                    'message' => 'Responsible officer must belong to the same branch as the finance customer.',
+                ], 422);
+            }
+        }
+
+        $repaymentPlan = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
+        $workflow = $this->normalizeFinanceApprovalWorkflowState($repaymentPlan['approval_workflow'] ?? null);
+        $currentWorkflowStep = (int) ($workflow['current_step'] ?? 1);
+
+        if (array_key_exists('finance_type', $validated)) {
+            $finance->finance_type = (string) ($validated['finance_type'] ?? $finance->finance_type);
+        }
+
+        if (array_key_exists('product_type', $validated)) {
+            $finance->product_type = (string) ($validated['product_type'] ?? $finance->product_type);
+        }
+
+        if (array_key_exists('asset_reference', $validated)) {
+            $finance->asset_reference = $validated['asset_reference'];
+        }
+
+        if (array_key_exists('interest_type', $validated)) {
+            $finance->interest_type = (string) ($validated['interest_type'] ?? 'fixed');
+        }
+
+        if (array_key_exists('start_date', $validated)) {
+            $finance->start_date = $validated['start_date'] ? Carbon::parse((string) $validated['start_date'])->toDateString() : null;
+        }
+
+        if (array_key_exists('interest_rate', $validated)) {
+            $finance->setAttribute('interest_rate', round((float) $validated['interest_rate'], 4));
+        }
+
+        if (array_key_exists('tenure_months', $validated)) {
+            $finance->tenure_months = (int) $validated['tenure_months'];
+        }
+
+        if (array_key_exists('installment_frequency', $validated)) {
+            $finance->installment_frequency = (string) $validated['installment_frequency'];
+        }
+
+        if (array_key_exists('installment_amount', $validated)) {
+            $finance->installment_amount = round((float) $validated['installment_amount'], 2);
+        }
+
+        if (array_key_exists('responsible_officer_employee_id', $validated)) {
+            $finance->responsible_officer_employee_id = (int) ($validated['responsible_officer_employee_id'] ?? 0) > 0
+                ? (int) $validated['responsible_officer_employee_id']
+                : null;
+        }
+
+        if (array_key_exists('vehicle_details', $validated)) {
+            $finance->vehicle_details = is_array($validated['vehicle_details']) ? $validated['vehicle_details'] : null;
+        }
+
+        if (array_key_exists('valuation_details', $validated)) {
+            $finance->valuation_details = is_array($validated['valuation_details']) ? $validated['valuation_details'] : null;
+        }
+
+        if (array_key_exists('guarantor_details', $validated)) {
+            $finance->guarantor_details = is_array($validated['guarantor_details']) ? $validated['guarantor_details'] : null;
+        }
+
+        if (array_key_exists('family_financial_details', $validated)) {
+            $finance->family_financial_details = is_array($validated['family_financial_details']) ? $validated['family_financial_details'] : null;
+        }
+
+        if (array_key_exists('evaluation_payload_version', $validated)) {
+            $finance->evaluation_payload_version = isset($validated['evaluation_payload_version'])
+                ? (int) $validated['evaluation_payload_version']
+                : null;
+        }
+
+        if (array_key_exists('evaluation_payload', $validated)) {
+            $finance->evaluation_payload = is_array($validated['evaluation_payload']) ? $validated['evaluation_payload'] : null;
+        }
+
+        $amount = array_key_exists('amount', $validated)
+            ? (float) $validated['amount']
+            : (float) ($finance->amount ?? 0);
+        $downPayment = array_key_exists('down_payment', $validated)
+            ? (float) ($validated['down_payment'] ?? 0)
+            : (float) ($finance->down_payment ?? 0);
+
+        if ($amount <= 0) {
+            return response()->json([
+                'message' => 'Asset or loan amount must be greater than zero.',
+            ], 422);
+        }
+
+        $financedAmount = round(max($amount - $downPayment, 0), 2);
+
+        $annualRate = ((float) ($finance->interest_rate ?? 0)) / 100;
+        $tenureMonths = max(1, (int) ($finance->tenure_months ?? 1));
+        $frequency = (string) ($finance->installment_frequency ?? 'monthly');
+        $interestType = (string) ($finance->interest_type ?? 'fixed');
+
+        $installmentsPerYear = match (strtolower($frequency)) {
+            'daily' => 365,
+            'weekly' => 52,
+            'quarterly' => 4,
+            'yearly' => 1,
+            default => 12,
+        };
+
+        $years = $tenureMonths / 12;
+        $installmentCount = max(1, (int) round($years * $installmentsPerYear));
+        $periodRate = $installmentsPerYear > 0 ? $annualRate / $installmentsPerYear : 0.0;
+
+        if ($interestType === 'reducing' && $periodRate > 0) {
+            $pow = pow(1 + $periodRate, $installmentCount);
+            $calculatedInstallment = $financedAmount * $periodRate * $pow / ($pow - 1);
+        } else {
+            $totalInterest = $financedAmount * $annualRate * $years;
+            $calculatedInstallment = ($financedAmount + $totalInterest) / $installmentCount;
+        }
+
+        $installmentAmount = round($calculatedInstallment, 2);
+        if (array_key_exists('manual_installment_amount', $validated) && (float) ($validated['manual_installment_amount'] ?? 0) > 0) {
+            $installmentAmount = round((float) $validated['manual_installment_amount'], 2);
+        }
+        if (array_key_exists('installment_amount', $validated) && (float) ($validated['installment_amount'] ?? 0) > 0) {
+            $installmentAmount = round((float) $validated['installment_amount'], 2);
+        }
+
+        if (array_key_exists('repayment_plan', $validated)) {
+            $incomingRepaymentPlan = is_array($validated['repayment_plan']) ? $validated['repayment_plan'] : [];
+            $candidatePlanRows = $this->extractInstallmentPlanRows($incomingRepaymentPlan);
+            if (
+                array_key_exists('installments', $incomingRepaymentPlan)
+                && !empty($incomingRepaymentPlan['installments'])
+                && empty($candidatePlanRows)
+            ) {
+                return response()->json([
+                    'message' => 'Provided schedule is invalid. Please include valid installment date and amount rows.',
+                ], 422);
+            }
+
+            $repaymentPlan = [
+                ...$repaymentPlan,
+                ...$incomingRepaymentPlan,
+            ];
+
+            if (array_key_exists('installments', $incomingRepaymentPlan)) {
+                $repaymentPlan['installments'] = $candidatePlanRows;
+            }
+
+            if (!empty($candidatePlanRows)) {
+                $repaymentPlan['next_installment_index'] = 0;
+                $repaymentPlan['total_planned_amount'] = round(array_sum(array_map(static fn ($row) => (float) $row['amount'], $candidatePlanRows)), 2);
+            }
+        }
+
+        $repaymentPlan['approval_workflow'] = $this->normalizeFinanceApprovalWorkflowState($repaymentPlan['approval_workflow'] ?? $workflow);
+
+        $planRows = $this->extractInstallmentPlanRows($repaymentPlan);
+        $startDate = $finance->start_date ? Carbon::parse((string) $finance->start_date) : Carbon::today();
+
+        if (!empty($planRows)) {
+            $installmentAmount = round((float) ($planRows[0]['amount'] ?? $installmentAmount), 2);
+        }
+
+        $isSpeedDraft = self::isDraftLoanProductType((string) ($finance->product_type ?? ''));
+        if ($isSpeedDraft) {
+            $installmentAmount = round($financedAmount * ($annualRate / 12), 2);
+            $finance->installment_frequency = 'monthly';
+            $frequency = 'monthly';
+        }
+
+        $finance->installment_amount = $installmentAmount;
+
+        if (!empty($planRows)) {
+            $nextInstallmentIndex = max(0, (int) ($repaymentPlan['next_installment_index'] ?? 0));
+            if ($nextInstallmentIndex >= count($planRows)) {
+                $nextInstallmentIndex = count($planRows) - 1;
+            }
+            $nextInstallmentIndex = max(0, $nextInstallmentIndex);
+
+            $nextPlanRow = $planRows[$nextInstallmentIndex] ?? $planRows[0];
+            $dueDate = Carbon::parse((string) ($nextPlanRow['payment_date'] ?? $startDate->toDateString()));
+            $dueAmount = round((float) ($nextPlanRow['amount'] ?? $finance->installment_amount), 2);
+            $repaymentPlan['next_installment_index'] = $nextInstallmentIndex;
+            $repaymentPlan['total_planned_amount'] = round(array_sum(array_map(static fn ($row) => (float) $row['amount'], $planRows)), 2);
+        } else {
+            $dueDate = $this->computeNextDueDate($startDate, (string) $finance->installment_frequency);
+            $dueAmount = round((float) $finance->installment_amount, 2);
+        }
+
+        if (array_key_exists('next_due_date', $validated) && !empty($validated['next_due_date'])) {
+            $dueDate = Carbon::parse((string) $validated['next_due_date']);
+        }
+
+        $installmentsPerYear = match (strtolower((string) $finance->installment_frequency)) {
+            'daily' => 365,
+            'weekly' => 52,
+            'quarterly' => 4,
+            'yearly' => 1,
+            default => 12,
+        };
+        $years = ((int) $finance->tenure_months) / 12;
+        $installmentCount = max(1, (int) round($years * $installmentsPerYear));
+
+        $totalPayable = !empty($planRows)
+            ? round(array_sum(array_map(static fn ($row) => (float) $row['amount'], $planRows)), 2)
+            : round((float) $finance->installment_amount * $installmentCount, 2);
+
+        $totalPaid = round((float) ($finance->total_paid_amount ?? 0), 2);
+        $balanceAmount = round(max($totalPayable - $totalPaid, 0), 2);
+
+        $dueCapitalAmount = $isSpeedDraft ? 0.00 : $this->computeDueCapitalAmount($finance);
+        $dueInterestAmount = $isSpeedDraft
+            ? $dueAmount
+            : round(max($dueAmount - $dueCapitalAmount, 0), 2);
+        $financeEndDate = (clone $startDate)->addMonthsNoOverflow((int) $finance->tenure_months);
+
+        $finance->forceFill([
+            'amount' => number_format($amount, 2, '.', ''),
+            'down_payment' => number_format($downPayment, 2, '.', ''),
+            'financed_amount' => number_format($financedAmount, 2, '.', ''),
+            'refund_amount' => number_format($totalPayable, 2, '.', ''),
+            'balance_amount' => number_format($balanceAmount, 2, '.', ''),
+            'due_date' => $dueDate,
+            'next_collection_date' => $dueDate,
+            'due_amount' => number_format($dueAmount, 2, '.', ''),
+            'due_capital_amount' => number_format($dueCapitalAmount, 2, '.', ''),
+            'due_interest_amount' => number_format($dueInterestAmount, 2, '.', ''),
+            'finance_end_date' => $financeEndDate,
+            'repayment_plan' => !empty($repaymentPlan) ? $repaymentPlan : null,
+        ]);
+        $finance->save();
+
+        $this->logFinanceWorkflowEvent(
+            $finance,
+            'edit_terms',
+            $currentWorkflowStep,
+            $currentWorkflowStep,
+            $viewerUser,
+            (string) ($validated['note'] ?? ''),
+            [
+                'finance_type' => $finance->finance_type,
+                'product_type' => $finance->product_type,
+                'start_date' => $finance->start_date,
+                'next_due_date' => $finance->due_date,
+                'amount' => $finance->amount,
+                'down_payment' => $finance->down_payment,
+                'financed_amount' => $finance->financed_amount,
+                'tenure_months' => $finance->tenure_months,
+                'installment_frequency' => $finance->installment_frequency,
+                'installment_amount' => $finance->installment_amount,
+                'schedule_rows_count' => count($planRows),
+            ],
+            $workflow
+        );
+
+        $fresh = $this->resolveFinanceOrFail($request, $id, ['customer', 'documents', 'workflowEvents' => function ($query) {
+            $query->orderByDesc('id');
+        }]);
+
+        if ($fresh->relationLoaded('customer') && $fresh->customer) {
+            $fresh->setRelation('customer', $this->normalizeFinanceCustomer($fresh->customer));
+        }
+
+        $this->appendFinanceWorkflowPermissions($fresh, $viewerUser);
+
+        return response()->json([
+            'message' => 'Finance record updated successfully.',
+            'data' => $fresh,
+        ]);
     }
 
     public function destroy(Request $request, int $id): JsonResponse
@@ -2176,7 +2580,7 @@ class FinanceController extends Controller
     public function updateStatus(Request $request, int $id): JsonResponse
     {
         $validated = $request->validate([
-            'action' => ['required', 'in:approve,reject,activate,advance,send_back'],
+            'action' => ['required', 'in:approve,reject,activate,advance,send_back,direct_approve'],
             'note' => ['nullable', 'string'],
             'target_step' => ['nullable', 'integer', 'min:1'],
             'call_confirmation_payload' => ['nullable', 'array'],
@@ -2279,8 +2683,16 @@ class FinanceController extends Controller
         $workflow = $this->normalizeFinanceApprovalWorkflowState($repaymentPlan['approval_workflow'] ?? null);
         $maxWorkflowSteps = count(self::FINANCE_APPROVAL_WORKFLOW_STEPS);
         $currentWorkflowStep = (int) ($workflow['current_step'] ?? 1);
+        $canDirectApprove = $this->canDirectApproveFinance($actorUser);
 
-        if (!$this->canUserHandleFinanceStep($actorUser, $currentWorkflowStep, $action)) {
+        if ($action === 'direct_approve' && !$canDirectApprove) {
+            return response()->json([
+                'message' => 'Only Level 1 employees or Super Admin can use direct approval.',
+                'workflow' => $workflow,
+            ], 403);
+        }
+
+        if ($action !== 'direct_approve' && !$this->canUserHandleFinanceStep($actorUser, $currentWorkflowStep, $action)) {
             return response()->json([
                 'message' => 'You do not have permission to complete this step. This approval action is restricted to related role users or Admin/Managing Director.',
                 'workflow' => $workflow,
@@ -2847,6 +3259,81 @@ class FinanceController extends Controller
                 'status' => $finance->status,
                 'workflow' => $repaymentPlan['approval_workflow'],
                 'message' => sprintf('Finance workflow sent back to Step %d.', $targetStep),
+            ]);
+        }
+
+        if ($action === 'direct_approve') {
+            $currentStep = (int) ($workflow['current_step'] ?? 1);
+            $history = is_array($workflow['history'] ?? null) ? $workflow['history'] : [];
+
+            $history[] = [
+                'from_step' => $currentStep,
+                'to_step' => $maxWorkflowSteps,
+                'from_title' => $this->financeApprovalWorkflowStepTitle($currentStep),
+                'to_title' => $this->financeApprovalWorkflowStepTitle($maxWorkflowSteps),
+                'changed_at' => now()->toDateTimeString(),
+                'changed_by' => (int) ($request->user()?->id ?? 0),
+                'note' => trim((string) ($validated['note'] ?? '')),
+                'direction' => 'forward',
+                'direct_approve' => true,
+            ];
+
+            $repaymentPlan['approval_workflow'] = [
+                'current_step' => $maxWorkflowSteps,
+                'max_steps' => $maxWorkflowSteps,
+                'step_title' => $this->financeApprovalWorkflowStepTitle($maxWorkflowSteps),
+                'updated_at' => now()->toDateTimeString(),
+                'history' => $history,
+            ];
+
+            $this->appendFinanceReviewLog(
+                $repaymentPlan,
+                'direct_approve',
+                $currentStep,
+                $maxWorkflowSteps,
+                $actor instanceof User ? $actor : null,
+                (string) ($validated['note'] ?? ''),
+                [
+                    'skip_workflow_steps' => true,
+                ]
+            );
+
+            $finance->status = 'active';
+            $finance->repayment_plan = $repaymentPlan;
+
+            if (!$wasActive) {
+                $this->initializeApprovalTrackingFields($finance);
+            }
+
+            $finance->save();
+
+            if ($currentStep !== $maxWorkflowSteps) {
+                $this->notifyFinanceWorkflowStepTransition(
+                    $finance,
+                    $currentStep,
+                    $maxWorkflowSteps,
+                    $actor instanceof User ? $actor : null
+                );
+            }
+
+            $this->logFinanceWorkflowEvent(
+                $finance,
+                'direct_approve',
+                $currentStep,
+                $maxWorkflowSteps,
+                $actor instanceof User ? $actor : null,
+                (string) ($validated['note'] ?? ''),
+                [
+                    'skip_workflow_steps' => true,
+                ],
+                $repaymentPlan['approval_workflow']
+            );
+
+            return response()->json([
+                'id' => $finance->id,
+                'status' => $finance->status,
+                'workflow' => $repaymentPlan['approval_workflow'],
+                'message' => 'Finance granted directly without workflow steps.',
             ]);
         }
 

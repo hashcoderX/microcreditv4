@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { resolveStorageAssetUrl } from '@/lib/api';
-import { ArrowLeft, Eye, Phone, Search, ShieldCheck, UserCog } from 'lucide-react';
+import { ArrowLeft, Eye, Pencil, Phone, Search, ShieldCheck, UserCog } from 'lucide-react';
 
 type FinanceRow = {
   id: number;
@@ -20,6 +20,11 @@ type FinanceRow = {
   tenure_months?: number | string | null;
   installment_frequency?: string | null;
   start_date?: string | null;
+  due_date?: string | null;
+  next_collection_date?: string | null;
+  finance_end_date?: string | null;
+  balance_amount?: number | string | null;
+  refund_amount?: number | string | null;
   vehicle_details?: {
     vehicle_no?: string | null;
     chassis_no?: string | null;
@@ -69,6 +74,10 @@ type FinanceRow = {
       customer_photo_url?: string | null;
       customer_signature_url?: string | null;
     } | null;
+  } | null;
+  workflow_permissions?: {
+    can_edit_terms?: boolean;
+    [key: string]: unknown;
   } | null;
   documents?: Array<{
     id: number;
@@ -404,6 +413,14 @@ export default function FinanceCustomersPage() {
     }
   };
 
+  const openEditRecord = (record: FinanceRow) => {
+    router.push(`/dashboard/finance/issue?edit_finance_id=${record.id}`);
+  };
+
+  const canShowEditOption = (record: FinanceRow): boolean => {
+    return Boolean(record.workflow_permissions?.can_edit_terms === true);
+  };
+
   if (!token || loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50 flex items-center justify-center">
@@ -606,14 +623,26 @@ export default function FinanceCustomersPage() {
                             </span>
                           </td>
                           <td className="px-3 py-2">
-                            <button
-                              type="button"
-                              onClick={() => openFullRecord(record.id)}
-                              className="rounded-lg bg-cyan-100 hover:bg-cyan-200 border border-cyan-200 px-3 py-1.5 text-xs font-semibold text-cyan-800 inline-flex items-center gap-1.5"
-                            >
-                              <Eye className="h-3.5 w-3.5" />
-                              View Full Record
-                            </button>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => openFullRecord(record.id)}
+                                className="rounded-lg bg-cyan-100 hover:bg-cyan-200 border border-cyan-200 px-3 py-1.5 text-xs font-semibold text-cyan-800 inline-flex items-center gap-1.5"
+                              >
+                                <Eye className="h-3.5 w-3.5" />
+                                View Full Record
+                              </button>
+                              {canShowEditOption(record) && (
+                                <button
+                                  type="button"
+                                  onClick={() => openEditRecord(record)}
+                                  className="rounded-lg bg-amber-100 hover:bg-amber-200 border border-amber-200 px-3 py-1.5 text-xs font-semibold text-amber-800 inline-flex items-center gap-1.5"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                  Edit Terms
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -666,17 +695,29 @@ export default function FinanceCustomersPage() {
                 </h3>
                 <p className="text-sm text-slate-600 mt-1">Complete details with related documents.</p>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setDetailOpen(false);
-                  setSelectedRecord(null);
-                  setDetailError('');
-                }}
-                className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-700 text-sm font-semibold"
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                {selectedRecord && canShowEditOption(selectedRecord) && (
+                  <button
+                    type="button"
+                    onClick={() => openEditRecord(selectedRecord)}
+                    className="px-3 py-1.5 rounded-lg bg-amber-100 hover:bg-amber-200 border border-amber-200 text-amber-800 text-sm font-semibold inline-flex items-center gap-1.5"
+                  >
+                    <Pencil className="h-4 w-4" />
+                    Edit Terms
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDetailOpen(false);
+                    setSelectedRecord(null);
+                    setDetailError('');
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-700 text-sm font-semibold"
+                >
+                  Close
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 bg-slate-50/40 space-y-4">
@@ -941,6 +982,7 @@ export default function FinanceCustomersPage() {
           </div>
         </div>
       )}
+
     </div>
   );
 }
