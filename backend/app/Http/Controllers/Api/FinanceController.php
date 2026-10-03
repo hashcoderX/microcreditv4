@@ -3873,13 +3873,6 @@ class FinanceController extends Controller
             : round(max($openingOutstanding - $paidTowardOutstanding, 0), 2);
         $newRefundTotal = $newBalance;
 
-        $nextDueDate = $isSpeedDraft
-            ? $this->computeNextDueDate($paymentDate, 'monthly')
-            : $this->computeNextDueDate($paymentDate, (string) $finance->installment_frequency);
-        $periodRateDecimal = $periodRatePercent / 100;
-        $nextDueInterest = round(((float) $calculation['new_capital']) * $periodRateDecimal, 2);
-        $dueCapitalAmount = $isSpeedDraft ? 0.0 : $this->computeDueCapitalAmount($finance);
-
         $planRows = $this->extractInstallmentPlanRows($finance->repayment_plan);
         $planState = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
         $currentInstallmentIndex = max(0, (int) ($planState['next_installment_index'] ?? 0));
@@ -3891,10 +3884,21 @@ class FinanceController extends Controller
         $currentDueDate = $currentPlanRow && !empty($currentPlanRow['payment_date'])
             ? Carbon::parse((string) $currentPlanRow['payment_date'])
             : ($finance->due_date ? Carbon::parse((string) $finance->due_date) : $paymentDate);
+        $nextDueBaseDate = $isSpeedDraft ? $paymentDate : $currentDueDate;
+        $nextDueDate = $isSpeedDraft
+            ? $this->computeNextDueDate($nextDueBaseDate, 'monthly')
+            : $this->computeNextDueDate($nextDueBaseDate, (string) $finance->installment_frequency);
+        $periodRateDecimal = $periodRatePercent / 100;
+        $nextDueInterest = round(((float) $calculation['new_capital']) * $periodRateDecimal, 2);
+        $dueCapitalAmount = $isSpeedDraft ? 0.0 : $this->computeDueCapitalAmount($finance);
         $graceEndDate = (clone $currentDueDate)->addDays($graceDays);
         $isPastGrace = $paymentDate->gt($graceEndDate);
-        $uncoveredDue = round(max($currentDueAmount - $paymentAmount, 0), 2);
-        $scheduleArrears = ($isSpeedDraft || !$isPastGrace) ? 0.0 : $uncoveredDue;
+        $scheduleArrearsBase = $isPastGrace
+            ? round($currentArrears + $currentDueAmount, 2)
+            : round($currentArrears, 2);
+        $scheduleArrears = ($isSpeedDraft)
+            ? 0.0
+            : round(max($scheduleArrearsBase - $paymentAmount, 0), 2);
         $finalArrears = $isSpeedDraft
             ? round((float) $calculation['new_arrears'], 2)
             : round(max((float) $calculation['new_arrears'], $scheduleArrears), 2);
@@ -4177,12 +4181,6 @@ class FinanceController extends Controller
             $newBalance = $isSpeedDraft
                 ? round((float) $calculation['new_capital'], 2)
                 : round(max($openingOutstanding - $paidTowardOutstanding, 0), 2);
-            $nextDueDate = $isSpeedDraft
-                ? $this->computeNextDueDate($paymentDate, 'monthly')
-                : $this->computeNextDueDate($paymentDate, (string) $finance->installment_frequency);
-            $nextDueInterest = round(((float) $calculation['new_capital']) * $periodRateDecimal, 2);
-            $dueCapitalAmount = $isSpeedDraft ? 0.0 : $this->computeDueCapitalAmount($finance);
-
             $currentPlanRow = $planRows[$currentInstallmentIndex] ?? null;
             $currentDueAmount = $currentPlanRow
                 ? round((float) ($currentPlanRow['amount'] ?? $finance->installment_amount), 2)
@@ -4192,10 +4190,20 @@ class FinanceController extends Controller
             $currentDueDate = $currentPlanRow && !empty($currentPlanRow['payment_date'])
                 ? Carbon::parse((string) $currentPlanRow['payment_date'])
                 : ($finance->due_date ? Carbon::parse((string) $finance->due_date) : $paymentDate);
+            $nextDueBaseDate = $isSpeedDraft ? $paymentDate : $currentDueDate;
+            $nextDueDate = $isSpeedDraft
+                ? $this->computeNextDueDate($nextDueBaseDate, 'monthly')
+                : $this->computeNextDueDate($nextDueBaseDate, (string) $finance->installment_frequency);
+            $nextDueInterest = round(((float) $calculation['new_capital']) * $periodRateDecimal, 2);
+            $dueCapitalAmount = $isSpeedDraft ? 0.0 : $this->computeDueCapitalAmount($finance);
             $graceEndDate = (clone $currentDueDate)->addDays($graceDays);
             $isPastGrace = $paymentDate->gt($graceEndDate);
-            $uncoveredDue = round(max($currentDueAmount - $paymentAmount, 0), 2);
-            $scheduleArrears = ($isSpeedDraft || !$isPastGrace) ? 0.0 : $uncoveredDue;
+            $scheduleArrearsBase = $isPastGrace
+                ? round($runningArrears + $currentDueAmount, 2)
+                : round($runningArrears, 2);
+            $scheduleArrears = ($isSpeedDraft)
+                ? 0.0
+                : round(max($scheduleArrearsBase - $paymentAmount, 0), 2);
             $finalArrears = $isSpeedDraft
                 ? round((float) $calculation['new_arrears'], 2)
                 : round(max((float) $calculation['new_arrears'], $scheduleArrears), 2);

@@ -126,6 +126,21 @@ type CompanyInfo = {
   logo_url?: string | null;
 };
 
+type UiModalState = {
+  open: boolean;
+  title: string;
+  message: string;
+};
+
+type UiConfirmState = {
+  open: boolean;
+  title: string;
+  message: string;
+  onConfirm: null | (() => void | Promise<void>);
+  confirmLabel: string;
+  cancelLabel: string;
+};
+
 function toNumber(v: unknown): number {
   if (typeof v === 'number') return v;
   const n = Number(v);
@@ -276,6 +291,20 @@ export default function FinanceCollectionsPage() {
     open: false,
     receipt: null,
   });
+  const [uiAlert, setUiAlert] = useState<UiModalState>({
+    open: false,
+    title: '',
+    message: '',
+  });
+  const [uiConfirm, setUiConfirm] = useState<UiConfirmState>({
+    open: false,
+    title: '',
+    message: '',
+    onConfirm: null,
+    confirmLabel: 'Confirm',
+    cancelLabel: 'Cancel',
+  });
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const [downloadReceiptModal, setDownloadReceiptModal] = useState<{
     open: boolean;
     item: FinanceCollectionItem | null;
@@ -886,35 +915,53 @@ export default function FinanceCollectionsPage() {
   const deleteCollection = async (collectionId: number) => {
     if (!token || !selectedRecord) return;
 
-    const shouldDelete = window.confirm('Delete this payment? Loan balances and schedule will be recalculated from remaining payments.');
-    if (!shouldDelete) return;
+    setUiConfirm({
+      open: true,
+      title: 'Delete Collection Payment',
+      message: 'Delete this payment? Loan balances and schedule will be recalculated from remaining payments.',
+      confirmLabel: 'Delete Payment',
+      cancelLabel: 'Cancel',
+      onConfirm: async () => {
+        try {
+          setDeletingCollectionId(collectionId);
+          setCollectionError('');
 
-    try {
-      setDeletingCollectionId(collectionId);
-      setCollectionError('');
+          const response = await fetch(`/api/finances/${selectedRecord.id}/collections/${collectionId}`, {
+            method: 'DELETE',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/json',
+            },
+          });
 
-      const response = await fetch(`/api/finances/${selectedRecord.id}/collections/${collectionId}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/json',
-        },
-      });
+          const payload = await response.json();
+          if (!response.ok) {
+            const msg = String(payload?.message || 'Failed to delete payment.');
+            setCollectionError(msg);
+            setUiAlert({
+              open: true,
+              title: 'Delete Failed',
+              message: msg,
+            });
+            return;
+          }
 
-      const payload = await response.json();
-      if (!response.ok) {
-        setCollectionError(String(payload?.message || 'Failed to delete payment.'));
-        return;
-      }
-
-      setLastCalculation(null);
-      await openFullRecord(selectedRecord.id);
-      await fetchFinanceRows(token);
-    } catch {
-      setCollectionError('Failed to delete payment.');
-    } finally {
-      setDeletingCollectionId(null);
-    }
+          setLastCalculation(null);
+          await openFullRecord(selectedRecord.id);
+          await fetchFinanceRows(token);
+        } catch {
+          const msg = 'Failed to delete payment.';
+          setCollectionError(msg);
+          setUiAlert({
+            open: true,
+            title: 'Delete Failed',
+            message: msg,
+          });
+        } finally {
+          setDeletingCollectionId(null);
+        }
+      },
+    });
   };
 
   useEffect(() => {
@@ -1668,6 +1715,90 @@ export default function FinanceCollectionsPage() {
         companyContactNo={receiptCompany.contactNo}
         companyLogoUrl={receiptCompany.logoUrl}
       />
+
+      {uiAlert.open && (
+        <div className="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl border border-cyan-100 bg-white p-5 shadow-2xl">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700">Notification</p>
+            <h4 className="mt-1 text-lg font-extrabold text-slate-900">{uiAlert.title || 'Message'}</h4>
+            <p className="mt-2 text-sm text-slate-600">{uiAlert.message}</p>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setUiAlert({ open: false, title: '', message: '' })}
+                className="rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 px-4 py-2.5 text-sm font-bold text-white"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {uiConfirm.open && (
+        <div className="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl border border-rose-100 bg-white p-5 shadow-2xl">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-rose-700">Confirmation Required</p>
+            <h4 className="mt-1 text-lg font-extrabold text-slate-900">{uiConfirm.title || 'Please confirm'}</h4>
+            <p className="mt-2 text-sm text-slate-600">{uiConfirm.message}</p>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                disabled={confirmBusy}
+                onClick={() => {
+                  setUiConfirm({
+                    open: false,
+                    title: '',
+                    message: '',
+                    onConfirm: null,
+                    confirmLabel: 'Confirm',
+                    cancelLabel: 'Cancel',
+                  });
+                }}
+                className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {uiConfirm.cancelLabel || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                disabled={confirmBusy}
+                onClick={async () => {
+                  if (!uiConfirm.onConfirm) {
+                    setUiConfirm({
+                      open: false,
+                      title: '',
+                      message: '',
+                      onConfirm: null,
+                      confirmLabel: 'Confirm',
+                      cancelLabel: 'Cancel',
+                    });
+                    return;
+                  }
+
+                  setConfirmBusy(true);
+                  try {
+                    await uiConfirm.onConfirm();
+                  } finally {
+                    setConfirmBusy(false);
+                    setUiConfirm({
+                      open: false,
+                      title: '',
+                      message: '',
+                      onConfirm: null,
+                      confirmLabel: 'Confirm',
+                      cancelLabel: 'Cancel',
+                    });
+                  }
+                }}
+                className="flex-1 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
+              >
+                {confirmBusy ? 'Please wait...' : (uiConfirm.confirmLabel || 'Confirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {downloadReceiptModal.open && (
         <div className="fixed inset-0 z-[80] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
