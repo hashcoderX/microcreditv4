@@ -32,6 +32,11 @@ yarn-error.log*
 *.log
 *.tmp
 
+# Database backups
+backend/database/backups/*.sql
+backend/database/backups/*.sql.gz
+backend/database/backups/*.dump
+
 # Editor/OS
 .vscode/
 .idea/
