@@ -461,6 +461,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::prefix('microfinance/collections')->group(function () {
         Route::get('/', [MicrofinanceLoanCollectionController::class, 'index']);
         Route::post('/', [MicrofinanceLoanCollectionController::class, 'store']);
+        Route::post('/early-settlement', [MicrofinanceLoanCollectionController::class, 'settleEarly']);
         Route::delete('/{collection}', [MicrofinanceLoanCollectionController::class, 'destroy']);
     });
 });

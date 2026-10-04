@@ -279,6 +279,32 @@ export default function CollectionManagementPage() {
     open: false,
     loan: null,
   });
+  const [earlySettlementModal, setEarlySettlementModal] = useState<{
+    open: boolean;
+    loanId: number | null;
+    loanCode: string;
+    customerName: string;
+    customerNo: string;
+    outstandingAmount: number;
+    interestDiscountAmount: string;
+    paymentType: 'cash' | 'check' | 'bank_transfer';
+    paymentReference: string;
+    date: string;
+    note: string;
+  }>({
+    open: false,
+    loanId: null,
+    loanCode: '',
+    customerName: '',
+    customerNo: '',
+    outstandingAmount: 0,
+    interestDiscountAmount: '0',
+    paymentType: 'cash',
+    paymentReference: '',
+    date: new Date().toISOString().split('T')[0],
+    note: '',
+  });
+  const [earlySettlementSaving, setEarlySettlementSaving] = useState(false);
   const [receiptCompany, setReceiptCompany] = useState<{
     name: string;
     address: string;
@@ -402,6 +428,8 @@ export default function CollectionManagementPage() {
   const isFieldOfficer = hasRoleOrDesignation(['field officer']);
   const isAdmin =
     hasRoleOrDesignation(['admin']) || normalizeText(String(authUser?.email || '')) === 'superadmin softcodelk com';
+  const isTopManagement =
+    isAdmin || hasRoleOrDesignation(['owner', 'ceo', 'managing director', 'regional manager', 'business owner', 'director']);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -1910,6 +1938,48 @@ export default function CollectionManagementPage() {
     setLoanDetailsModal({ open: false, loan: null });
   };
 
+  const openEarlySettlementModal = (loan: LoanRow) => {
+    const outstandingAmount = getOutstandingBalance(loan);
+    if (outstandingAmount <= 0) {
+      setNoticeModal({
+        open: true,
+        title: 'Already Settled',
+        message: 'This loan does not have an outstanding amount for early settlement.',
+      });
+      return;
+    }
+
+    setEarlySettlementModal({
+      open: true,
+      loanId: loan.id,
+      loanCode: loan.loan_code || '-',
+      customerName: loan.customer_name || '-',
+      customerNo: loan.customer_no || '-',
+      outstandingAmount,
+      interestDiscountAmount: '0',
+      paymentType: 'cash',
+      paymentReference: '',
+      date: new Date().toISOString().split('T')[0],
+      note: '',
+    });
+  };
+
+  const closeEarlySettlementModal = () => {
+    setEarlySettlementModal({
+      open: false,
+      loanId: null,
+      loanCode: '',
+      customerName: '',
+      customerNo: '',
+      outstandingAmount: 0,
+      interestDiscountAmount: '0',
+      paymentType: 'cash',
+      paymentReference: '',
+      date: new Date().toISOString().split('T')[0],
+      note: '',
+    });
+  };
+
   const closeCollectModal = () => {
     stopQrScanner();
     setQrScanModal((prev) => ({ ...prev, open: false, scanning: false, error: '', result: '' }));
@@ -2606,6 +2676,70 @@ export default function CollectionManagementPage() {
     }
   };
 
+  const submitEarlySettlement = async () => {
+    if (!earlySettlementModal.loanId) {
+      setNoticeModal({ open: true, title: 'Validation', message: 'Loan record is missing.' });
+      return;
+    }
+
+    const discountAmount = Number(earlySettlementModal.interestDiscountAmount || 0);
+    if (!Number.isFinite(discountAmount) || discountAmount < 0) {
+      setNoticeModal({
+        open: true,
+        title: 'Validation',
+        message: 'Please enter a valid interest deduction amount.',
+      });
+      return;
+    }
+
+    if (earlySettlementModal.paymentType !== 'cash' && !earlySettlementModal.paymentReference.trim()) {
+      setNoticeModal({
+        open: true,
+        title: 'Validation',
+        message: 'Reference is required for check and bank transfer payments.',
+      });
+      return;
+    }
+
+    setEarlySettlementSaving(true);
+    try {
+      const response = await axios.post(
+        `${API_BASE}/microfinance/collections/early-settlement`,
+        {
+          loan_request_id: earlySettlementModal.loanId,
+          collection_date: earlySettlementModal.date,
+          payment_type: earlySettlementModal.paymentType,
+          payment_reference: earlySettlementModal.paymentReference || undefined,
+          interest_discount_amount: discountAmount,
+          note: earlySettlementModal.note || undefined,
+        },
+        { headers }
+      );
+
+      const serverReceipt = response?.data?.receipt as CollectionReceipt | undefined;
+      if (serverReceipt) {
+        setReceiptModal({ open: true, receipt: serverReceipt });
+      }
+
+      closeEarlySettlementModal();
+      closeLoanDetailsModal();
+      await loadLoans();
+      setNoticeModal({
+        open: true,
+        title: 'Early Settlement Completed',
+        message: 'Loan was settled early with deduction and recorded in payment history.',
+      });
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && typeof error.response?.data?.message === 'string'
+          ? error.response.data.message
+          : 'Failed to complete early settlement.';
+      setNoticeModal({ open: true, title: 'Settlement Error', message });
+    } finally {
+      setEarlySettlementSaving(false);
+    }
+  };
+
   const modeMeta =
     activeMode === 'center'
       ? {
@@ -3080,6 +3214,16 @@ export default function CollectionManagementPage() {
                           >
                             Collect
                           </button>
+                          {isTopManagement && (
+                            <button
+                              type="button"
+                              onClick={() => openEarlySettlementModal(loan)}
+                              disabled={getOutstandingBalance(loan) <= 0}
+                              className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-red-500 text-white text-xs font-semibold hover:from-amber-600 hover:to-red-600 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-400 disabled:text-slate-100"
+                            >
+                              Early Settle
+                            </button>
+                          )}
                         </div>
                         </td>
                       )}
@@ -3404,17 +3548,32 @@ export default function CollectionManagementPage() {
                               {isColumnVisible('main_next_payment') && <td className="px-3 py-2">{formatDateDisplay(loan.next_payment_date)}</td>}
                               {isColumnVisible('main_action') && (
                                 <td className="px-3 py-2">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openCollectModal(loan);
-                                  }}
-                                  disabled={getOutstandingBalance(loan) <= 0}
-                                  className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-semibold hover:from-emerald-600 hover:to-teal-600 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-400 disabled:text-slate-100"
-                                >
-                                  Collect
-                                </button>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openCollectModal(loan);
+                                    }}
+                                    disabled={getOutstandingBalance(loan) <= 0}
+                                    className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-semibold hover:from-emerald-600 hover:to-teal-600 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-400 disabled:text-slate-100"
+                                  >
+                                    Collect
+                                  </button>
+                                  {isTopManagement && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        openEarlySettlementModal(loan);
+                                      }}
+                                      disabled={getOutstandingBalance(loan) <= 0}
+                                      className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-red-500 text-white text-xs font-semibold hover:from-amber-600 hover:to-red-600 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-400 disabled:text-slate-100"
+                                    >
+                                      Early Settle
+                                    </button>
+                                  )}
+                                </div>
                                 </td>
                               )}
                             </tr>
@@ -3544,17 +3703,32 @@ export default function CollectionManagementPage() {
                               {isColumnVisible('route_next_payment') && <td className="px-3 py-2">{formatDateDisplay(loan.next_payment_date)}</td>}
                               {isColumnVisible('route_action') && (
                                 <td className="px-3 py-2">
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openCollectModal(loan);
-                                  }}
-                                  disabled={getOutstandingBalance(loan) <= 0}
-                                  className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-semibold hover:from-emerald-600 hover:to-teal-600 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-400 disabled:text-slate-100"
-                                >
-                                  Collect
-                                </button>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openCollectModal(loan);
+                                    }}
+                                    disabled={getOutstandingBalance(loan) <= 0}
+                                    className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-xs font-semibold hover:from-emerald-600 hover:to-teal-600 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-400 disabled:text-slate-100"
+                                  >
+                                    Collect
+                                  </button>
+                                  {isTopManagement && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        openEarlySettlementModal(loan);
+                                      }}
+                                      disabled={getOutstandingBalance(loan) <= 0}
+                                      className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-red-500 text-white text-xs font-semibold hover:from-amber-600 hover:to-red-600 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-400 disabled:text-slate-100"
+                                    >
+                                      Early Settle
+                                    </button>
+                                  )}
+                                </div>
                                 </td>
                               )}
                             </tr>
@@ -4070,6 +4244,132 @@ export default function CollectionManagementPage() {
           </div>
         )}
 
+        {earlySettlementModal.open && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center overflow-y-auto bg-slate-900/55 backdrop-blur-sm px-2 sm:px-4 py-2 sm:py-6">
+            <div className="my-auto flex h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-amber-100 bg-white shadow-[0_30px_90px_-35px_rgba(15,23,42,0.75)] sm:h-auto sm:max-h-[calc(100dvh-2rem)]">
+              <div className="relative bg-gradient-to-r from-amber-500 via-orange-500 to-red-500 px-5 py-5 text-white">
+                <div className="absolute -right-8 -top-8 h-24 w-24 rounded-full bg-white/20 blur-2xl"></div>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-white/85">Top Management Action</p>
+                    <h3 className="text-xl font-extrabold mt-1">Early Loan Settlement</h3>
+                    <p className="mt-1 text-sm text-white/90 break-words">
+                      {earlySettlementModal.customerName} | {earlySettlementModal.loanCode}
+                    </p>
+                    <p className="mt-1 text-xs text-white/85">Customer No: {earlySettlementModal.customerNo || '-'}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeEarlySettlementModal}
+                    className="px-3 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 border border-white/30 text-white text-sm font-semibold"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 text-black bg-gradient-to-b from-amber-50/35 to-white">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-2xl border border-amber-100 bg-white p-3">
+                  <div>
+                    <p className="text-xs uppercase text-slate-500">Outstanding Before Deduction</p>
+                    <p className="font-extrabold text-rose-700 text-lg">{earlySettlementModal.outstandingAmount.toFixed(2)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase text-slate-500">Final Payable (Preview)</p>
+                    <p className="font-extrabold text-emerald-700 text-lg">
+                      {Math.max(
+                        earlySettlementModal.outstandingAmount - Number(earlySettlementModal.interestDiscountAmount || 0),
+                        0
+                      ).toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-semibold uppercase text-slate-600">Settlement Date</label>
+                    <input
+                      type="date"
+                      className="mt-1 w-full px-3 py-2.5 rounded-xl border border-amber-100 bg-white"
+                      value={earlySettlementModal.date}
+                      onChange={(e) => setEarlySettlementModal((prev) => ({ ...prev, date: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold uppercase text-slate-600">Interest Deduction Amount</label>
+                    <input
+                      className="mt-1 w-full px-3 py-2.5 rounded-xl border border-amber-100 bg-white"
+                      value={earlySettlementModal.interestDiscountAmount}
+                      onChange={(e) => setEarlySettlementModal((prev) => ({ ...prev, interestDiscountAmount: e.target.value }))}
+                      placeholder="0.00"
+                    />
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Final validation is done by backend based on outstanding interest component.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold uppercase text-slate-600">Pay Type</label>
+                    <select
+                      className="mt-1 w-full px-3 py-2.5 rounded-xl border border-amber-100 bg-white"
+                      value={earlySettlementModal.paymentType}
+                      onChange={(e) =>
+                        setEarlySettlementModal((prev) => ({
+                          ...prev,
+                          paymentType: e.target.value as 'cash' | 'check' | 'bank_transfer',
+                        }))
+                      }
+                    >
+                      <option value="cash">Cash</option>
+                      <option value="check">Check</option>
+                      <option value="bank_transfer">Bank Transfer</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold uppercase text-slate-600">Reference</label>
+                    <input
+                      className="mt-1 w-full px-3 py-2.5 rounded-xl border border-amber-100 bg-white"
+                      value={earlySettlementModal.paymentReference}
+                      onChange={(e) => setEarlySettlementModal((prev) => ({ ...prev, paymentReference: e.target.value }))}
+                      placeholder="Cheque no / TXN ID / Bank reference"
+                    />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="text-xs font-semibold uppercase text-slate-600">Settlement Note</label>
+                    <textarea
+                      className="mt-1 w-full px-3 py-2.5 rounded-xl border border-amber-100 bg-white"
+                      rows={3}
+                      value={earlySettlementModal.note}
+                      onChange={(e) => setEarlySettlementModal((prev) => ({ ...prev, note: e.target.value }))}
+                      placeholder="Reason / approval reference for interest deduction"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="sticky bottom-0 z-10 border-t border-amber-100 bg-white px-4 sm:px-5 py-4 pb-5 flex flex-col-reverse sm:flex-row sm:justify-end gap-2 shadow-[0_-8px_18px_-12px_rgba(15,23,42,0.35)]">
+                <button
+                  type="button"
+                  onClick={closeEarlySettlementModal}
+                  className="w-full sm:w-auto px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-sm font-semibold hover:bg-slate-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={submitEarlySettlement}
+                  disabled={earlySettlementSaving}
+                  className="w-full sm:w-auto px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-red-500 text-white text-sm font-semibold disabled:opacity-60"
+                >
+                  {earlySettlementSaving ? 'Saving...' : 'Confirm Early Settlement'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {loanDetailsModal.open && loanDetailsModal.loan && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 backdrop-blur-sm px-4 py-6">
             <div className="w-full max-w-4xl overflow-hidden rounded-3xl border border-cyan-100 bg-white shadow-[0_30px_90px_-35px_rgba(15,23,42,0.75)]">
@@ -4163,6 +4463,15 @@ export default function CollectionManagementPage() {
                 >
                   Close
                 </button>
+                {isTopManagement && getOutstandingBalance(loanDetailsModal.loan) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => openEarlySettlementModal(loanDetailsModal.loan as LoanRow)}
+                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-red-500 text-white text-sm font-semibold"
+                  >
+                    Settle Early
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {

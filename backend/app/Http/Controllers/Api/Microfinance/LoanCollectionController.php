@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Microfinance;
 use App\Http\Controllers\Controller;
 use App\Models\Customer;
 use App\Models\EmployeeWallet;
+use App\Models\MicrofinanceHoliday;
 use App\Models\MicrofinanceLoanCollection;
 use App\Models\MicrofinanceLoanRequest;
 use App\Models\User;
@@ -21,6 +22,8 @@ class LoanCollectionController extends Controller
     private const INDEX_CACHE_TTL_SECONDS = 20;
     private const INDEX_CACHE_MAX_KEYS = 200;
     private const INDEX_CACHE_MAX_LIMIT = 500;
+    /** @var array<string, true>|null */
+    private ?array $activeHolidayLookup = null;
 
     private function cacheScopeKey(Request $request, bool $includeDeleted, bool $compact, int $limit, int $loanRequestId): string
     {
@@ -219,6 +222,50 @@ class LoanCollectionController extends Controller
         return false;
     }
 
+    private function isTopManagementUser(?object $user): bool
+    {
+        if ($this->isAdminUser($user)) {
+            return true;
+        }
+
+        if (!$user) {
+            return false;
+        }
+
+        $keywords = ['owner', 'ceo', 'managing director', 'regional manager', 'business owner', 'director', 'senior management'];
+
+        $matches = static function (string $value) use ($keywords): bool {
+            $normalized = strtolower(trim($value));
+            if ($normalized === '') {
+                return false;
+            }
+
+            foreach ($keywords as $keyword) {
+                if (str_contains($normalized, $keyword)) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        if ($matches((string) optional($user->designation)->name)) {
+            return true;
+        }
+
+        if (!method_exists($user, 'roles')) {
+            return false;
+        }
+
+        foreach ($user->roles()->pluck('name') as $roleName) {
+            if ($matches((string) $roleName)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function alignDateToMeetingDay(\DateTimeImmutable $date, ?string $meetingDay): \DateTimeImmutable
     {
         $normalizedDay = strtolower(trim((string) $meetingDay));
@@ -255,7 +302,7 @@ class LoanCollectionController extends Controller
     ): \DateTimeImmutable
     {
         if ($steps === 0) {
-            return $this->alignDateToMeetingDay($date, $meetingDay);
+            return $this->adjustDateForHoliday($this->alignDateToMeetingDay($date, $meetingDay));
         }
 
         $interval = '+1 month';
@@ -275,7 +322,46 @@ class LoanCollectionController extends Controller
                 $cursor = $cursor->modify(str_replace('+', '-', $interval));
             }
 
-            $cursor = $this->alignDateToMeetingDay($cursor, $meetingDay);
+            $cursor = $this->adjustDateForHoliday($this->alignDateToMeetingDay($cursor, $meetingDay));
+        }
+
+        return $cursor;
+    }
+
+    /**
+     * @return array<string, true>
+     */
+    private function getActiveHolidayLookup(): array
+    {
+        if ($this->activeHolidayLookup !== null) {
+            return $this->activeHolidayLookup;
+        }
+
+        $dates = MicrofinanceHoliday::query()
+            ->where('is_active', true)
+            ->pluck('holiday_date')
+            ->map(static fn ($date): string => Carbon::parse((string) $date)->toDateString())
+            ->all();
+
+        $lookup = [];
+        foreach ($dates as $date) {
+            $lookup[$date] = true;
+        }
+
+        $this->activeHolidayLookup = $lookup;
+        return $this->activeHolidayLookup;
+    }
+
+    private function adjustDateForHoliday(\DateTimeImmutable $date): \DateTimeImmutable
+    {
+        $holidayLookup = $this->getActiveHolidayLookup();
+        if (empty($holidayLookup)) {
+            return $date;
+        }
+
+        $cursor = $date;
+        while (isset($holidayLookup[$cursor->format('Y-m-d')])) {
+            $cursor = $cursor->modify('+1 day');
         }
 
         return $cursor;
@@ -646,6 +732,7 @@ class LoanCollectionController extends Controller
             ? new \DateTimeImmutable((string)$loanRequest->due_date)
             : $collectionDate;
         $dueCursor = $this->alignDateToMeetingDay($dueCursor, $meetingDay);
+        $dueCursor = $this->adjustDateForHoliday($dueCursor);
         $refundOption = (string)($loanRequest->refund_option ?: 'month');
 
         $accrualCapDate = $collectionDate;
@@ -717,6 +804,7 @@ class LoanCollectionController extends Controller
             ? new \DateTimeImmutable((string)$loanRequest->next_payment_date)
             : $collectionDate;
         $nextPaymentBaseDate = $this->alignDateToMeetingDay($nextPaymentBaseDate, $meetingDay);
+        $nextPaymentBaseDate = $this->adjustDateForHoliday($nextPaymentBaseDate);
 
         if ($collectionDate > $nextPaymentBaseDate) {
             $nextPaymentBaseDate = $collectionDate;
@@ -726,6 +814,7 @@ class LoanCollectionController extends Controller
             ? new \DateTimeImmutable((string)$loanRequest->due_date)
             : $collectionDate;
         $dueBaseDate = $this->alignDateToMeetingDay($dueBaseDate, $meetingDay);
+        $dueBaseDate = $this->adjustDateForHoliday($dueBaseDate);
 
         if ($collectionDate > $dueBaseDate) {
             $dueBaseDate = $collectionDate;
@@ -884,6 +973,169 @@ class LoanCollectionController extends Controller
         ]);
     }
 
+    public function settleEarly(Request $request)
+    {
+        $user = $request->user();
+        if (!$this->isTopManagementUser($user)) {
+            return response()->json([
+                'message' => 'Only top management can perform early settlement with interest deduction.'
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'loan_request_id' => 'required|exists:mf_loan_requests,id',
+            'collection_date' => 'required|date',
+            'payment_type' => 'required|in:cash,check,bank_transfer',
+            'payment_reference' => 'nullable|string|max:255|required_unless:payment_type,cash',
+            'interest_discount_amount' => 'nullable|numeric|min:0',
+            'note' => 'nullable|string|max:1000',
+        ]);
+
+        $loanRequest = MicrofinanceLoanRequest::with('center:id,meeting_day')
+            ->findOrFail((int) $validated['loan_request_id']);
+
+        $branchId = $this->scopedBranchId($request);
+        if ($branchId !== null && (int) ($loanRequest->branch_id ?? 0) !== $branchId) {
+            return response()->json([
+                'message' => 'You can settle only loans in your branch.'
+            ], 403);
+        }
+
+        if (!in_array((string) $loanRequest->status, ['approved', 'released'], true)) {
+            return response()->json([
+                'message' => 'Early settlement is allowed only for approved or released loans.'
+            ], 422);
+        }
+
+        $loanAmount = (float) ($loanRequest->loan_amount ?? 0);
+        $refundableAmount = (float) ($loanRequest->refundable_amount ?? 0);
+
+        $totals = MicrofinanceLoanCollection::query()
+            ->where('mf_loan_request_id', $loanRequest->id)
+            ->selectRaw('COALESCE(SUM(collected_amount), 0) as total_collected')
+            ->selectRaw('COALESCE(SUM(capital_amount), 0) as total_capital')
+            ->first();
+
+        $totalCollected = (float) ($totals?->total_collected ?? 0);
+        $totalCapitalCollected = (float) ($totals?->total_capital ?? 0);
+
+        $outstandingAmount = round(max($refundableAmount - $totalCollected, 0), 2);
+        if ($outstandingAmount <= 0) {
+            return response()->json([
+                'message' => 'This loan has no outstanding amount left for settlement.'
+            ], 422);
+        }
+
+        $outstandingPrincipal = round(max($loanAmount - $totalCapitalCollected, 0), 2);
+        $remainingInterest = round(max($outstandingAmount - $outstandingPrincipal, 0), 2);
+
+        $requestedDiscount = round((float) ($validated['interest_discount_amount'] ?? 0), 2);
+        $interestDiscountAmount = round(min(max($requestedDiscount, 0), $remainingInterest), 2);
+        $settlementCollected = round(max($outstandingAmount - $interestDiscountAmount, 0), 2);
+
+        if ($settlementCollected <= 0) {
+            return response()->json([
+                'message' => 'Settlement payable amount is zero after deduction. Please review discount amount.'
+            ], 422);
+        }
+
+        $capitalAmount = round(min($outstandingPrincipal, $settlementCollected), 2);
+        $interestAmount = round(max($settlementCollected - $capitalAmount, 0), 2);
+        $penaltyAmount = 0.0;
+
+        $userNote = trim((string) ($validated['note'] ?? ''));
+        $systemNote = sprintf(
+            'EARLY_SETTLEMENT | outstanding_before=%.2f | principal_before=%.2f | interest_remaining=%.2f | interest_discount=%.2f | settled_amount=%.2f',
+            $outstandingAmount,
+            $outstandingPrincipal,
+            $remainingInterest,
+            $interestDiscountAmount,
+            $settlementCollected
+        );
+        $finalNote = $userNote !== '' ? ($userNote . ' | ' . $systemNote) : $systemNote;
+
+        $collection = null;
+        DB::transaction(function () use ($request, $validated, $loanRequest, $settlementCollected, $capitalAmount, $interestAmount, $penaltyAmount, $finalNote, &$collection): void {
+            $collection = MicrofinanceLoanCollection::create([
+                'mf_loan_request_id' => $loanRequest->id,
+                'collection_date' => $validated['collection_date'],
+                'collected_amount' => $settlementCollected,
+                'capital_amount' => $capitalAmount,
+                'interest_amount' => $interestAmount,
+                'penalty_amount' => $penaltyAmount,
+                'payment_type' => $validated['payment_type'],
+                'payment_reference' => $validated['payment_reference'] ?? null,
+                'note' => $finalNote,
+                'created_by' => optional($request->user())->id,
+            ]);
+
+            $loanRequest->status = 'released';
+            $loanRequest->setAttribute('loan_balance', 0);
+            $loanRequest->arrears_balance = 0;
+            $loanRequest->due_date = null;
+            $loanRequest->next_payment_date = null;
+            $loanRequest->penalty_starts_on = null;
+            $loanRequest->save();
+
+            $this->adjustCollectorWalletBalance($loanRequest, (int) ($collection?->created_by ?? 0), (float) $settlementCollected);
+        });
+
+        if (!$collection instanceof MicrofinanceLoanCollection) {
+            return response()->json([
+                'message' => 'Failed to save early settlement record.'
+            ], 500);
+        }
+
+        $this->invalidateIndexCache();
+
+        $this->dispatchCollectionSmsAlert(
+            $loanRequest,
+            (float) $settlementCollected,
+            (string) $validated['collection_date']
+        );
+
+        $breakdown = [
+            'early_settlement' => true,
+            'outstanding_before' => $outstandingAmount,
+            'outstanding_after' => 0.0,
+            'outstanding_principal_before' => $outstandingPrincipal,
+            'interest_remaining_before' => $remainingInterest,
+            'interest_discount_amount' => $interestDiscountAmount,
+            'capital_amount' => $capitalAmount,
+            'interest_amount' => $interestAmount,
+            'penalty_amount' => $penaltyAmount,
+            'profit_amount' => round($interestAmount + $penaltyAmount, 2),
+            'business_fund_amount' => $capitalAmount,
+            'arrears_outstanding_before' => round((float) ($loanRequest->arrears_balance ?? 0), 2),
+            'arrears_deducted' => round((float) ($loanRequest->arrears_balance ?? 0), 2),
+            'arrears_outstanding_after' => 0.0,
+            'extra_payment_after' => 0.0,
+            'outstanding_principal_after' => 0.0,
+        ];
+
+        return response()->json([
+            'message' => 'Loan settled early with interest deduction and final payment record saved.',
+            'data' => $collection,
+            'loan_status' => [
+                'status' => $loanRequest->status,
+                'due_date' => $loanRequest->due_date,
+                'next_payment_date' => $loanRequest->next_payment_date,
+                'arrears_balance' => $loanRequest->arrears_balance,
+                'loan_balance' => $loanRequest->loan_balance,
+            ],
+            'breakdown' => $breakdown,
+            'receipt' => $this->buildReceipt(
+                $loanRequest,
+                $collection,
+                $breakdown,
+                null,
+                (string) $validated['payment_type'],
+                $validated['payment_reference'] ?? null,
+                $finalNote
+            ),
+        ], 201);
+    }
+
     private function rebuildLoanStateFromCollections(MicrofinanceLoanRequest $loanRequest): void
     {
         $loanRequest->loadMissing('center:id,meeting_day');
@@ -1008,20 +1260,26 @@ class LoanCollectionController extends Controller
         if (!empty($loanRequest->loan_end_date)) {
             $loanEndDate = new \DateTimeImmutable((string) $loanRequest->loan_end_date);
             if ($termCount <= 1) {
-                return $this->alignDateToMeetingDay($loanEndDate, $meetingDay);
+                return $this->adjustDateForHoliday($this->alignDateToMeetingDay($loanEndDate, $meetingDay));
             }
 
             return $this->shiftDateByRefundOption($loanEndDate, $refundOption, 0 - ($termCount - 1), $meetingDay);
         }
 
         if (!empty($loanRequest->next_payment_date)) {
-            return $this->alignDateToMeetingDay(new \DateTimeImmutable((string) $loanRequest->next_payment_date), $meetingDay);
+            return $this->adjustDateForHoliday(
+                $this->alignDateToMeetingDay(new \DateTimeImmutable((string) $loanRequest->next_payment_date), $meetingDay)
+            );
         }
 
         if (!empty($loanRequest->due_date)) {
-            return $this->alignDateToMeetingDay(new \DateTimeImmutable((string) $loanRequest->due_date), $meetingDay);
+            return $this->adjustDateForHoliday(
+                $this->alignDateToMeetingDay(new \DateTimeImmutable((string) $loanRequest->due_date), $meetingDay)
+            );
         }
 
-        return $this->alignDateToMeetingDay(new \DateTimeImmutable(date('Y-m-d')), $meetingDay);
+        return $this->adjustDateForHoliday(
+            $this->alignDateToMeetingDay(new \DateTimeImmutable(date('Y-m-d')), $meetingDay)
+        );
     }
 }

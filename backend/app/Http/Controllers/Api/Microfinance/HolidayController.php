@@ -66,21 +66,27 @@ class HolidayController extends Controller
         ]);
 
         $wasActive = (bool) $holiday->is_active;
-
-        $holiday->update([
-            'holiday_date' => $validated['holiday_date'],
-            'name' => $validated['name'],
-            'note' => $validated['note'] ?? null,
-            'is_active' => $validated['is_active'] ?? true,
-        ]);
-
         $shiftedCount = 0;
-        if (!$wasActive && (bool) $holiday->is_active) {
-            $shiftedCount = $this->forwardCollectionDatesForHoliday(
-                Carbon::parse((string) $holiday->holiday_date)->toDateString(),
-                (int) $holiday->id
-            );
-        }
+        DB::transaction(function () use ($holiday, $validated, $wasActive, &$shiftedCount): void {
+            if ($wasActive) {
+                // Rewind prior shifts before applying updated holiday settings.
+                $this->restoreLoanDatesFromHolidayShifts((int) $holiday->id);
+            }
+
+            $holiday->update([
+                'holiday_date' => $validated['holiday_date'],
+                'name' => $validated['name'],
+                'note' => $validated['note'] ?? null,
+                'is_active' => $validated['is_active'] ?? true,
+            ]);
+
+            if ((bool) $holiday->is_active) {
+                $shiftedCount = $this->forwardCollectionDatesForHoliday(
+                    Carbon::parse((string) $holiday->holiday_date)->toDateString(),
+                    (int) $holiday->id
+                );
+            }
+        });
 
         return response()->json([
             'message' => "Holiday updated successfully. Forwarded {$shiftedCount} collection date(s).",

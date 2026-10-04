@@ -3893,9 +3893,32 @@ class FinanceController extends Controller
         $dueCapitalAmount = $isSpeedDraft ? 0.0 : $this->computeDueCapitalAmount($finance);
         $graceEndDate = (clone $currentDueDate)->addDays($graceDays);
         $isPastGrace = $paymentDate->gt($graceEndDate);
-        $scheduleArrearsBase = $isPastGrace
-            ? round($currentArrears + $currentDueAmount, 2)
-            : round($currentArrears, 2);
+        $accruedScheduleAmount = 0.0;
+        if (!$isSpeedDraft) {
+            if (!empty($planRows)) {
+                $scanIndex = $currentInstallmentIndex;
+                while (isset($planRows[$scanIndex])) {
+                    $scanRow = $planRows[$scanIndex];
+                    $scanDueDate = Carbon::parse((string) $scanRow['payment_date']);
+                    $scanGraceEnd = (clone $scanDueDate)->addDays($graceDays);
+                    if (!$paymentDate->gt($scanGraceEnd)) {
+                        break;
+                    }
+
+                    $accruedScheduleAmount = round($accruedScheduleAmount + (float) ($scanRow['amount'] ?? 0), 2);
+                    $scanIndex++;
+                }
+            } elseif ($isPastGrace) {
+                $scanDueDate = clone $currentDueDate;
+                $safeDueAmount = max($currentDueAmount, 0.0);
+                while ($safeDueAmount > 0 && $paymentDate->gt((clone $scanDueDate)->addDays($graceDays))) {
+                    $accruedScheduleAmount = round($accruedScheduleAmount + $safeDueAmount, 2);
+                    $scanDueDate = $this->computeNextDueDate($scanDueDate, (string) $finance->installment_frequency);
+                }
+            }
+        }
+
+        $scheduleArrearsBase = round($currentArrears + $accruedScheduleAmount, 2);
         $scheduleArrears = ($isSpeedDraft)
             ? 0.0
             : round(max($scheduleArrearsBase - $paymentAmount, 0), 2);
@@ -3903,15 +3926,40 @@ class FinanceController extends Controller
             ? round((float) $calculation['new_arrears'], 2)
             : round(max((float) $calculation['new_arrears'], $scheduleArrears), 2);
 
-        $advanceInstallment = $paymentAmount + 0.0001 >= $currentDueAmount;
         $updatedInstallmentIndex = $currentInstallmentIndex;
         $nextPlanRow = null;
+        $currentPlanDueDate = clone $currentDueDate;
+        $standardDueDateAfterCoverage = clone $currentDueDate;
+
+        $scheduleCoverageBudget = $isSpeedDraft
+            ? 0.0
+            : round(max($paymentAmount - max($currentArrears, 0), 0), 2);
+
         if (!$isSpeedDraft && !empty($planRows)) {
-            $updatedInstallmentIndex = $currentInstallmentIndex + ($advanceInstallment ? 1 : 0);
+            $scanIndex = $currentInstallmentIndex;
+            while (isset($planRows[$scanIndex])) {
+                $scanDueAmount = round((float) ($planRows[$scanIndex]['amount'] ?? 0), 2);
+                if ($scanDueAmount <= 0 || $scheduleCoverageBudget + 0.0001 < $scanDueAmount) {
+                    break;
+                }
+
+                $scheduleCoverageBudget = round($scheduleCoverageBudget - $scanDueAmount, 2);
+                $scanIndex++;
+            }
+
+            $updatedInstallmentIndex = $scanIndex;
             $nextPlanRow = $planRows[$updatedInstallmentIndex] ?? null;
+        } elseif (!$isSpeedDraft) {
+            $safeDueAmount = max($currentDueAmount, 0.0);
+            if ($safeDueAmount > 0) {
+                while ($scheduleCoverageBudget + 0.0001 >= $safeDueAmount) {
+                    $scheduleCoverageBudget = round($scheduleCoverageBudget - $safeDueAmount, 2);
+                    $standardDueDateAfterCoverage = $this->computeNextDueDate($standardDueDateAfterCoverage, (string) $finance->installment_frequency);
+                }
+            }
         }
 
-        $collection = DB::transaction(function () use ($finance, $validated, $paymentAmount, $txnOverPayment, $calculation, $currentCapital, $currentArrears, $user, $newTotalPaid, $newBalance, $newRefundTotal, $nextDueDate, $nextDueInterest, $dueCapitalAmount, $periodRatePercent, $planState, $planRows, $updatedInstallmentIndex, $nextPlanRow, $currentPlanRow, $currentDueAmount, $finalArrears, $isSpeedDraft, $paidInterestInPeriod) {
+        $collection = DB::transaction(function () use ($finance, $validated, $paymentAmount, $txnOverPayment, $calculation, $currentCapital, $currentArrears, $user, $newTotalPaid, $newBalance, $newRefundTotal, $nextDueDate, $nextDueInterest, $dueCapitalAmount, $periodRatePercent, $planState, $planRows, $updatedInstallmentIndex, $nextPlanRow, $currentPlanRow, $currentDueAmount, $currentPlanDueDate, $standardDueDateAfterCoverage, $finalArrears, $isSpeedDraft, $paidInterestInPeriod) {
             /** @var \App\Models\FinanceCollection $created */
             $created = FinanceCollection::create([
                 'finance_id' => $finance->id,
@@ -3981,16 +4029,16 @@ class FinanceController extends Controller
                         ? $nextDueDate->toDateString()
                         : ($nextPlanRow
                             ? Carbon::parse((string) $nextPlanRow['payment_date'])->toDateString()
-                            : ($currentPlanRow
-                                ? Carbon::parse((string) $currentPlanRow['payment_date'])->toDateString()
-                                : $nextDueDate->toDateString())),
+                            : (!empty($planRows)
+                                ? $currentPlanDueDate->toDateString()
+                                : $standardDueDateAfterCoverage->toDateString())),
                     'next_collection_date' => $isSpeedDraft
                         ? $nextDueDate->toDateString()
                         : ($nextPlanRow
                             ? Carbon::parse((string) $nextPlanRow['payment_date'])->toDateString()
-                            : ($currentPlanRow
-                                ? Carbon::parse((string) $currentPlanRow['payment_date'])->toDateString()
-                                : $nextDueDate->toDateString())),
+                            : (!empty($planRows)
+                                ? $currentPlanDueDate->toDateString()
+                                : $standardDueDateAfterCoverage->toDateString())),
                     'repayment_plan' => !empty($plan) ? $plan : null,
                 ]);
             }
@@ -4198,9 +4246,32 @@ class FinanceController extends Controller
             $dueCapitalAmount = $isSpeedDraft ? 0.0 : $this->computeDueCapitalAmount($finance);
             $graceEndDate = (clone $currentDueDate)->addDays($graceDays);
             $isPastGrace = $paymentDate->gt($graceEndDate);
-            $scheduleArrearsBase = $isPastGrace
-                ? round($runningArrears + $currentDueAmount, 2)
-                : round($runningArrears, 2);
+            $accruedScheduleAmount = 0.0;
+            if (!$isSpeedDraft) {
+                if (!empty($planRows)) {
+                    $scanIndex = $currentInstallmentIndex;
+                    while (isset($planRows[$scanIndex])) {
+                        $scanRow = $planRows[$scanIndex];
+                        $scanDueDate = Carbon::parse((string) $scanRow['payment_date']);
+                        $scanGraceEnd = (clone $scanDueDate)->addDays($graceDays);
+                        if (!$paymentDate->gt($scanGraceEnd)) {
+                            break;
+                        }
+
+                        $accruedScheduleAmount = round($accruedScheduleAmount + (float) ($scanRow['amount'] ?? 0), 2);
+                        $scanIndex++;
+                    }
+                } elseif ($isPastGrace) {
+                    $scanDueDate = clone $currentDueDate;
+                    $safeDueAmount = max($currentDueAmount, 0.0);
+                    while ($safeDueAmount > 0 && $paymentDate->gt((clone $scanDueDate)->addDays($graceDays))) {
+                        $accruedScheduleAmount = round($accruedScheduleAmount + $safeDueAmount, 2);
+                        $scanDueDate = $this->computeNextDueDate($scanDueDate, (string) $finance->installment_frequency);
+                    }
+                }
+            }
+
+            $scheduleArrearsBase = round($runningArrears + $accruedScheduleAmount, 2);
             $scheduleArrears = ($isSpeedDraft)
                 ? 0.0
                 : round(max($scheduleArrearsBase - $paymentAmount, 0), 2);
@@ -4208,13 +4279,38 @@ class FinanceController extends Controller
                 ? round((float) $calculation['new_arrears'], 2)
                 : round(max((float) $calculation['new_arrears'], $scheduleArrears), 2);
 
-            $advanceInstallment = $paymentAmount + 0.0001 >= $currentDueAmount;
             $updatedInstallmentIndex = $currentInstallmentIndex;
             $nextPlanRow = null;
+            $currentPlanDueDate = clone $currentDueDate;
+            $standardDueDateAfterCoverage = clone $currentDueDate;
+
+            $scheduleCoverageBudget = $isSpeedDraft
+                ? 0.0
+                : round(max($paymentAmount - max($runningArrears, 0), 0), 2);
+
             if (!$isSpeedDraft && !empty($planRows)) {
-                $updatedInstallmentIndex = $currentInstallmentIndex + ($advanceInstallment ? 1 : 0);
+                $scanIndex = $currentInstallmentIndex;
+                while (isset($planRows[$scanIndex])) {
+                    $scanDueAmount = round((float) ($planRows[$scanIndex]['amount'] ?? 0), 2);
+                    if ($scanDueAmount <= 0 || $scheduleCoverageBudget + 0.0001 < $scanDueAmount) {
+                        break;
+                    }
+
+                    $scheduleCoverageBudget = round($scheduleCoverageBudget - $scanDueAmount, 2);
+                    $scanIndex++;
+                }
+
+                $updatedInstallmentIndex = $scanIndex;
                 $nextPlanRow = $planRows[$updatedInstallmentIndex] ?? null;
                 $planState['next_installment_index'] = $updatedInstallmentIndex;
+            } elseif (!$isSpeedDraft) {
+                $safeDueAmount = max($currentDueAmount, 0.0);
+                if ($safeDueAmount > 0) {
+                    while ($scheduleCoverageBudget + 0.0001 >= $safeDueAmount) {
+                        $scheduleCoverageBudget = round($scheduleCoverageBudget - $safeDueAmount, 2);
+                        $standardDueDateAfterCoverage = $this->computeNextDueDate($standardDueDateAfterCoverage, (string) $finance->installment_frequency);
+                    }
+                }
             }
 
             $entry->forceFill([
@@ -4273,16 +4369,16 @@ class FinanceController extends Controller
                         ? $nextDueDate->toDateString()
                         : ($nextPlanRow
                             ? Carbon::parse((string) $nextPlanRow['payment_date'])->toDateString()
-                            : ($currentPlanRow
-                                ? Carbon::parse((string) $currentPlanRow['payment_date'])->toDateString()
-                                : $nextDueDate->toDateString())),
+                            : (!empty($planRows)
+                                ? $currentPlanDueDate->toDateString()
+                                : $standardDueDateAfterCoverage->toDateString())),
                     'next_collection_date' => $isSpeedDraft
                         ? $nextDueDate->toDateString()
                         : ($nextPlanRow
                             ? Carbon::parse((string) $nextPlanRow['payment_date'])->toDateString()
-                            : ($currentPlanRow
-                                ? Carbon::parse((string) $currentPlanRow['payment_date'])->toDateString()
-                                : $nextDueDate->toDateString())),
+                            : (!empty($planRows)
+                                ? $currentPlanDueDate->toDateString()
+                                : $standardDueDateAfterCoverage->toDateString())),
                     'repayment_plan' => !empty($planState) ? $planState : null,
                 ]);
             }
