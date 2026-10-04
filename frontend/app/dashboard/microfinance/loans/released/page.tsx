@@ -56,9 +56,11 @@ type LoanRequest = {
   mf_center_id?: number | null;
   mf_group_id?: number | null;
   interest_type: 'flat' | 'reducing';
+  interest_calculation_scheme?: 'day' | 'week' | 'month' | 'year' | null;
   interest_rate: string | number;
   terms_count: number;
   refund_option: 'day' | 'week' | 'month';
+  assumed_month_days?: number | string | null;
   status: string;
   workflow_step?: number | null;
   workflow_step_updated_at?: string | null;
@@ -273,6 +275,17 @@ const resolveAssetUrl = (pathOrUrl: string) => {
   return `${getBackendOrigin()}/storage/${value.replace(/^public\//, '')}`;
 };
 
+const resolveUnitDays = (
+  unit: 'day' | 'week' | 'month' | 'year',
+  assumedMonthDays: number
+) => {
+  if (unit === 'day') return 1;
+  const safeMonthDays = Math.max(Number(assumedMonthDays || 30), 1);
+  if (unit === 'week') return safeMonthDays / 4;
+  if (unit === 'month') return safeMonthDays;
+  return safeMonthDays * 12;
+};
+
 const EyeIcon = ({ className = 'h-4 w-4' }: { className?: string }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
     <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
@@ -372,6 +385,8 @@ export default function ReleasedLoansPage() {
     loan_amount: string;
     refund_option: 'day' | 'week' | 'month';
     interest_type: 'flat' | 'reducing';
+    interest_calculation_scheme: 'day' | 'week' | 'month' | 'year';
+    assumed_month_days: string;
     interest_rate: string;
     terms_count: string;
     refundable_amount: string;
@@ -404,6 +419,8 @@ export default function ReleasedLoansPage() {
     loan_amount: '',
     refund_option: 'month',
     interest_type: 'flat',
+    interest_calculation_scheme: 'month',
+    assumed_month_days: '30',
     interest_rate: '',
     terms_count: '',
     refundable_amount: '',
@@ -418,6 +435,20 @@ export default function ReleasedLoansPage() {
     next_collection_date: '',
     loan_end_date: '',
     guarantors: [{ name: '', nic: '', address: '', contact_no: '', relationship: '' }],
+  });
+  const [editPricingTouched, setEditPricingTouched] = useState(false);
+  const [editPaymentHistorySummary, setEditPaymentHistorySummary] = useState<{
+    customerNo: string;
+    paymentCount: number;
+    totalPaid: number;
+    lastPaymentDate: string;
+    outstandingFromHistory: number;
+  }>({
+    customerNo: '',
+    paymentCount: 0,
+    totalPaid: 0,
+    lastPaymentDate: '-',
+    outstandingFromHistory: 0,
   });
   const [savingEdit, setSavingEdit] = useState(false);
   const [downloadingAgreementId, setDownloadingAgreementId] = useState<number | null>(null);
@@ -616,12 +647,29 @@ export default function ReleasedLoansPage() {
     void loadMasterData();
 
     const refundableAmount = Number(loan.refundable_amount || 0);
-    const totalPaidAmount = Number((loan as LoanRequest & { total_paid_amount?: string | number | null }).total_paid_amount || 0);
+    const historyRows = collections.filter((row) => Number(row.mf_loan_request_id || 0) === Number(loan.id || 0));
+    const historyPaid = historyRows.reduce((sum, row) => sum + Number(row.collected_amount || 0), 0);
+    const fallbackPaid = Number((loan as LoanRequest & { total_paid_amount?: string | number | null }).total_paid_amount || 0);
+    const totalPaidAmount = historyRows.length > 0 ? historyPaid : fallbackPaid;
     const computedOutstanding = Number.isFinite(refundableAmount) && Number.isFinite(totalPaidAmount)
       ? Math.max(refundableAmount - totalPaidAmount, 0)
       : Number(loan.loan_amount || 0);
 
-    const resolvedLoanBalance = loan.loan_balance ?? computedOutstanding;
+    const resolvedLoanBalance = Number.isFinite(computedOutstanding) ? computedOutstanding : Number(loan.loan_balance || 0);
+    const latestHistoryDate = historyRows
+      .map((row) => String(row.collection_date || row.created_at || ''))
+      .filter((value) => value !== '')
+      .sort()
+      .at(-1) || '-';
+
+    setEditPricingTouched(false);
+    setEditPaymentHistorySummary({
+      customerNo: String(loan.customer_no || '-'),
+      paymentCount: historyRows.length,
+      totalPaid: Number.isFinite(totalPaidAmount) ? totalPaidAmount : 0,
+      lastPaymentDate: formatDisplayDate(latestHistoryDate),
+      outstandingFromHistory: Number.isFinite(resolvedLoanBalance) ? resolvedLoanBalance : 0,
+    });
 
     setEditModal({
       open: true,
@@ -641,6 +689,8 @@ export default function ReleasedLoansPage() {
       loan_amount: String(loan.loan_amount || ''),
       refund_option: loan.refund_option || 'month',
       interest_type: loan.interest_type || 'flat',
+      interest_calculation_scheme: (loan.interest_calculation_scheme || 'month') as 'day' | 'week' | 'month' | 'year',
+      assumed_month_days: String(loan.assumed_month_days || 30),
       interest_rate: String(loan.interest_rate || ''),
       terms_count: String(loan.terms_count || ''),
       refundable_amount: String(loan.refundable_amount || ''),
@@ -669,10 +719,21 @@ export default function ReleasedLoansPage() {
 
   const closeEditModal = () => {
     if (savingEdit) return;
+    setEditPricingTouched(false);
+    setEditPaymentHistorySummary({
+      customerNo: '',
+      paymentCount: 0,
+      totalPaid: 0,
+      lastPaymentDate: '-',
+      outstandingFromHistory: 0,
+    });
     setEditModal((prev) => ({ ...prev, open: false, loanId: null }));
   };
 
   const updateEditField = (field: keyof typeof editModal, value: string) => {
+    if (field === 'loan_amount' || field === 'interest_rate' || field === 'terms_count' || field === 'refund_option' || field === 'interest_type') {
+      setEditPricingTouched(true);
+    }
     setEditModal((prev) => ({ ...prev, [field]: value }));
   };
 
@@ -700,6 +761,7 @@ export default function ReleasedLoansPage() {
         reason: editModal.reason || null,
         loan_amount: Number(editModal.loan_amount || 0),
         refund_option: editModal.refund_option,
+        assumed_month_days: Number(editModal.assumed_month_days || 30),
         interest_type: editModal.interest_type,
         interest_rate: Number(editModal.interest_rate || 0),
         terms_count: Number(editModal.terms_count || 0),
@@ -1555,38 +1617,37 @@ export default function ReleasedLoansPage() {
   const editLabelClass = 'block mb-1.5 text-[0.78rem] font-bold uppercase tracking-wide text-slate-800';
 
   useEffect(() => {
-    if (!editModal.open) return;
+    if (!editModal.open || !editPricingTouched) return;
 
     const amount = Number(editModal.loan_amount || 0);
     const rate = Number(editModal.interest_rate || 0);
     const termCount = Number(editModal.terms_count || 0);
+    const assumedMonthDays = Math.max(Number(editModal.assumed_month_days || 30), 1);
+    const rateDecimal = rate / 100;
+    const installmentUnitDays = resolveUnitDays(editModal.refund_option, assumedMonthDays);
+    const schemeUnitDays = resolveUnitDays(editModal.interest_calculation_scheme || 'month', assumedMonthDays);
+    const effectiveRatePerInstallment = schemeUnitDays > 0
+      ? rateDecimal * (installmentUnitDays / schemeUnitDays)
+      : 0;
 
-    let monthsEquivalent = termCount;
-    if (editModal.refund_option === 'week') {
-      monthsEquivalent = termCount / 4;
-    } else if (editModal.refund_option === 'day') {
-      monthsEquivalent = termCount / 26;
-    }
-
-    const monthlyRate = rate / 100;
     let refundable = 0;
     let installment = 0;
 
     if (editModal.interest_type === 'reducing') {
-      const periodsPerMonth = editModal.refund_option === 'day' ? 26 : editModal.refund_option === 'week' ? 4 : 1;
-      const periodicRate = monthlyRate / periodsPerMonth;
+      const periodicRate = effectiveRatePerInstallment;
 
       if (termCount > 0) {
         if (periodicRate > 0) {
           const factor = Math.pow(1 + periodicRate, termCount);
-          installment = (amount * periodicRate * factor) / (factor - 1);
+          installment = factor === 1 ? amount / termCount : (amount * periodicRate * factor) / (factor - 1);
         } else {
           installment = amount / termCount;
         }
         refundable = installment * termCount;
       }
     } else {
-      refundable = amount + amount * monthlyRate * monthsEquivalent;
+      const totalInterestMultiplier = effectiveRatePerInstallment * termCount;
+      refundable = amount + amount * totalInterestMultiplier;
       installment = termCount > 0 ? refundable / termCount : 0;
     }
 
@@ -1594,8 +1655,29 @@ export default function ReleasedLoansPage() {
       ...prev,
       refundable_amount: refundable ? refundable.toFixed(2) : '',
       installment_amount: installment ? installment.toFixed(2) : '',
+      loan_balance: refundable
+        ? Math.max(refundable - Number(editPaymentHistorySummary.totalPaid || 0), 0).toFixed(2)
+        : '',
     }));
-  }, [editModal.open, editModal.loan_amount, editModal.interest_rate, editModal.terms_count, editModal.refund_option, editModal.interest_type]);
+
+    setEditPaymentHistorySummary((prev) => ({
+      ...prev,
+      outstandingFromHistory: refundable
+        ? Math.max(refundable - Number(prev.totalPaid || 0), 0)
+        : 0,
+    }));
+  }, [
+    editModal.open,
+    editPricingTouched,
+    editModal.loan_amount,
+    editModal.interest_rate,
+    editModal.terms_count,
+    editModal.refund_option,
+    editModal.interest_type,
+    editModal.interest_calculation_scheme,
+    editModal.assumed_month_days,
+    editPaymentHistorySummary.totalPaid,
+  ]);
 
   const filteredLoans = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -2915,6 +2997,20 @@ export default function ReleasedLoansPage() {
 
               {editStep === 5 && (
                 <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-black">
+                  <div className="md:col-span-3 rounded-lg border border-cyan-100 bg-cyan-50/50 px-3 py-2.5 text-xs text-slate-700">
+                    <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                      <div><span className="font-semibold text-slate-800">Customer No:</span> {editPaymentHistorySummary.customerNo || '-'}</div>
+                      <div><span className="font-semibold text-slate-800">Payments:</span> {editPaymentHistorySummary.paymentCount}</div>
+                      <div><span className="font-semibold text-slate-800">Paid from History:</span> {editPaymentHistorySummary.totalPaid.toFixed(2)}</div>
+                      <div><span className="font-semibold text-slate-800">Last Payment:</span> {editPaymentHistorySummary.lastPaymentDate}</div>
+                      <div><span className="font-semibold text-slate-800">Outstanding Preview:</span> {editPaymentHistorySummary.outstandingFromHistory.toFixed(2)}</div>
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-600">
+                      Preview uses customer payment history records before loading edit data.
+                      {editPricingTouched ? ' Refundable and installment are currently being recalculated because pricing fields were changed.' : ''}
+                    </p>
+                  </div>
+
                   <div>
                     <label className={editLabelClass} htmlFor="edit-loan-amount">Loan Amount</label>
                     <input
