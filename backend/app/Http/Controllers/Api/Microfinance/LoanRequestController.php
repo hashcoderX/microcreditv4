@@ -14,6 +14,7 @@ use App\Models\MicrofinanceCenter;
 use App\Models\MicrofinanceGroup;
 use App\Models\MicrofinanceLoanGuarantor;
 use App\Models\MicrofinanceActionCenterStepRole;
+use App\Models\MicrofinanceLoanProduct;
 use App\Models\MicrofinanceLoanRequest;
 use App\Models\MicrofinancePenaltySetting;
 use App\Models\MicrofinanceRoute;
@@ -37,6 +38,68 @@ class LoanRequestController extends Controller
     private const LOAN_REQUEST_MIN_DOCUMENT_COMPLETION = 0;
     private const WORKFLOW_FINAL_STEP = 14;
     private const INDEX_CACHE_TTL_SECONDS = 20;
+
+    private function resolveTermMonths(int $termsCount, string $refundOption, int $assumedMonthDays): float
+    {
+        $terms = max($termsCount, 0);
+        if ($terms <= 0) {
+            return 0.0;
+        }
+
+        $safeMonthDays = max($assumedMonthDays, 1);
+        $unitDays = match (strtolower(trim($refundOption))) {
+            'day' => 1.0,
+            'week' => $safeMonthDays / 4,
+            default => (float) $safeMonthDays,
+        };
+
+        return ($terms * $unitDays) / $safeMonthDays;
+    }
+
+    private function resolveDocumentChargesAmount(
+        float $loanAmount,
+        int $termsCount,
+        string $refundOption,
+        int $assumedMonthDays,
+        mixed $providedDocumentCharges,
+        ?MicrofinanceLoanProduct $loanProduct
+    ): float {
+        $fallback = max((float) ($providedDocumentCharges ?? 0), 0);
+        if (!$loanProduct || $loanAmount <= 0) {
+            return round($fallback, 2);
+        }
+
+        $basePct = (float) ($loanProduct->document_charge_percentage ?? 0);
+        $extraPctPerMonth = (float) ($loanProduct->additional_document_charge_per_extra_month_percentage ?? 0);
+        $baseMonths = max((int) ($loanProduct->base_document_charge_allowed_months ?? 1), 0);
+
+        $termMonths = $this->resolveTermMonths($termsCount, $refundOption, $assumedMonthDays);
+        $extraMonths = max($termMonths - $baseMonths, 0);
+        $effectivePct = $basePct + ($extraMonths * max($extraPctPerMonth, 0));
+
+        return round(max(($loanAmount * $effectivePct) / 100, 0), 2);
+    }
+
+    private function resolveExtraDocumentChargesAmount(
+        float $loanAmount,
+        int $termsCount,
+        string $refundOption,
+        int $assumedMonthDays,
+        mixed $providedExtraDocumentCharges,
+        ?MicrofinanceLoanProduct $loanProduct
+    ): float {
+        $fallback = max((float) ($providedExtraDocumentCharges ?? 0), 0);
+        if (!$loanProduct || $loanAmount <= 0) {
+            return round($fallback, 2);
+        }
+
+        $extraPctPerMonth = (float) ($loanProduct->additional_document_charge_per_extra_month_percentage ?? 0);
+        $baseMonths = max((int) ($loanProduct->base_document_charge_allowed_months ?? 1), 0);
+        $termMonths = $this->resolveTermMonths($termsCount, $refundOption, $assumedMonthDays);
+        $extraMonths = max($termMonths - $baseMonths, 0);
+
+        return round(max(($loanAmount * $extraMonths * max($extraPctPerMonth, 0)) / 100, 0), 2);
+    }
 
     private function getLoanRequestMinProfileCompletionPercent(): int
     {
@@ -3302,6 +3365,7 @@ class LoanRequestController extends Controller
             'bank_branch' => 'nullable|string|max:190',
             'bank_account_no' => 'nullable|string|max:80',
             'loan_amount' => 'required|numeric|min:0',
+            'loan_product_id' => 'nullable|exists:mf_loan_products,id',
             'reason' => 'nullable|string',
             'refund_option' => 'required|in:day,week,month',
             'assumed_month_days' => 'nullable|integer|min:20|max:31',
@@ -3313,9 +3377,10 @@ class LoanRequestController extends Controller
             'loan_balance' => 'nullable|numeric|min:0',
             'arrears_balance' => 'nullable|numeric',
             'document_charges' => 'nullable|numeric|min:0',
+            'extra_document_charges' => 'nullable|numeric|min:0',
             'stamp_charges' => 'nullable|numeric|min:0',
             'insurance_charges' => 'nullable|numeric|min:0',
-            'charge_payment_mode' => 'required|in:deduct_from_loan,hand_cash',
+            'charge_payment_mode' => 'required|in:deduct_from_loan,hand_cash,wallet',
             'charges_collection_status' => 'nullable|in:pending,done',
             'loan_request_date' => 'required|date',
             'guarantors' => 'nullable|array',
@@ -3467,7 +3532,29 @@ class LoanRequestController extends Controller
         }
 
         $loanAmount = (float)$validated['loan_amount'];
-        $totalCharges = (float)($validated['document_charges'] ?? 0)
+        $loanProduct = !empty($validated['loan_product_id'])
+            ? MicrofinanceLoanProduct::query()->find((int) $validated['loan_product_id'])
+            : null;
+
+        $resolvedDocumentCharges = $this->resolveDocumentChargesAmount(
+            $loanAmount,
+            (int) ($validated['terms_count'] ?? 0),
+            (string) ($validated['refund_option'] ?? 'month'),
+            (int) ($validated['assumed_month_days'] ?? 30),
+            $validated['document_charges'] ?? 0,
+            $loanProduct
+        );
+        $resolvedExtraDocumentCharges = $this->resolveExtraDocumentChargesAmount(
+            $loanAmount,
+            (int) ($validated['terms_count'] ?? 0),
+            (string) ($validated['refund_option'] ?? 'month'),
+            (int) ($validated['assumed_month_days'] ?? 30),
+            $validated['extra_document_charges'] ?? 0,
+            $loanProduct
+        );
+
+        $totalCharges = (float) $resolvedDocumentCharges
+            + (float) $resolvedExtraDocumentCharges
             + (float)($validated['stamp_charges'] ?? 0)
             + (float)($validated['insurance_charges'] ?? 0);
         $hasBankNameColumn = Schema::hasColumn('mf_loan_requests', 'bank_name');
@@ -3517,7 +3604,7 @@ class LoanRequestController extends Controller
         }
 
         $customerPortalCredentials = null;
-        $loanRequest = DB::transaction(function () use ($request, $validated, $loanAmount, $totalCharges, $managerEmployee, $scope, $routeId, $centerId, $groupId, $customerRecord, $customerNoForLoan, $customerNameForLoan, $customerNickNameForLoan, $customerNicForLoan, $customerAddressForLoan, $customerContactForLoan, $banking, $evaluationPayload, $evaluationPayloadVersion, &$customerPortalCredentials, $hasBankNameColumn, $hasBankBranchColumn, $hasBankAccountNoColumn, $resolvedBranchId) {
+        $loanRequest = DB::transaction(function () use ($request, $validated, $loanAmount, $totalCharges, $resolvedDocumentCharges, $resolvedExtraDocumentCharges, $managerEmployee, $scope, $routeId, $centerId, $groupId, $customerRecord, $customerNoForLoan, $customerNameForLoan, $customerNickNameForLoan, $customerNicForLoan, $customerAddressForLoan, $customerContactForLoan, $banking, $evaluationPayload, $evaluationPayloadVersion, &$customerPortalCredentials, $hasBankNameColumn, $hasBankBranchColumn, $hasBankAccountNoColumn, $resolvedBranchId) {
             $createdBy = optional($request->user())->id ?? 1;
 
             $loanPayload = [
@@ -3549,11 +3636,14 @@ class LoanRequestController extends Controller
                 'terms_count' => $validated['terms_count'],
                 'refundable_amount' => $validated['refundable_amount'],
                 'installment_amount' => $validated['installment_amount'],
-                'document_charges' => $validated['document_charges'] ?? 0,
+                'document_charges' => $resolvedDocumentCharges,
+                'extra_document_charges' => $resolvedExtraDocumentCharges,
                 'stamp_charges' => $validated['stamp_charges'] ?? 0,
                 'insurance_charges' => $validated['insurance_charges'] ?? 0,
                 'charge_payment_mode' => $validated['charge_payment_mode'],
-                'charges_collection_status' => $validated['charges_collection_status'] ?? 'pending',
+                'charges_collection_status' => $validated['charge_payment_mode'] === 'deduct_from_loan'
+                    ? 'done'
+                    : (($validated['charges_collection_status'] ?? 'pending') === 'done' ? 'done' : 'pending'),
                 'net_disbursed_amount' => $validated['charge_payment_mode'] === 'deduct_from_loan'
                     ? $loanAmount - $totalCharges
                     : $loanAmount,
@@ -3594,8 +3684,8 @@ class LoanRequestController extends Controller
             }
 
             if (
-                ($validated['charge_payment_mode'] ?? '') === 'hand_cash'
-                && ($validated['charges_collection_status'] ?? 'pending') === 'done'
+                in_array((string) ($validated['charge_payment_mode'] ?? ''), ['hand_cash', 'wallet'], true)
+                && ($loanRequest->charges_collection_status ?? 'pending') === 'done'
             ) {
                 $this->creditCollectorWalletForCharges($loanRequest, $totalCharges);
             }
@@ -3661,6 +3751,7 @@ class LoanRequestController extends Controller
             'bank_account_no' => 'nullable|string|max:80',
             'reason' => 'nullable|string',
             'loan_amount' => 'required|numeric|min:0',
+            'loan_product_id' => 'nullable|exists:mf_loan_products,id',
             'refund_option' => 'required|in:day,week,month',
             'assumed_month_days' => 'nullable|integer|min:20|max:31',
             'interest_type' => 'required|in:flat,reducing',
@@ -3669,9 +3760,10 @@ class LoanRequestController extends Controller
             'refundable_amount' => 'required|numeric|min:0',
             'installment_amount' => 'required|numeric|min:0',
             'document_charges' => 'nullable|numeric|min:0',
+            'extra_document_charges' => 'nullable|numeric|min:0',
             'stamp_charges' => 'nullable|numeric|min:0',
             'insurance_charges' => 'nullable|numeric|min:0',
-            'charge_payment_mode' => 'required|in:deduct_from_loan,hand_cash',
+            'charge_payment_mode' => 'required|in:deduct_from_loan,hand_cash,wallet',
             'charges_collection_status' => 'nullable|in:pending,done',
             'loan_request_date' => 'nullable|date',
             'loan_end_date' => 'nullable|date',
@@ -3719,7 +3811,29 @@ class LoanRequestController extends Controller
         }
 
         $loanAmount = (float) $validated['loan_amount'];
-        $totalCharges = (float) ($validated['document_charges'] ?? 0)
+        $loanProduct = !empty($validated['loan_product_id'])
+            ? MicrofinanceLoanProduct::query()->find((int) $validated['loan_product_id'])
+            : null;
+
+        $resolvedDocumentCharges = $this->resolveDocumentChargesAmount(
+            $loanAmount,
+            (int) ($validated['terms_count'] ?? 0),
+            (string) ($validated['refund_option'] ?? 'month'),
+            (int) ($validated['assumed_month_days'] ?? ($loanRequest->assumed_month_days ?? 30)),
+            $validated['document_charges'] ?? 0,
+            $loanProduct
+        );
+        $resolvedExtraDocumentCharges = $this->resolveExtraDocumentChargesAmount(
+            $loanAmount,
+            (int) ($validated['terms_count'] ?? 0),
+            (string) ($validated['refund_option'] ?? 'month'),
+            (int) ($validated['assumed_month_days'] ?? ($loanRequest->assumed_month_days ?? 30)),
+            $validated['extra_document_charges'] ?? 0,
+            $loanProduct
+        );
+
+        $totalCharges = (float) $resolvedDocumentCharges
+            + (float) $resolvedExtraDocumentCharges
             + (float) ($validated['stamp_charges'] ?? 0)
             + (float) ($validated['insurance_charges'] ?? 0);
         $hasBankNameColumn = Schema::hasColumn('mf_loan_requests', 'bank_name');
@@ -3776,11 +3890,14 @@ class LoanRequestController extends Controller
             'terms_count' => $validated['terms_count'],
             'refundable_amount' => $validated['refundable_amount'],
             'installment_amount' => $validated['installment_amount'],
-            'document_charges' => $validated['document_charges'] ?? 0,
+            'document_charges' => $resolvedDocumentCharges,
+            'extra_document_charges' => $resolvedExtraDocumentCharges,
             'stamp_charges' => $validated['stamp_charges'] ?? 0,
             'insurance_charges' => $validated['insurance_charges'] ?? 0,
             'charge_payment_mode' => $validated['charge_payment_mode'],
-            'charges_collection_status' => $validated['charges_collection_status'] ?? $loanRequest->charges_collection_status ?? 'pending',
+            'charges_collection_status' => $validated['charge_payment_mode'] === 'deduct_from_loan'
+                ? 'done'
+                : (($validated['charges_collection_status'] ?? $loanRequest->charges_collection_status ?? 'pending') === 'done' ? 'done' : 'pending'),
             'net_disbursed_amount' => $validated['charge_payment_mode'] === 'deduct_from_loan'
                 ? max($loanAmount - $totalCharges, 0)
                 : $loanAmount,
@@ -3834,7 +3951,7 @@ class LoanRequestController extends Controller
         $loanRequest->save();
 
         if (
-            ($loanRequest->charge_payment_mode ?? '') === 'hand_cash'
+            in_array((string) ($loanRequest->charge_payment_mode ?? ''), ['hand_cash', 'wallet'], true)
             && ($loanRequest->charges_collection_status ?? 'pending') === 'done'
         ) {
             $this->creditCollectorWalletForCharges($loanRequest, $totalCharges);
@@ -4317,12 +4434,13 @@ class LoanRequestController extends Controller
             $lockedLoanRequest->save();
 
             $totalCharges = (float) ($lockedLoanRequest->document_charges ?? 0)
+                + (float) ($lockedLoanRequest->extra_document_charges ?? 0)
                 + (float) ($lockedLoanRequest->stamp_charges ?? 0)
                 + (float) ($lockedLoanRequest->insurance_charges ?? 0);
 
             $refunded = false;
             if (
-                (string) ($lockedLoanRequest->charge_payment_mode ?? '') === 'hand_cash'
+                in_array((string) ($lockedLoanRequest->charge_payment_mode ?? ''), ['hand_cash', 'wallet'], true)
                 && (string) ($lockedLoanRequest->charges_collection_status ?? 'pending') === 'done'
             ) {
                 $refunded = $this->refundCollectorWalletForCharges($lockedLoanRequest, $totalCharges);

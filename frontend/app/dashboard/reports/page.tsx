@@ -354,6 +354,11 @@ export default function ReportsHubPage() {
             description: 'Monitor employee wallet balances grouped by reporting hierarchy.',
             path: '/dashboard/reports/team-member-wallets',
           },
+          {
+            title: 'Employee Hierarchy Report',
+            description: 'Monitor employee levels, reporting lines, and subordinate structures across teams.',
+            path: '/dashboard/reports/employee-hierarchy',
+          },
         ],
       },
       {
@@ -376,6 +381,11 @@ export default function ReportsHubPage() {
             title: 'Field Officer Collection Report',
             description: 'Performance and totals by field officer.',
             path: '/dashboard/microfinance/reports/field-officer-collection',
+          },
+          {
+            title: 'Today Collection Report',
+            description: 'Auto-filtered today collection for the logged-in field officer.',
+            path: '/dashboard/microfinance/reports/today-collection',
           },
           {
             title: 'Portfolio at Risk (PAR) Report',

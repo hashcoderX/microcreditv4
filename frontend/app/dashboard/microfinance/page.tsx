@@ -438,6 +438,16 @@ export default function MicrofinanceDashboard() {
       permissionTokens: ['field officer collection report', '/dashboard/microfinance/reports/field-officer-collection'],
     },
     {
+      key: 'mf_widget_report_today_collection',
+      name: 'Today Collection (My)',
+      icon: '📅',
+      color: 'from-teal-500 to-cyan-500',
+      bgColor: 'from-teal-50 to-cyan-50',
+      description: 'Today collection report auto-filtered to the logged-in user.',
+      path: '/dashboard/microfinance/reports/today-collection',
+      permissionTokens: ['today collection report', '/dashboard/microfinance/reports/today-collection'],
+    },
+    {
       key: 'mf_widget_report_center_collection',
       name: 'Center Collection Report',
       icon: '🏢',

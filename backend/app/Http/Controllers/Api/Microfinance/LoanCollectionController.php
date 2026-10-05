@@ -25,7 +25,7 @@ class LoanCollectionController extends Controller
     /** @var array<string, true>|null */
     private ?array $activeHolidayLookup = null;
 
-    private function cacheScopeKey(Request $request, bool $includeDeleted, bool $compact, int $limit, int $loanRequestId): string
+    private function cacheScopeKey(Request $request, bool $includeDeleted, bool $compact, int $limit, int $loanRequestId, string $dateFrom, string $dateTo, bool $todayOnly, bool $selfOnly): string
     {
         $user = $request->user();
         $scope = $this->isAdminUser($user)
@@ -39,6 +39,10 @@ class LoanCollectionController extends Controller
             'deleted_' . ($includeDeleted ? '1' : '0'),
             'compact_' . ($compact ? '1' : '0'),
             'loan_' . ($loanRequestId > 0 ? $loanRequestId : 'all'),
+            'date_from_' . ($dateFrom !== '' ? $dateFrom : 'all'),
+            'date_to_' . ($dateTo !== '' ? $dateTo : 'all'),
+            'today_' . ($todayOnly ? '1' : '0'),
+            'self_' . ($selfOnly ? '1' : '0'),
             'limit_' . ($limit > 0 ? $limit : 'all'),
             'page_' . max((int) $request->get('page', 1), 1),
             'per_page_' . max((int) $request->get('per_page', 0), 0),
@@ -215,6 +219,31 @@ class LoanCollectionController extends Controller
         foreach ($user->roles()->pluck('name') as $roleName) {
             $normalized = strtolower(trim((string) $roleName));
             if ($normalized !== '' && str_contains($normalized, 'manager')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isFieldOfficerUser(?object $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $designationName = strtolower(trim((string) optional($user->designation)->name));
+        if ($designationName !== '' && str_contains($designationName, 'field officer')) {
+            return true;
+        }
+
+        if (!method_exists($user, 'roles')) {
+            return false;
+        }
+
+        foreach ($user->roles()->pluck('name') as $roleName) {
+            $normalized = strtolower(trim((string) $roleName));
+            if ($normalized !== '' && str_contains($normalized, 'field officer')) {
                 return true;
             }
         }
@@ -503,10 +532,30 @@ class LoanCollectionController extends Controller
             $perPage = 500;
         }
         $usePagination = $perPage > 0;
+        $todayOnly = filter_var($request->get('today_only', false), FILTER_VALIDATE_BOOLEAN);
+        $selfOnlyRequested = filter_var($request->get('self_only', false), FILTER_VALIDATE_BOOLEAN);
+        $selfOnly = $selfOnlyRequested || $this->isFieldOfficerUser($user);
 
-        $cacheKey = $this->cacheScopeKey($request, $includeDeleted, $compact, $limit, $loanRequestId);
+        $datePattern = '/^\d{4}-\d{2}-\d{2}$/';
+        $dateFrom = trim((string) $request->get('date_from', ''));
+        $dateTo = trim((string) $request->get('date_to', ''));
 
-        $buildPayload = function () use ($request, $includeDeleted, $compact, $limit, $loanRequestId, $usePagination, $perPage, $page) {
+        if (!preg_match($datePattern, $dateFrom)) {
+            $dateFrom = '';
+        }
+        if (!preg_match($datePattern, $dateTo)) {
+            $dateTo = '';
+        }
+
+        if ($todayOnly) {
+            $today = now()->toDateString();
+            $dateFrom = $today;
+            $dateTo = $today;
+        }
+
+        $cacheKey = $this->cacheScopeKey($request, $includeDeleted, $compact, $limit, $loanRequestId, $dateFrom, $dateTo, $todayOnly, $selfOnly);
+
+        $buildPayload = function () use ($request, $includeDeleted, $compact, $limit, $loanRequestId, $usePagination, $perPage, $page, $dateFrom, $dateTo, $selfOnly, $user) {
             $query = MicrofinanceLoanCollection::query()
                 ->orderByDesc('id');
 
@@ -528,6 +577,21 @@ class LoanCollectionController extends Controller
 
             if ($loanRequestId > 0) {
                 $query->where('mf_loan_request_id', $loanRequestId);
+            }
+
+            if ($dateFrom !== '') {
+                $query->whereDate('collection_date', '>=', $dateFrom);
+            }
+
+            if ($dateTo !== '') {
+                $query->whereDate('collection_date', '<=', $dateTo);
+            }
+
+            if ($selfOnly) {
+                $authUserId = (int) ($user?->id ?? 0);
+                if ($authUserId > 0) {
+                    $query->where('created_by', $authUserId);
+                }
             }
 
             $branchId = $this->scopedBranchId($request);

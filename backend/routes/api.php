@@ -45,6 +45,7 @@ use App\Http\Controllers\Api\Microfinance\LoanRequestController as LoanWorkflowR
 use App\Http\Controllers\Api\OfficeCollectionController;
 use App\Http\Controllers\Api\AiAssistantController;
 use App\Http\Controllers\Reports\BranchCollectionReportController;
+use App\Http\Controllers\Reports\EmployeeHierarchyReportController;
 use App\Http\Controllers\Reports\BranchPerformanceReportController;
 use App\Http\Controllers\Reports\BranchRepaymentReportController;
 use App\Http\Controllers\Api\SavingsAccountController;
@@ -60,7 +61,7 @@ Route::get('/user', function (Request $request) {
     $user = $request->user()?->load([
         'branch:id,name',
         'designation:id,name',
-        'employee:id,first_name,last_name,email,branch_id,designation_id',
+        'employee:id,first_name,last_name,email,branch_id,designation_id,monthly_target',
         'employee.wallet:id,employee_id,wallet_no,opening_balance,current_balance,status',
         'roles:id,name,description',
         'roles.permissions:id,name,module,description',
@@ -377,6 +378,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('reports/sms-communications', [AccountingReportsController::class, 'smsCommunicationReport']);
     Route::get('reports/team-member-wallets', [AccountingReportsController::class, 'teamMemberWalletsReport']);
     Route::get('reports/team-member-wallets/{employee}/transactions', [AccountingReportsController::class, 'teamMemberWalletTransactions']);
+    Route::get('reports/employee-hierarchy', [EmployeeHierarchyReportController::class, 'index']);
     Route::get('reports/branch-collection', [BranchCollectionReportController::class, 'index']);
     Route::get('reports/branch-repayment', [BranchRepaymentReportController::class, 'index']);
 

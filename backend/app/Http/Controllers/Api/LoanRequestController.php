@@ -3416,7 +3416,7 @@ class LoanRequestController extends Controller
             'document_charges' => 'nullable|numeric|min:0',
             'stamp_charges' => 'nullable|numeric|min:0',
             'insurance_charges' => 'nullable|numeric|min:0',
-            'charge_payment_mode' => 'required|in:deduct_from_loan,hand_cash',
+            'charge_payment_mode' => 'required|in:deduct_from_loan,hand_cash,wallet',
             'charges_collection_status' => 'nullable|in:pending,done',
             'loan_request_date' => 'required|date',
             'guarantors' => 'nullable|array',
@@ -3569,6 +3569,7 @@ class LoanRequestController extends Controller
 
         $loanAmount = (float)$validated['loan_amount'];
         $totalCharges = (float)($validated['document_charges'] ?? 0)
+            + (float)($validated['extra_document_charges'] ?? 0)
             + (float)($validated['stamp_charges'] ?? 0)
             + (float)($validated['insurance_charges'] ?? 0);
         $hasBankNameColumn = Schema::hasColumn('mf_loan_requests', 'bank_name');
@@ -3654,7 +3655,9 @@ class LoanRequestController extends Controller
                 'stamp_charges' => $validated['stamp_charges'] ?? 0,
                 'insurance_charges' => $validated['insurance_charges'] ?? 0,
                 'charge_payment_mode' => $validated['charge_payment_mode'],
-                'charges_collection_status' => $validated['charges_collection_status'] ?? 'pending',
+                'charges_collection_status' => $validated['charge_payment_mode'] === 'deduct_from_loan'
+                    ? 'done'
+                    : (($validated['charges_collection_status'] ?? 'pending') === 'done' ? 'done' : 'pending'),
                 'net_disbursed_amount' => $validated['charge_payment_mode'] === 'deduct_from_loan'
                     ? $loanAmount - $totalCharges
                     : $loanAmount,
@@ -3695,8 +3698,8 @@ class LoanRequestController extends Controller
             }
 
             if (
-                ($validated['charge_payment_mode'] ?? '') === 'hand_cash'
-                && ($validated['charges_collection_status'] ?? 'pending') === 'done'
+                in_array((string) ($validated['charge_payment_mode'] ?? ''), ['hand_cash', 'wallet'], true)
+                && ($loanRequest->charges_collection_status ?? 'pending') === 'done'
             ) {
                 $this->creditCollectorWalletForCharges($loanRequest, $totalCharges);
             }
@@ -3772,7 +3775,7 @@ class LoanRequestController extends Controller
             'document_charges' => 'nullable|numeric|min:0',
             'stamp_charges' => 'nullable|numeric|min:0',
             'insurance_charges' => 'nullable|numeric|min:0',
-            'charge_payment_mode' => 'required|in:deduct_from_loan,hand_cash',
+            'charge_payment_mode' => 'required|in:deduct_from_loan,hand_cash,wallet',
             'charges_collection_status' => 'nullable|in:pending,done',
             'loan_request_date' => 'nullable|date',
             'loan_end_date' => 'nullable|date',
@@ -3821,6 +3824,7 @@ class LoanRequestController extends Controller
 
         $loanAmount = (float) $validated['loan_amount'];
         $totalCharges = (float) ($validated['document_charges'] ?? 0)
+            + (float) ($validated['extra_document_charges'] ?? 0)
             + (float) ($validated['stamp_charges'] ?? 0)
             + (float) ($validated['insurance_charges'] ?? 0);
         $hasBankNameColumn = Schema::hasColumn('mf_loan_requests', 'bank_name');
@@ -3881,7 +3885,9 @@ class LoanRequestController extends Controller
             'stamp_charges' => $validated['stamp_charges'] ?? 0,
             'insurance_charges' => $validated['insurance_charges'] ?? 0,
             'charge_payment_mode' => $validated['charge_payment_mode'],
-            'charges_collection_status' => $validated['charges_collection_status'] ?? $loanRequest->charges_collection_status ?? 'pending',
+            'charges_collection_status' => $validated['charge_payment_mode'] === 'deduct_from_loan'
+                ? 'done'
+                : (($validated['charges_collection_status'] ?? $loanRequest->charges_collection_status ?? 'pending') === 'done' ? 'done' : 'pending'),
             'net_disbursed_amount' => $validated['charge_payment_mode'] === 'deduct_from_loan'
                 ? max($loanAmount - $totalCharges, 0)
                 : $loanAmount,
@@ -3935,7 +3941,7 @@ class LoanRequestController extends Controller
         $loanRequest->save();
 
         if (
-            ($loanRequest->charge_payment_mode ?? '') === 'hand_cash'
+            in_array((string) ($loanRequest->charge_payment_mode ?? ''), ['hand_cash', 'wallet'], true)
             && ($loanRequest->charges_collection_status ?? 'pending') === 'done'
         ) {
             $this->creditCollectorWalletForCharges($loanRequest, $totalCharges);
@@ -4422,12 +4428,13 @@ class LoanRequestController extends Controller
             $lockedLoanRequest->save();
 
             $totalCharges = (float) ($lockedLoanRequest->document_charges ?? 0)
+                + (float) ($lockedLoanRequest->extra_document_charges ?? 0)
                 + (float) ($lockedLoanRequest->stamp_charges ?? 0)
                 + (float) ($lockedLoanRequest->insurance_charges ?? 0);
 
             $refunded = false;
             if (
-                (string) ($lockedLoanRequest->charge_payment_mode ?? '') === 'hand_cash'
+                in_array((string) ($lockedLoanRequest->charge_payment_mode ?? ''), ['hand_cash', 'wallet'], true)
                 && (string) ($lockedLoanRequest->charges_collection_status ?? 'pending') === 'done'
             ) {
                 $refunded = $this->refundCollectorWalletForCharges($lockedLoanRequest, $totalCharges);

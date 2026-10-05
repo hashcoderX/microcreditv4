@@ -60,6 +60,8 @@ type MFLoanProduct = {
   min_loan_amount?: number | string | null;
   max_loan_amount?: number | string | null;
   document_charge_percentage?: number | string | null;
+  base_document_charge_allowed_months?: number | string | null;
+  additional_document_charge_per_extra_month_percentage?: number | string | null;
   stamp_charge_percentage?: number | string | null;
   insurance_charge_percentage?: number | string | null;
   interest_rate: number;
@@ -129,6 +131,8 @@ export default function MicrofinanceSettingsPage() {
     min_loan_amount: '',
     max_loan_amount: '',
     document_charge_percentage: '',
+    base_document_charge_allowed_months: '1',
+    additional_document_charge_per_extra_month_percentage: '',
     stamp_charge_percentage: '',
     insurance_charge_percentage: '',
     interest_rate: '',
@@ -304,6 +308,8 @@ export default function MicrofinanceSettingsPage() {
       min_loan_amount: '',
       max_loan_amount: '',
       document_charge_percentage: '',
+      base_document_charge_allowed_months: '1',
+      additional_document_charge_per_extra_month_percentage: '',
       stamp_charge_percentage: '',
       insurance_charge_percentage: '',
       interest_rate: '',
@@ -409,6 +415,14 @@ export default function MicrofinanceSettingsPage() {
         max_loan_amount: loanProductForm.max_loan_amount === '' ? null : Number(loanProductForm.max_loan_amount),
         document_charge_percentage:
           loanProductForm.document_charge_percentage === '' ? null : Number(loanProductForm.document_charge_percentage),
+        base_document_charge_allowed_months:
+          loanProductForm.base_document_charge_allowed_months === ''
+            ? null
+            : Number(loanProductForm.base_document_charge_allowed_months),
+        additional_document_charge_per_extra_month_percentage:
+          loanProductForm.additional_document_charge_per_extra_month_percentage === ''
+            ? null
+            : Number(loanProductForm.additional_document_charge_per_extra_month_percentage),
         stamp_charge_percentage:
           loanProductForm.stamp_charge_percentage === '' ? null : Number(loanProductForm.stamp_charge_percentage),
         insurance_charge_percentage:
@@ -1111,9 +1125,9 @@ export default function MicrofinanceSettingsPage() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                 <div className="space-y-1.5">
-                  <label htmlFor="loan_product_document_charge_percentage" className={fieldLabelClass}>Document Charge (%)</label>
+                  <label htmlFor="loan_product_document_charge_percentage" className={`${fieldLabelClass} whitespace-nowrap`} title="Document Charge Percentage">Doc Chg (%)</label>
                   <input
                     id="loan_product_document_charge_percentage"
                     type="number"
@@ -1126,6 +1140,45 @@ export default function MicrofinanceSettingsPage() {
                     className={inputClass}
                   />
                 </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="loan_product_base_document_charge_allowed_months" className={`${fieldLabelClass} whitespace-nowrap`} title="Base Document Charges Allowed Month">Base Doc Month</label>
+                  <input
+                    id="loan_product_base_document_charge_allowed_months"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={loanProductForm.base_document_charge_allowed_months}
+                    onChange={(e) =>
+                      setLoanProductForm({
+                        ...loanProductForm,
+                        base_document_charge_allowed_months: e.target.value,
+                      })
+                    }
+                    placeholder="Enter month"
+                    className={inputClass}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="loan_product_additional_document_charge_per_extra_month_percentage" className={`${fieldLabelClass} whitespace-nowrap`} title="Additional Document Charge Per Extra Month Percentage">Extra Doc Chg/Mon (%)</label>
+                  <input
+                    id="loan_product_additional_document_charge_per_extra_month_percentage"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={loanProductForm.additional_document_charge_per_extra_month_percentage}
+                    onChange={(e) =>
+                      setLoanProductForm({
+                        ...loanProductForm,
+                        additional_document_charge_per_extra_month_percentage: e.target.value,
+                      })
+                    }
+                    placeholder="Enter %"
+                    className={inputClass}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <label htmlFor="loan_product_stamp_charge_percentage" className={fieldLabelClass}>Stamp Charge (%)</label>
                   <input
@@ -1286,6 +1339,8 @@ export default function MicrofinanceSettingsPage() {
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         Charges (%): D {item.document_charge_percentage !== null && item.document_charge_percentage !== undefined && String(item.document_charge_percentage) !== '' ? Number(item.document_charge_percentage).toFixed(2) : '0.00'}%
+                        {' '}| D+ {item.additional_document_charge_per_extra_month_percentage !== null && item.additional_document_charge_per_extra_month_percentage !== undefined && String(item.additional_document_charge_per_extra_month_percentage) !== '' ? Number(item.additional_document_charge_per_extra_month_percentage).toFixed(2) : '0.00'}%/month
+                        {' '}| Base Month {item.base_document_charge_allowed_months !== null && item.base_document_charge_allowed_months !== undefined && String(item.base_document_charge_allowed_months) !== '' ? Number(item.base_document_charge_allowed_months) : 1}
                         {' '}| S {item.stamp_charge_percentage !== null && item.stamp_charge_percentage !== undefined && String(item.stamp_charge_percentage) !== '' ? Number(item.stamp_charge_percentage).toFixed(2) : '0.00'}%
                         {' '}| I {item.insurance_charge_percentage !== null && item.insurance_charge_percentage !== undefined && String(item.insurance_charge_percentage) !== '' ? Number(item.insurance_charge_percentage).toFixed(2) : '0.00'}%
                       </p>
@@ -1305,6 +1360,14 @@ export default function MicrofinanceSettingsPage() {
                               item.document_charge_percentage === null || item.document_charge_percentage === undefined
                                 ? ''
                                 : String(item.document_charge_percentage),
+                            base_document_charge_allowed_months:
+                              item.base_document_charge_allowed_months === null || item.base_document_charge_allowed_months === undefined
+                                ? '1'
+                                : String(item.base_document_charge_allowed_months),
+                            additional_document_charge_per_extra_month_percentage:
+                              item.additional_document_charge_per_extra_month_percentage === null || item.additional_document_charge_per_extra_month_percentage === undefined
+                                ? ''
+                                : String(item.additional_document_charge_per_extra_month_percentage),
                             stamp_charge_percentage:
                               item.stamp_charge_percentage === null || item.stamp_charge_percentage === undefined
                                 ? ''

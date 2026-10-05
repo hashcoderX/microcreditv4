@@ -27,6 +27,8 @@ type MFLoanProduct = {
   amount?: number | string | null;
   principal_amount?: number | string | null;
   document_charge_percentage?: number | string | null;
+  base_document_charge_allowed_months?: number | string | null;
+  additional_document_charge_per_extra_month_percentage?: number | string | null;
   stamp_charge_percentage?: number | string | null;
   insurance_charge_percentage?: number | string | null;
   interest_rate: number;
@@ -117,9 +119,10 @@ type ExistingLoanRequest = {
   refundable_amount?: number | string;
   installment_amount?: number | string;
   document_charges?: number | string;
+  extra_document_charges?: number | string;
   stamp_charges?: number | string;
   insurance_charges?: number | string;
-  charge_payment_mode?: 'deduct_from_loan' | 'hand_cash' | string;
+  charge_payment_mode?: 'deduct_from_loan' | 'hand_cash' | 'wallet' | string;
   charges_collection_status?: 'pending' | 'done' | string;
   refund_option?: 'day' | 'week' | 'month' | string;
   interest_type?: 'flat' | 'reducing' | string;
@@ -173,9 +176,10 @@ type RequestedLoanEditForm = {
   refundable_amount: string;
   installment_amount: string;
   document_charges: string;
+  extra_document_charges: string;
   stamp_charges: string;
   insurance_charges: string;
-  charge_payment_mode: 'deduct_from_loan' | 'hand_cash';
+  charge_payment_mode: 'deduct_from_loan' | 'hand_cash' | 'wallet';
   charges_collection_status: 'pending' | 'done';
   refund_option: 'day' | 'week' | 'month';
   interest_type: 'flat' | 'reducing';
@@ -314,6 +318,58 @@ const calculateChargeFromPercentage = (loanAmount: number, percentage: unknown):
     return '0';
   }
   return ((loanAmount * pct) / 100).toFixed(2);
+};
+
+const calculateDocumentChargeFromProduct = (
+  loanAmount: number,
+  termsCount: number,
+  refundOption: 'day' | 'week' | 'month',
+  assumedMonthDays: number,
+  product: MFLoanProduct
+): string => {
+  if (!Number.isFinite(loanAmount) || loanAmount <= 0) {
+    return '0';
+  }
+
+  const basePct = Number(product.document_charge_percentage || 0);
+  const extraPctPerMonth = Number(product.additional_document_charge_per_extra_month_percentage || 0);
+  const baseMonths = Math.max(Number(product.base_document_charge_allowed_months || 1), 0);
+  const safeTerms = Math.max(Number(termsCount || 0), 0);
+
+  if (!Number.isFinite(basePct) || basePct < 0) {
+    return '0';
+  }
+
+  const safeMonthDays = Math.max(Number(assumedMonthDays || 30), 1);
+  const installmentUnitDays = resolveUnitDays(refundOption, safeMonthDays);
+  const termMonths = (safeTerms * installmentUnitDays) / safeMonthDays;
+  const extraMonths = Math.max(termMonths - baseMonths, 0);
+  const effectivePct = basePct + extraMonths * Math.max(Number.isFinite(extraPctPerMonth) ? extraPctPerMonth : 0, 0);
+
+  return ((loanAmount * Math.max(effectivePct, 0)) / 100).toFixed(2);
+};
+
+const calculateExtraDocumentChargeFromProduct = (
+  loanAmount: number,
+  termsCount: number,
+  refundOption: 'day' | 'week' | 'month',
+  assumedMonthDays: number,
+  product: MFLoanProduct
+): string => {
+  if (!Number.isFinite(loanAmount) || loanAmount <= 0) {
+    return '0';
+  }
+
+  const extraPctPerMonth = Number(product.additional_document_charge_per_extra_month_percentage || 0);
+  const baseMonths = Math.max(Number(product.base_document_charge_allowed_months || 1), 0);
+  const safeTerms = Math.max(Number(termsCount || 0), 0);
+  const safeMonthDays = Math.max(Number(assumedMonthDays || 30), 1);
+  const installmentUnitDays = resolveUnitDays(refundOption, safeMonthDays);
+  const termMonths = (safeTerms * installmentUnitDays) / safeMonthDays;
+  const extraMonths = Math.max(termMonths - baseMonths, 0);
+  const effectiveExtraPct = extraMonths * Math.max(Number.isFinite(extraPctPerMonth) ? extraPctPerMonth : 0, 0);
+
+  return ((loanAmount * effectiveExtraPct) / 100).toFixed(2);
 };
 
 const isAllowedImageType = (file: File) => {
@@ -535,6 +591,7 @@ export default function RequestLoanPage() {
       refundable_amount: '0',
       installment_amount: '0',
       document_charges: '0',
+      extra_document_charges: '0',
       stamp_charges: '0',
       insurance_charges: '0',
       charge_payment_mode: 'hand_cash',
@@ -585,6 +642,7 @@ export default function RequestLoanPage() {
     refundable_amount: '',
     installment_amount: '',
     document_charges: '',
+    extra_document_charges: '',
     stamp_charges: '',
     insurance_charges: '',
     charge_payment_mode: 'hand_cash',
@@ -1238,7 +1296,20 @@ export default function RequestLoanPage() {
         terms_count: String(selected.terms_count ?? ''),
         refund_option: selected.refund_option || 'month',
         assumed_month_days: Number(selected.assumed_month_days || 30),
-        document_charges: calculateChargeFromPercentage(resolvedLoanAmount, selected.document_charge_percentage),
+        document_charges: calculateDocumentChargeFromProduct(
+          resolvedLoanAmount,
+          Number(selected.terms_count ?? 0),
+          (selected.refund_option || 'month') as 'day' | 'week' | 'month',
+          Number(selected.assumed_month_days || 30),
+          selected
+        ),
+        extra_document_charges: calculateExtraDocumentChargeFromProduct(
+          resolvedLoanAmount,
+          Number(selected.terms_count ?? 0),
+          (selected.refund_option || 'month') as 'day' | 'week' | 'month',
+          Number(selected.assumed_month_days || 30),
+          selected
+        ),
         stamp_charges: calculateChargeFromPercentage(resolvedLoanAmount, selected.stamp_charge_percentage),
         insurance_charges: calculateChargeFromPercentage(resolvedLoanAmount, selected.insurance_charge_percentage),
       };
@@ -1251,9 +1322,19 @@ export default function RequestLoanPage() {
     }
 
     const resolvedLoanAmount = Number(form.loan_amount || 0);
-    const nextDocumentCharges = calculateChargeFromPercentage(
+    const nextDocumentCharges = calculateDocumentChargeFromProduct(
       resolvedLoanAmount,
-      selectedLoanProduct.document_charge_percentage
+      Number(form.terms_count || 0),
+      form.refund_option as 'day' | 'week' | 'month',
+      Number(form.assumed_month_days || 30),
+      selectedLoanProduct
+    );
+    const nextExtraDocumentCharges = calculateExtraDocumentChargeFromProduct(
+      resolvedLoanAmount,
+      Number(form.terms_count || 0),
+      form.refund_option as 'day' | 'week' | 'month',
+      Number(form.assumed_month_days || 30),
+      selectedLoanProduct
     );
     const nextStampCharges = calculateChargeFromPercentage(
       resolvedLoanAmount,
@@ -1266,6 +1347,7 @@ export default function RequestLoanPage() {
 
     if (
       form.document_charges === nextDocumentCharges &&
+      form.extra_document_charges === nextExtraDocumentCharges &&
       form.stamp_charges === nextStampCharges &&
       form.insurance_charges === nextInsuranceCharges
     ) {
@@ -1275,10 +1357,21 @@ export default function RequestLoanPage() {
     setForm((prev) => ({
       ...prev,
       document_charges: nextDocumentCharges,
+      extra_document_charges: nextExtraDocumentCharges,
       stamp_charges: nextStampCharges,
       insurance_charges: nextInsuranceCharges,
     }));
-  }, [selectedLoanProduct, form.loan_amount, form.document_charges, form.stamp_charges, form.insurance_charges]);
+  }, [
+    selectedLoanProduct,
+    form.loan_amount,
+    form.terms_count,
+    form.refund_option,
+    form.assumed_month_days,
+    form.document_charges,
+    form.extra_document_charges,
+    form.stamp_charges,
+    form.insurance_charges,
+  ]);
 
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
@@ -1726,6 +1819,7 @@ export default function RequestLoanPage() {
   const activeGuarantorCount = guarantors.filter((g) => g.name.trim() !== '').length;
   const totalCharges =
     Number(form.document_charges || 0) +
+    Number(form.extra_document_charges || 0) +
     Number(form.stamp_charges || 0) +
     Number(form.insurance_charges || 0);
   const netDisbursedAmount = form.charge_payment_mode === 'deduct_from_loan'
@@ -2933,6 +3027,7 @@ export default function RequestLoanPage() {
           refundable_amount: Number(form.refundable_amount),
           installment_amount: Number(form.installment_amount),
           document_charges: Number(form.document_charges || 0),
+          extra_document_charges: Number(form.extra_document_charges || 0),
           stamp_charges: Number(form.stamp_charges || 0),
           insurance_charges: Number(form.insurance_charges || 0),
           charge_payment_mode: form.charge_payment_mode,
@@ -3189,8 +3284,16 @@ export default function RequestLoanPage() {
       return;
     }
 
-    const chargePaymentMode = target.charge_payment_mode === 'deduct_from_loan' ? 'deduct_from_loan' : 'hand_cash';
-    const collectionStatus = target.charges_collection_status === 'done' ? 'done' : 'pending';
+    const chargePaymentMode =
+      target.charge_payment_mode === 'deduct_from_loan' || target.charge_payment_mode === 'wallet'
+        ? target.charge_payment_mode
+        : 'hand_cash';
+    const collectionStatus =
+      chargePaymentMode === 'deduct_from_loan'
+        ? 'done'
+        : target.charges_collection_status === 'done'
+          ? 'done'
+          : 'pending';
     const refundOption = target.refund_option === 'day' || target.refund_option === 'week' || target.refund_option === 'month'
       ? target.refund_option
       : 'month';
@@ -3222,6 +3325,7 @@ export default function RequestLoanPage() {
         refundable_amount: String(Number(target.refundable_amount || 0)),
         installment_amount: String(Number(target.installment_amount || 0)),
         document_charges: String(Number(target.document_charges || 0)),
+        extra_document_charges: String(Number(target.extra_document_charges || 0)),
         stamp_charges: String(Number(target.stamp_charges || 0)),
         insurance_charges: String(Number(target.insurance_charges || 0)),
         charge_payment_mode: chargePaymentMode,
@@ -3291,6 +3395,7 @@ export default function RequestLoanPage() {
           refundable_amount: Number(formData.refundable_amount || 0),
           installment_amount: Number(formData.installment_amount || 0),
           document_charges: Number(formData.document_charges || 0),
+          extra_document_charges: Number(formData.extra_document_charges || 0),
           stamp_charges: Number(formData.stamp_charges || 0),
           insurance_charges: Number(formData.insurance_charges || 0),
           charge_payment_mode: formData.charge_payment_mode,
@@ -4647,6 +4752,11 @@ export default function RequestLoanPage() {
                               <span className="font-semibold text-slate-900">Charges (%):</span>{' '}
                               D {Number(selectedLoanProduct.document_charge_percentage || 0).toFixed(2)}% | S {Number(selectedLoanProduct.stamp_charge_percentage || 0).toFixed(2)}% | I {Number(selectedLoanProduct.insurance_charge_percentage || 0).toFixed(2)}%
                             </p>
+                            <p>
+                              <span className="font-semibold text-slate-900">Extra Doc Rule:</span>{' '}
+                              Base {Number(selectedLoanProduct.base_document_charge_allowed_months || 1)} month,
+                              +{Number(selectedLoanProduct.additional_document_charge_per_extra_month_percentage || 0).toFixed(2)}% per extra month
+                            </p>
                           </div>
                         ) : (
                           <p>Select a product to auto-fill defaults. You can still modify values below.</p>
@@ -4751,6 +4861,10 @@ export default function RequestLoanPage() {
                           <input className="input" type="number" min="0" step="0.01" placeholder="Auto from percentage" value={form.document_charges} readOnly />
                         </div>
                         <div>
+                          <label className="fieldLabel">Extra Document Charges</label>
+                          <input className="input bg-slate-100" type="number" min="0" step="0.01" placeholder="Auto by extra term months" value={form.extra_document_charges} readOnly />
+                        </div>
+                        <div>
                           <label className="fieldLabel">Stamp Charges</label>
                           <input className="input" type="number" min="0" step="0.01" placeholder="Auto from percentage" value={form.stamp_charges} readOnly />
                         </div>
@@ -4760,8 +4874,21 @@ export default function RequestLoanPage() {
                         </div>
                         <div>
                           <label className="fieldLabel">Charges Collection Mode *</label>
-                          <select className="input" value={form.charge_payment_mode} onChange={(e) => setForm((p) => ({ ...p, charge_payment_mode: e.target.value }))} required>
+                          <select
+                            className="input"
+                            value={form.charge_payment_mode}
+                            onChange={(e) => {
+                              const mode = e.target.value;
+                              setForm((p) => ({
+                                ...p,
+                                charge_payment_mode: mode,
+                                charges_collection_status: mode === 'deduct_from_loan' ? 'done' : 'pending',
+                              }));
+                            }}
+                            required
+                          >
                             <option value="hand_cash">Collect by Hand Cash</option>
+                            <option value="wallet">Collect to Wallet</option>
                             <option value="deduct_from_loan">Reduce from Loan Amount</option>
                           </select>
                         </div>
@@ -4783,6 +4910,7 @@ export default function RequestLoanPage() {
                             <input
                               type="checkbox"
                               checked={form.charges_collection_status === 'done'}
+                              disabled={form.charge_payment_mode === 'deduct_from_loan'}
                               onChange={(e) =>
                                 setForm((p) => ({
                                   ...p,
@@ -4900,6 +5028,10 @@ export default function RequestLoanPage() {
                           <input className="input bg-slate-100" type="number" min="0" step="0.01" placeholder="Auto from percentage" value={form.document_charges} readOnly />
                         </div>
                         <div>
+                          <label className="fieldLabel">Extra Document Charges</label>
+                          <input className="input bg-slate-100" type="number" min="0" step="0.01" placeholder="Auto by extra term months" value={form.extra_document_charges} readOnly />
+                        </div>
+                        <div>
                           <label className="fieldLabel">Stamp Charges</label>
                           <input className="input bg-slate-100" type="number" min="0" step="0.01" placeholder="Auto from percentage" value={form.stamp_charges} readOnly />
                         </div>
@@ -4909,8 +5041,21 @@ export default function RequestLoanPage() {
                         </div>
                         <div>
                           <label className="fieldLabel">Charges Collection Mode *</label>
-                          <select className="input bg-slate-100" value={form.charge_payment_mode} disabled>
+                          <select
+                            className="input"
+                            value={form.charge_payment_mode}
+                            onChange={(e) => {
+                              const mode = e.target.value;
+                              setForm((p) => ({
+                                ...p,
+                                charge_payment_mode: mode,
+                                charges_collection_status: mode === 'deduct_from_loan' ? 'done' : 'pending',
+                              }));
+                            }}
+                            required
+                          >
                             <option value="hand_cash">Collect by Hand Cash</option>
+                            <option value="wallet">Collect to Wallet</option>
                             <option value="deduct_from_loan">Reduce from Loan Amount</option>
                           </select>
                         </div>
@@ -4924,11 +5069,17 @@ export default function RequestLoanPage() {
                         </div>
                         <div className="md:col-span-2">
                           <label className="fieldLabel">Charges Collection</label>
-                          <label className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-sm font-semibold text-emerald-900 opacity-80">
+                          <label className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-sm font-semibold text-emerald-900">
                             <input
                               type="checkbox"
                               checked={form.charges_collection_status === 'done'}
-                              disabled
+                              disabled={form.charge_payment_mode === 'deduct_from_loan'}
+                              onChange={(e) =>
+                                setForm((p) => ({
+                                  ...p,
+                                  charges_collection_status: e.target.checked ? 'done' : 'pending',
+                                }))
+                              }
                             />
                             Charges collection done
                           </label>
@@ -5134,7 +5285,7 @@ export default function RequestLoanPage() {
                   <p><span className="font-semibold">Center:</span> {selectedCenter?.name || '-'}</p>
                   <p><span className="font-semibold">Group:</span> {selectedGroup?.name || '-'}</p>
                   <p><span className="font-semibold">Guarantors:</span> {activeGuarantorCount}</p>
-                  <p><span className="font-semibold">Charges Mode:</span> {form.charge_payment_mode === 'deduct_from_loan' ? 'Reduce from loan' : 'Hand cash'}</p>
+                  <p><span className="font-semibold">Charges Mode:</span> {form.charge_payment_mode === 'deduct_from_loan' ? 'Reduce from loan' : form.charge_payment_mode === 'wallet' ? 'Wallet' : 'Hand cash'}</p>
                 </div>
 
                 <p className="text-xs text-slate-500">
@@ -5577,8 +5728,23 @@ export default function RequestLoanPage() {
                   </div>
                   <div>
                     <label className="fieldLabel">Collection Mode *</label>
-                    <select className="input" value={requestedLoanEditModal.form.charge_payment_mode} onChange={(e) => setRequestedLoanEditField('charge_payment_mode', e.target.value as RequestedLoanEditForm['charge_payment_mode'])}>
+                    <select
+                      className="input"
+                      value={requestedLoanEditModal.form.charge_payment_mode}
+                      onChange={(e) => {
+                        const mode = e.target.value as RequestedLoanEditForm['charge_payment_mode'];
+                        setRequestedLoanEditModal((prev) => ({
+                          ...prev,
+                          form: {
+                            ...prev.form,
+                            charge_payment_mode: mode,
+                            charges_collection_status: mode === 'deduct_from_loan' ? 'done' : 'pending',
+                          },
+                        }));
+                      }}
+                    >
                       <option value="hand_cash">Hand Cash</option>
+                      <option value="wallet">Wallet</option>
                       <option value="deduct_from_loan">Deduct From Loan</option>
                     </select>
                   </div>
@@ -5592,7 +5758,12 @@ export default function RequestLoanPage() {
                   </div>
                   <div>
                     <label className="fieldLabel">Charges Collection Status</label>
-                    <select className="input" value={requestedLoanEditModal.form.charges_collection_status} onChange={(e) => setRequestedLoanEditField('charges_collection_status', e.target.value as RequestedLoanEditForm['charges_collection_status'])}>
+                    <select
+                      className="input"
+                      value={requestedLoanEditModal.form.charges_collection_status}
+                      onChange={(e) => setRequestedLoanEditField('charges_collection_status', e.target.value as RequestedLoanEditForm['charges_collection_status'])}
+                      disabled={requestedLoanEditModal.form.charge_payment_mode === 'deduct_from_loan'}
+                    >
                       <option value="pending">Pending</option>
                       <option value="done">Done</option>
                     </select>
@@ -5600,6 +5771,10 @@ export default function RequestLoanPage() {
                   <div>
                     <label className="fieldLabel">Document Charges</label>
                     <input className="input" type="number" min="0" step="0.01" value={requestedLoanEditModal.form.document_charges} onChange={(e) => setRequestedLoanEditField('document_charges', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="fieldLabel">Extra Document Charges</label>
+                    <input className="input" type="number" min="0" step="0.01" value={requestedLoanEditModal.form.extra_document_charges} onChange={(e) => setRequestedLoanEditField('extra_document_charges', e.target.value)} />
                   </div>
                   <div>
                     <label className="fieldLabel">Stamp Charges</label>
