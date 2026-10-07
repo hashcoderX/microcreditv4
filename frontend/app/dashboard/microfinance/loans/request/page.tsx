@@ -210,7 +210,7 @@ const API_BASE = getApiBaseUrl();
 const INTEREST_RATE_MAX_DECIMALS = 7;
 const DEFAULT_PROFILE_COMPLETION_MIN = 30;
 const EVALUATION_PAYLOAD_VERSION = 2;
-const LOAN_REQUEST_MASTER_CACHE_KEY = 'mf_loan_request_master_cache_v1';
+const LOAN_REQUEST_MASTER_CACHE_KEY = 'mf_loan_request_master_cache_v2';
 const LOAN_REQUEST_CACHE_NETWORK_COOLDOWN_MS = 30 * 1000;
 
 type LoanRequestMasterCache = {
@@ -1649,7 +1649,7 @@ export default function RequestLoanPage() {
         void (async () => {
           try {
             const [customerRes, loanRequestRes] = await Promise.all([
-              axios.get(`${API_BASE}/customers`, { headers, params: { per_page: 1000 } }),
+              axios.get(`${API_BASE}/customers`, { headers, params: { per_page: 1000, include_all_customers: 1 } }),
               axios.get(`${API_BASE}/microfinance/loan-requests`, { headers }),
             ]);
 
@@ -1902,6 +1902,7 @@ export default function RequestLoanPage() {
         const response = await axios.get(`${API_BASE}/customers/finance-search`, {
           headers,
           params: {
+            include_all_customers: 1,
             customer_no: query,
             nic_passport: query,
             name: query,

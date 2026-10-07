@@ -513,39 +513,20 @@ class MortgageController extends Controller
             $principal = (float) ($validated['requested_amount'] ?? 0);
         }
 
-        $annualRate = ((float) ($validated['interest_rate'] ?? 0)) / 100;
+        $ratePercent = (float) ($validated['interest_rate'] ?? 0);
         $tenureMonths = max(1, (int) ($validated['tenure_months'] ?? 1));
         $interestType = (string) ($validated['interest_type'] ?? 'fixed');
         $installmentFrequency = (string) ($validated['installment_frequency'] ?? 'monthly');
         $interestCalculationFrequency = (string) ($validated['interest_calculation_frequency'] ?? 'monthly');
 
-        $installmentsPerYearMap = [
-            'daily' => 365,
-            'weekly' => 52,
-            'monthly' => 12,
-            'quarterly' => 4,
-            'yearly' => 1,
-        ];
-
-        $calculationPeriodsPerYearMap = [
-            'daily' => 365,
-            'weekly' => 52,
-            'monthly' => 12,
-            'yearly' => 1,
-        ];
-
-        $installmentsPerYear = $installmentsPerYearMap[$installmentFrequency] ?? 12;
-        $calcPeriodsPerYear = $calculationPeriodsPerYearMap[$interestCalculationFrequency] ?? 12;
+        $installmentsPerYear = $this->installmentsPerYear($installmentFrequency);
+        $calcPeriodsPerYear = $this->installmentsPerYear($interestCalculationFrequency);
 
         $years = $tenureMonths / 12;
         $installmentCount = max(1, (int) round($years * $installmentsPerYear));
 
-        // Convert interest calculation frequency to an effective annual rate, then to installment-period rate.
-        $effectiveAnnualRate = $calcPeriodsPerYear > 0
-            ? pow(1 + ($annualRate / $calcPeriodsPerYear), $calcPeriodsPerYear) - 1
-            : $annualRate;
-
-        $periodRate = pow(1 + $effectiveAnnualRate, 1 / $installmentsPerYear) - 1;
+        $calculationPeriodRate = max($ratePercent, 0) / 100;
+        $periodRate = $this->getPeriodInterestRate($ratePercent, $interestCalculationFrequency, $installmentFrequency);
 
         if ($interestType === 'reducing') {
             if ($periodRate <= 0) {
@@ -557,8 +538,9 @@ class MortgageController extends Controller
             return round($installment, 2);
         }
 
-        // Fixed/flat interest uses annual rate over tenure on full principal.
-        $totalInterest = $principal * $annualRate * $years;
+        // Fixed/flat interest uses period rate over configured calculation periods.
+        $calculationPeriodsInTenure = max(1, (int) round($years * $calcPeriodsPerYear));
+        $totalInterest = $principal * $calculationPeriodRate * $calculationPeriodsInTenure;
         $installment = ($principal + $totalInterest) / $installmentCount;
         return round($installment, 2);
     }
@@ -1680,22 +1662,43 @@ class MortgageController extends Controller
             return 0.0;
         }
 
-        $annualRate = max(0, (float) ($mortgage->interest_rate ?? 0)) / 100;
-        return max(round($principal * $annualRate, 2), 0);
+        // Interest rate is treated as the rate for one configured calculation period.
+        $periodRate = max(0, (float) ($mortgage->interest_rate ?? 0)) / 100;
+        return max(round($principal * $periodRate, 2), 0);
     }
 
-    private function getPeriodInterestRate(float $annualRatePercent, string $frequency): float
+    private function getPeriodInterestRate(float $ratePercent, string $calculationFrequency, string $targetFrequency): float
     {
-        $annualRate = $annualRatePercent / 100;
-        $periods = match (strtolower(trim($frequency))) {
+        $basePeriodRate = max($ratePercent, 0) / 100;
+        $calcPeriodsPerYear = match (strtolower(trim($calculationFrequency))) {
             'daily' => 365,
             'weekly' => 52,
+            'monthly' => 12,
             'quarterly' => 4,
             'yearly' => 1,
             default => 12,
         };
 
-        return $periods > 0 ? ($annualRate / $periods) : 0.0;
+        $targetPeriodsPerYear = match (strtolower(trim($targetFrequency))) {
+            'daily' => 365,
+            'weekly' => 52,
+            'monthly' => 12,
+            'quarterly' => 4,
+            'yearly' => 1,
+            default => 12,
+        };
+
+        if ($basePeriodRate <= 0 || $calcPeriodsPerYear <= 0 || $targetPeriodsPerYear <= 0) {
+            return 0.0;
+        }
+
+        if ($calcPeriodsPerYear === $targetPeriodsPerYear) {
+            return $basePeriodRate;
+        }
+
+        $effectiveAnnualRate = pow(1 + $basePeriodRate, $calcPeriodsPerYear) - 1;
+
+        return pow(1 + $effectiveAnnualRate, 1 / $targetPeriodsPerYear) - 1;
     }
 
     private function installmentsPerYear(string $frequency): int
@@ -1730,9 +1733,11 @@ class MortgageController extends Controller
         $principal = (float) ($mortgage->approved_amount ?? $mortgage->requested_amount ?? 0);
         $tenureMonths = max(1, (int) ($mortgage->tenure_months ?? 1));
         $frequency = (string) ($mortgage->installment_frequency ?? 'monthly');
+        $interestCalculationFrequency = (string) ($mortgage->interest_calculation_frequency ?? 'monthly');
+        $ratePercent = (float) ($mortgage->interest_rate ?? 0);
         $installmentsPerYear = $this->installmentsPerYear($frequency);
         $installmentCount = max(1, (int) round(($tenureMonths / 12) * $installmentsPerYear));
-        $annualRate = (float) ($mortgage->interest_rate ?? 0) / 100;
+        $calculationPeriodsPerYear = $this->installmentsPerYear($interestCalculationFrequency);
 
         if ($principal <= 0) {
             return;
@@ -1740,8 +1745,10 @@ class MortgageController extends Controller
 
         $remainingPrincipal = $principal;
         $principalPerInstallment = round($principal / $installmentCount, 2);
-        $periodRate = $this->getPeriodInterestRate((float) ($mortgage->interest_rate ?? 0), (string) ($mortgage->interest_calculation_frequency ?? 'monthly'));
-        $fixedInterestTotal = $principal * $annualRate * ($tenureMonths / 12);
+        $periodRate = $this->getPeriodInterestRate($ratePercent, $interestCalculationFrequency, $frequency);
+        $fixedRatePerCalcPeriod = max($ratePercent, 0) / 100;
+        $fixedCalculationPeriodsInTenure = max(1, (int) round(($tenureMonths / 12) * $calculationPeriodsPerYear));
+        $fixedInterestTotal = $principal * $fixedRatePerCalcPeriod * $fixedCalculationPeriodsInTenure;
         $fixedInterestPerInstallment = round($fixedInterestTotal / $installmentCount, 2);
 
         $dueDate = Carbon::parse($mortgage->approved_at ?? $mortgage->created_at ?? now());
@@ -1827,7 +1834,11 @@ class MortgageController extends Controller
         }
 
         $outstanding = $startingOutstandingPrincipal;
-        $periodRate = $this->getPeriodInterestRate((float) ($mortgage->interest_rate ?? 0), (string) ($mortgage->interest_calculation_frequency ?? 'monthly'));
+        $periodRate = $this->getPeriodInterestRate(
+            (float) ($mortgage->interest_rate ?? 0),
+            (string) ($mortgage->interest_calculation_frequency ?? 'monthly'),
+            (string) ($mortgage->installment_frequency ?? 'monthly')
+        );
 
         foreach ($pendingSchedules as $schedule) {
             $principalPart = (float) $schedule->principal;

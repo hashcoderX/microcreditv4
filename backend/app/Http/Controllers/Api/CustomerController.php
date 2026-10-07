@@ -17,6 +17,12 @@ use Illuminate\Support\Facades\Storage;
 
 class CustomerController extends Controller
 {
+    private function shouldIncludeAllCustomers(Request $request): bool
+    {
+        // Opt-in flag for modules that require cross-branch customer lookup.
+        return $request->boolean('include_all_customers') || $request->boolean('all_customers');
+    }
+
     private function defaultCompanyId(): int
     {
         $preferred = (int) Company::query()
@@ -92,6 +98,10 @@ class CustomerController extends Controller
 
     private function applyCustomerAccessScope(Builder $query, Request $request): Builder
     {
+        if ($this->shouldIncludeAllCustomers($request)) {
+            return $query;
+        }
+
         $branchId = $this->scopedBranchId($request);
         if ($branchId !== null) {
             $query->where('branch_id', $branchId);

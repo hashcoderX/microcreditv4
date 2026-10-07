@@ -116,6 +116,19 @@ const hasPositiveNumber = (value: string) => {
   return Number.isFinite(parsed) && parsed > 0;
 };
 
+const parseNumericInput = (value: string) => {
+  const normalized = String(value || "").replace(/,/g, "").trim();
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const formatMoney = (value: number) => {
+  return Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+};
+
 const generateFileCode = () => {
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -872,6 +885,114 @@ export default function CreateMortgage() {
     legalDocuments.length,
   ]);
 
+  const loanPreview = useMemo(() => {
+    const requested = parseNumericInput(requestedAmount);
+    const approved = parseNumericInput(approvedAmount);
+    const principal = approved > 0 ? approved : requested;
+    const annualInterestRate = parseNumericInput(interestRate);
+    const tenure = Math.max(parseNumericInput(tenureMonths), 0);
+
+    const periodsPerYear =
+      installmentFrequency === "daily"
+        ? 365
+        : installmentFrequency === "weekly"
+          ? 52
+          : installmentFrequency === "monthly"
+            ? 12
+            : installmentFrequency === "quarterly"
+              ? 4
+              : 1;
+
+    const calcPeriodsPerYear =
+      interestCalculationFrequency === "daily"
+        ? 365
+        : interestCalculationFrequency === "weekly"
+          ? 52
+          : interestCalculationFrequency === "yearly"
+            ? 1
+            : 12;
+
+    const totalInstallments = tenure > 0
+      ? Math.max(Math.round((tenure / 12) * periodsPerYear), 1)
+      : 0;
+
+    const processing = Math.max(parseNumericInput(processingFee), 0);
+    const insurance = Math.max(parseNumericInput(insuranceFee), 0);
+    const charges = processing + insurance;
+
+    let loanOnlyInterest = 0;
+    let loanOnlyRepayable = principal;
+    let installmentExcludingFees = 0;
+    let monthlyInterestEstimate = 0;
+    let yearlyInterestEstimate = 0;
+
+    if (principal > 0 && totalInstallments > 0) {
+      const periodicRate = annualInterestRate / 100;
+      if (interestType === "fixed") {
+        const calcPeriodsInTenure = Math.max(Math.round((tenure / 12) * calcPeriodsPerYear), 1);
+        loanOnlyInterest = principal * periodicRate * calcPeriodsInTenure;
+        loanOnlyRepayable = principal + loanOnlyInterest;
+        installmentExcludingFees = loanOnlyRepayable / totalInstallments;
+
+        const interestPerCalcPeriod = principal * periodicRate;
+        monthlyInterestEstimate = calcPeriodsPerYear > 0 ? interestPerCalcPeriod * (calcPeriodsPerYear / 12) : 0;
+        yearlyInterestEstimate = interestPerCalcPeriod * calcPeriodsPerYear;
+      } else {
+        const calcPeriodRate = periodicRate;
+        const effectiveAnnualRate = calcPeriodsPerYear > 0
+          ? Math.pow(1 + calcPeriodRate, calcPeriodsPerYear) - 1
+          : calcPeriodRate;
+        const periodRate = periodsPerYear > 0
+          ? Math.pow(1 + effectiveAnnualRate, 1 / periodsPerYear) - 1
+          : 0;
+        if (periodRate > 0) {
+          const growth = Math.pow(1 + periodRate, totalInstallments);
+          installmentExcludingFees = (principal * periodRate * growth) / (growth - 1);
+        } else {
+          installmentExcludingFees = principal / totalInstallments;
+        }
+
+        loanOnlyRepayable = installmentExcludingFees * totalInstallments;
+        loanOnlyInterest = Math.max(loanOnlyRepayable - principal, 0);
+
+        monthlyInterestEstimate = tenure > 0 ? loanOnlyInterest / tenure : 0;
+        yearlyInterestEstimate = monthlyInterestEstimate * 12;
+      }
+    }
+
+    const totalRefund = loanOnlyRepayable + charges;
+    const installmentWithFees = totalInstallments > 0 ? totalRefund / totalInstallments : 0;
+
+    return {
+      requested,
+      approved,
+      principal,
+      annualInterestRate,
+      tenure,
+      totalInstallments,
+      processing,
+      insurance,
+      charges,
+      loanOnlyInterest,
+      loanOnlyRepayable,
+      installmentExcludingFees,
+      installmentWithFees,
+      monthlyInterestEstimate,
+      yearlyInterestEstimate,
+      totalRefund,
+    };
+  }, [
+    requestedAmount,
+    approvedAmount,
+    interestRate,
+    tenureMonths,
+    installmentFrequency,
+    interestCalculationFrequency,
+    interestType,
+    processingFee,
+    insuranceFee,
+  ]);
+
   const statsCards = [
     { key: "stat_current_step", label: "Current Step", value: STEP_LABELS[step], tone: "text-cyan-700", bg: "from-cyan-500/10 to-blue-500/5" },
     { key: "stat_steps_complete", label: "Steps Complete", value: `${progressStats.completedSteps}/${progressStats.totalSteps}`, tone: "text-emerald-700", bg: "from-emerald-500/10 to-green-500/5" },
@@ -1502,8 +1623,9 @@ export default function CreateMortgage() {
 
           {step === "loanCollateral" && isActiveStepWidgetVisible && (
             <>
-            <div>
-              <p className={sectionTitleClass}>Loan Terms & Repayment</p>
+            <div className="grid grid-cols-1 gap-5 xl:grid-cols-3 xl:items-start">
+              <div className="xl:col-span-2">
+                <p className={sectionTitleClass}>Loan Terms & Repayment</p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className={labelClass}>
@@ -1624,6 +1746,81 @@ export default function CreateMortgage() {
                 />
               </div>
             </div>
+              </div>
+
+              <aside className="rounded-2xl border border-cyan-200/80 bg-gradient-to-br from-cyan-50 to-blue-50/70 p-4 shadow-sm xl:sticky xl:top-4">
+                <p className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-700">Loan Preview Card</p>
+                <p className="mt-1 text-xs text-slate-600">Live estimate for amount, interest, installments, and refund totals.</p>
+
+                <div className="mt-4 space-y-2">
+                  <div className="rounded-xl border border-white/80 bg-white/90 px-3 py-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Requested Amount</p>
+                    <p className="mt-0.5 text-sm font-bold text-slate-900">{formatMoney(loanPreview.requested)}</p>
+                  </div>
+
+                  <div className="rounded-xl border border-white/80 bg-white/90 px-3 py-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Approved / Principal Used</p>
+                    <p className="mt-0.5 text-sm font-bold text-slate-900">{formatMoney(loanPreview.principal)}</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-white/80 bg-white/90 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Interest Rate</p>
+                      <p className="mt-0.5 text-sm font-bold text-indigo-700">{formatMoney(loanPreview.annualInterestRate)}%</p>
+                    </div>
+                    <div className="rounded-xl border border-white/80 bg-white/90 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Installments</p>
+                      <p className="mt-0.5 text-sm font-bold text-indigo-700">{loanPreview.totalInstallments}</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/90 px-3 py-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-amber-700">Estimated Total Interest</p>
+                    <p className="mt-0.5 text-sm font-extrabold text-amber-900">{formatMoney(loanPreview.loanOnlyInterest)}</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-yellow-200 bg-yellow-50/90 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-yellow-700">Interest / Month</p>
+                      <p className="mt-0.5 text-sm font-extrabold text-yellow-900">{formatMoney(loanPreview.monthlyInterestEstimate)}</p>
+                    </div>
+                    <div className="rounded-xl border border-orange-200 bg-orange-50/90 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-orange-700">Interest / Year</p>
+                      <p className="mt-0.5 text-sm font-extrabold text-orange-900">{formatMoney(loanPreview.yearlyInterestEstimate)}</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/90 px-3 py-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-700">Installment (Loan Only)</p>
+                    <p className="mt-0.5 text-sm font-extrabold text-emerald-900">{formatMoney(loanPreview.installmentExcludingFees)}</p>
+                  </div>
+
+                  <div className="rounded-xl border border-sky-200 bg-sky-50/90 px-3 py-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-sky-700">Installment (With Fees)</p>
+                    <p className="mt-0.5 text-sm font-extrabold text-sky-900">{formatMoney(loanPreview.installmentWithFees)}</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-white/80 bg-white/90 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Processing Fee</p>
+                      <p className="mt-0.5 text-sm font-semibold text-slate-900">{formatMoney(loanPreview.processing)}</p>
+                    </div>
+                    <div className="rounded-xl border border-white/80 bg-white/90 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Insurance Fee</p>
+                      <p className="mt-0.5 text-sm font-semibold text-slate-900">{formatMoney(loanPreview.insurance)}</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-cyan-300 bg-cyan-100/90 px-3 py-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-800">Total Refund / Repayable</p>
+                    <p className="mt-0.5 text-base font-black text-cyan-900">{formatMoney(loanPreview.totalRefund)}</p>
+                  </div>
+                </div>
+
+                <p className="mt-3 text-[11px] text-slate-500">
+                  Estimates are based on current inputs ({interestType} interest, {interestCalculationFrequency} interest frequency, {installmentFrequency} refunds).
+                </p>
+              </aside>
             </div>
 
             <div>

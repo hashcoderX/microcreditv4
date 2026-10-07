@@ -87,6 +87,15 @@ function mortgageTypeMeta(type: string) {
   return { icon: Briefcase, color: 'from-slate-500 to-slate-700', label: 'Other' };
 }
 
+function periodsPerYear(frequency: unknown): number {
+  const normalized = String(frequency || '').toLowerCase().trim();
+  if (normalized === 'daily') return 365;
+  if (normalized === 'weekly') return 52;
+  if (normalized === 'quarterly') return 4;
+  if (normalized === 'yearly') return 1;
+  return 12;
+}
+
 export default function MortgageDetails() {
   const params = useParams();
   const router = useRouter();
@@ -242,24 +251,39 @@ export default function MortgageDetails() {
   };
 
   const monthlyFigures = useMemo(() => {
-    if (!mortgage) return { monthlyInstallment: NaN, monthlyInterest: NaN, totalInterest: NaN };
+    if (!mortgage) return { installmentAmount: NaN, monthlyInterest: NaN, totalInterest: NaN };
     const principal = toNumber(mortgage.approved_amount ?? mortgage.requested_amount);
-    const annualRate = toNumber(mortgage.interest_rate) / 100;
+    const ratePercent = toNumber(mortgage.interest_rate);
     const months = Math.round(toNumber(mortgage.tenure_months));
-    if (!Number.isFinite(principal) || !Number.isFinite(annualRate) || !Number.isFinite(months) || months <= 0) {
-      return { monthlyInstallment: NaN, monthlyInterest: NaN, totalInterest: NaN };
+    if (!Number.isFinite(principal) || !Number.isFinite(ratePercent) || !Number.isFinite(months) || months <= 0) {
+      return { installmentAmount: NaN, monthlyInterest: NaN, totalInterest: NaN };
     }
-    const r = annualRate / 12;
+
+    const calcFrequency = String(mortgage.interest_calculation_frequency || 'monthly').toLowerCase();
+    const installmentFrequency = String(mortgage.installment_frequency || 'monthly').toLowerCase();
+    const calculationPeriodsPerYear = periodsPerYear(calcFrequency);
+    const installmentPeriodsPerYear = periodsPerYear(installmentFrequency);
+    const years = months / 12;
+    const installmentCount = Math.max(1, Math.round(years * installmentPeriodsPerYear));
+    const calcPeriodRate = Math.max(ratePercent, 0) / 100;
+
     if (mortgage.interest_type === 'reducing') {
-      const pow = Math.pow(1 + r, months);
-      const emi = (principal * r * pow) / (pow - 1);
-      const firstInterest = principal * r;
-      const totalPayment = emi * months;
-      return { monthlyInstallment: emi, monthlyInterest: firstInterest, totalInterest: totalPayment - principal };
+      const effectiveAnnualRate = Math.pow(1 + calcPeriodRate, calculationPeriodsPerYear) - 1;
+      const periodRate = Math.pow(1 + effectiveAnnualRate, 1 / installmentPeriodsPerYear) - 1;
+      const installmentAmount = periodRate > 0
+        ? (principal * periodRate * Math.pow(1 + periodRate, installmentCount)) / (Math.pow(1 + periodRate, installmentCount) - 1)
+        : principal / installmentCount;
+      const totalPayment = installmentAmount * installmentCount;
+      const totalInterest = totalPayment - principal;
+      const monthlyInterest = months > 0 ? totalInterest / months : 0;
+      return { installmentAmount, monthlyInterest, totalInterest };
     }
-    const monthlyInterest = principal * r;
-    const totalInterest = principal * annualRate * (months / 12);
-    return { monthlyInstallment: (principal + totalInterest) / months, monthlyInterest, totalInterest };
+
+    const calculationPeriodsInTenure = Math.max(1, Math.round(years * calculationPeriodsPerYear));
+    const totalInterest = principal * calcPeriodRate * calculationPeriodsInTenure;
+    const installmentAmount = (principal + totalInterest) / installmentCount;
+    const monthlyInterest = principal * calcPeriodRate * (calculationPeriodsPerYear / 12);
+    return { installmentAmount, monthlyInterest, totalInterest };
   }, [mortgage]);
 
   const status = String(mortgage?.status || '').toLowerCase();
@@ -272,7 +296,7 @@ export default function MortgageDetails() {
   const statCards = [
     { key: 'stat_requested', icon: Banknote, label: 'Requested', value: formatAmount(mortgage?.requested_amount), tone: 'text-slate-700', bg: 'from-slate-500/10 to-gray-500/5' },
     { key: 'stat_approved', icon: CheckCircle2, label: 'Approved', value: formatAmount(mortgage?.approved_amount), tone: 'text-cyan-700', bg: 'from-cyan-500/10 to-blue-500/5' },
-    { key: 'stat_installment', icon: Wallet, label: 'Installment', value: formatAmount(mortgage?.installment_amount ?? monthlyFigures.monthlyInstallment), tone: 'text-indigo-700', bg: 'from-indigo-500/10 to-violet-500/5' },
+    { key: 'stat_installment', icon: Wallet, label: 'Installment', value: formatAmount(mortgage?.installment_amount ?? monthlyFigures.installmentAmount), tone: 'text-indigo-700', bg: 'from-indigo-500/10 to-violet-500/5' },
     { key: 'stat_total_interest', icon: PercentCircle, label: 'Total Interest', value: formatAmount(monthlyFigures.totalInterest), tone: 'text-emerald-700', bg: 'from-emerald-500/10 to-green-500/5' },
     { key: 'stat_due_principal', icon: Landmark, label: 'Due Principal', value: formatAmount(mortgage?.due_amount), tone: 'text-slate-800', bg: 'from-slate-400/10 to-zinc-500/5' },
     { key: 'stat_due_interest', icon: PercentCircle, label: 'Due Interest', value: formatAmount(mortgage?.due_interest_amount), tone: 'text-amber-700', bg: 'from-amber-500/10 to-orange-500/5' },
@@ -587,8 +611,8 @@ export default function MortgageDetails() {
                   { icon: CalendarDays, label: 'Tenure', value: `${mortgage.tenure_months} months` },
                   { icon: Banknote, label: 'Processing Fee', value: formatAmount(mortgage.processing_fee) },
                   { icon: PercentCircle, label: 'Penalty Rate', value: `${mortgage.penalty_rate ?? '—'}%` },
-                  { icon: Banknote, label: 'Monthly Installment', value: formatAmount(monthlyFigures.monthlyInstallment) },
-                  { icon: PercentCircle, label: 'Monthly Interest', value: formatAmount(monthlyFigures.monthlyInterest) },
+                  { icon: Banknote, label: 'Installment Amount', value: formatAmount(mortgage.installment_amount ?? monthlyFigures.installmentAmount) },
+                  { icon: PercentCircle, label: 'Interest / Month', value: formatAmount(monthlyFigures.monthlyInterest) },
                 ].map((row) => (
                   <div key={row.label} className="flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2.5 text-sm">
                     <row.icon className="h-4 w-4 shrink-0 text-cyan-700" />

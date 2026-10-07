@@ -94,7 +94,9 @@ function userCanDeleteMortgage(authUser: AuthUser | null): boolean {
 type MortgageDetail = MortgageApprovalRow & {
   created_at?: string | null;
   processing_fee?: number | string | null;
+  insurance_fee?: number | string | null;
   penalty_rate?: number | string | null;
+  interest_calculation_frequency?: 'daily' | 'weekly' | 'monthly' | 'yearly' | string | null;
   customer_id?: number | string | null;
   customer?: {
     first_name?: string;
@@ -245,6 +247,10 @@ export default function MortgageApprovals() {
   const [detailRow, setDetailRow] = useState<MortgageDetail | null>(null);
   const [customerDetail, setCustomerDetail] = useState<CustomerDetail | null>(null);
   const [customerLoading, setCustomerLoading] = useState(false);
+  const [expandedCardId, setExpandedCardId] = useState<number | null>(null);
+  const [cardLoadingId, setCardLoadingId] = useState<number | null>(null);
+  const [cardDetailById, setCardDetailById] = useState<Record<number, MortgageDetail>>({});
+  const [cardCustomerByMortgageId, setCardCustomerByMortgageId] = useState<Record<number, CustomerDetail | null>>({});
 
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
 
@@ -573,6 +579,65 @@ export default function MortgageApprovals() {
       setDetailLoading(false);
     }
   };
+
+  const loadInlineCardDetail = useCallback(async (id: number) => {
+    if (!token) return;
+    if (cardDetailById[id]) return;
+
+    try {
+      setCardLoadingId(id);
+
+      const response = await axios.get(`${getApiBaseUrl()}/mortgages/${id}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+
+      const payload = response.data?.data ?? response.data;
+      if (!payload) return;
+
+      setCardDetailById((prev) => ({ ...prev, [id]: payload as MortgageDetail }));
+
+      const customerId = Number(payload?.customer_id || 0);
+      if (customerId > 0) {
+        try {
+          const customerResponse = await axios.get(`${getApiBaseUrl()}/customers/${customerId}`, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/json',
+            },
+          });
+
+          const customerPayload = customerResponse.data?.data ?? customerResponse.data;
+          setCardCustomerByMortgageId((prev) => ({
+            ...prev,
+            [id]: (customerPayload || null) as CustomerDetail | null,
+          }));
+        } catch {
+          setCardCustomerByMortgageId((prev) => ({ ...prev, [id]: null }));
+        }
+      } else {
+        setCardCustomerByMortgageId((prev) => ({ ...prev, [id]: null }));
+      }
+    } catch {
+      openToast('error', `Failed to load full details for mortgage #${id}.`);
+    } finally {
+      setCardLoadingId((prev) => (prev === id ? null : prev));
+    }
+  }, [cardDetailById, token]);
+
+  const toggleInlineCardDetails = useCallback(async (id: number) => {
+    if (expandedCardId === id) {
+      setExpandedCardId(null);
+      return;
+    }
+
+    setExpandedCardId(id);
+    if (!cardDetailById[id]) {
+      await loadInlineCardDetail(id);
+    }
+  }, [cardDetailById, expandedCardId, loadInlineCardDetail]);
 
   const runDelete = async (row: MortgageApprovalRow) => {
     if (!token || !canDeleteMortgage) return;
@@ -1048,6 +1113,15 @@ export default function MortgageApprovals() {
                   const typeMeta = mortgageTypeMeta(String(row.mortgage_type || 'other'));
                   const TypeIcon = typeMeta.icon;
                   const reviewable = canReviewStatus(row.status);
+                  const expanded = expandedCardId === row.id;
+                  const inlineDetail = cardDetailById[row.id] || null;
+                  const inlineCustomer = cardCustomerByMortgageId[row.id] || null;
+                  const inlineLoading = cardLoadingId === row.id;
+                  const detailInstallmentCount = getInstallmentCount(
+                    inlineDetail?.tenure_months ?? row.tenure_months,
+                    inlineDetail?.installment_frequency ?? row.installment_frequency
+                  );
+                  const detailRefundAmount = calculateRefundAmount(inlineDetail || row);
 
                   return (
                     <article
@@ -1091,7 +1165,69 @@ export default function MortgageApprovals() {
                           <p className="text-xs text-slate-500">{row.tenure_months || '—'} mo • {formatDate(row.due_date)}</p>
                         </div>
                       </div>
-                      <div className="mt-4 border-t border-slate-100 pt-4">{renderRowActions(row, true)}</div>
+
+                      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4">
+                        <button
+                          type="button"
+                          onClick={() => void toggleInlineCardDetails(row.id)}
+                          className="inline-flex items-center gap-1 rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-semibold text-cyan-800 transition hover:bg-cyan-100"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          {expanded ? 'Hide Full Details' : 'View Full Details Here'}
+                        </button>
+                        {inlineLoading && <p className="text-xs font-semibold text-cyan-700">Loading details...</p>}
+                      </div>
+
+                      {expanded && (
+                        <div className="mt-3 space-y-3 rounded-2xl border border-cyan-100 bg-white/90 p-4">
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            <div className="rounded-xl border border-slate-100 bg-slate-50/80 p-3">
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Loan Terms</p>
+                              <p className="mt-1 text-xs text-slate-700">Requested: <span className="font-semibold">{formatAmount(inlineDetail?.requested_amount ?? row.requested_amount)}</span></p>
+                              <p className="text-xs text-slate-700">Approved: <span className="font-semibold">{formatAmount(inlineDetail?.approved_amount ?? row.approved_amount)}</span></p>
+                              <p className="text-xs text-slate-700">Interest: <span className="font-semibold">{formatPercent(inlineDetail?.interest_rate ?? row.interest_rate)} ({String((inlineDetail?.interest_type ?? row.interest_type) || '-').toLowerCase()})</span></p>
+                              <p className="text-xs text-slate-700">Tenure: <span className="font-semibold">{(inlineDetail?.tenure_months ?? row.tenure_months) || '-'} months</span></p>
+                              <p className="text-xs text-slate-700">Interest Frequency: <span className="font-semibold capitalize">{inlineDetail?.interest_calculation_frequency || '-'}</span></p>
+                            </div>
+
+                            <div className="rounded-xl border border-slate-100 bg-slate-50/80 p-3">
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Repayment</p>
+                              <p className="mt-1 text-xs text-slate-700">Installment: <span className="font-semibold">{formatAmount(inlineDetail?.installment_amount ?? row.installment_amount)}</span></p>
+                              <p className="text-xs text-slate-700">Installment Count: <span className="font-semibold">{detailInstallmentCount || '-'}</span></p>
+                              <p className="text-xs text-slate-700">Refund Frequency: <span className="font-semibold capitalize">{(inlineDetail?.installment_frequency ?? row.installment_frequency) || '-'}</span></p>
+                              <p className="text-xs text-slate-700">Processing Fee: <span className="font-semibold">{formatAmount(inlineDetail?.processing_fee)}</span></p>
+                              <p className="text-xs text-slate-700">Insurance Fee: <span className="font-semibold">{formatAmount(inlineDetail?.insurance_fee)}</span></p>
+                              <p className="text-xs text-slate-700">Penalty Rate: <span className="font-semibold">{formatPercent(inlineDetail?.penalty_rate)}</span></p>
+                              <p className="text-xs text-emerald-700">Total Refund: <span className="font-bold">{formatAmount(detailRefundAmount)}</span></p>
+                            </div>
+
+                            <div className="rounded-xl border border-slate-100 bg-slate-50/80 p-3">
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Collateral</p>
+                              <p className="mt-1 text-xs text-slate-700">Type: <span className="font-semibold capitalize">{inlineDetail?.asset?.asset_type || row.mortgage_type || '-'}</span></p>
+                              <p className="text-xs text-slate-700">Deed No: <span className="font-semibold">{inlineDetail?.asset?.deed_number || '-'}</span></p>
+                              <p className="text-xs text-slate-700">Vehicle No: <span className="font-semibold">{inlineDetail?.asset?.vehicle_reg_no || '-'}</span></p>
+                              <p className="text-xs text-slate-700">Estimated Value: <span className="font-semibold">{formatAmount(inlineDetail?.asset?.estimated_value)}</span></p>
+                              <p className="text-xs text-slate-700">Description: <span className="font-semibold">{inlineDetail?.asset?.description || '-'}</span></p>
+                            </div>
+
+                            <div className="rounded-xl border border-slate-100 bg-slate-50/80 p-3">
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Customer</p>
+                              <p className="mt-1 text-xs text-slate-700">Name: <span className="font-semibold">{`${inlineCustomer?.first_name || inlineDetail?.customer?.first_name || row.customer?.first_name || ''} ${inlineCustomer?.last_name || inlineDetail?.customer?.last_name || row.customer?.last_name || ''}`.trim() || '-'}</span></p>
+                              <p className="text-xs text-slate-700">Phone: <span className="font-semibold">{inlineCustomer?.phone || inlineDetail?.customer?.phone || row.customer?.phone || '-'}</span></p>
+                              <p className="text-xs text-slate-700">NIC: <span className="font-semibold">{inlineCustomer?.nic_passport || inlineDetail?.customer?.nic_passport || row.customer?.nic_passport || '-'}</span></p>
+                              <p className="text-xs text-slate-700">Email: <span className="font-semibold">{inlineCustomer?.email || inlineDetail?.customer?.email || '-'}</span></p>
+                              <p className="text-xs text-slate-700">Monthly Income: <span className="font-semibold">{formatAmount(inlineCustomer?.monthly_income)}</span></p>
+                              <p className="text-xs text-slate-700">Current Address: <span className="font-semibold">{inlineCustomer?.current_address || inlineDetail?.customer?.address || '-'}</span></p>
+                            </div>
+                          </div>
+
+                          <div className="border-t border-slate-100 pt-3">
+                            {renderRowActions(row, true)}
+                          </div>
+                        </div>
+                      )}
+
+                      {!expanded && <div className="mt-4 border-t border-slate-100 pt-4">{renderRowActions(row, true)}</div>}
                     </article>
                   );
                 })}
