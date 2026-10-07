@@ -2456,6 +2456,7 @@ class LoanRequestController extends Controller
         $status = $request->get('status');
         $branchId = (int)$request->get('branch_id', 0);
         $fieldOfficer = trim((string)$request->get('field_officer', ''));
+        $collectionPreview = filter_var($request->get('collection_preview', false), FILTER_VALIDATE_BOOLEAN);
         $compact = filter_var($request->get('compact', false), FILTER_VALIDATE_BOOLEAN);
         $limit = (int) $request->get('limit', 0);
         if ($limit < 0) {
@@ -2501,7 +2502,7 @@ class LoanRequestController extends Controller
             'limit_' . ($limit > 0 ? $limit : 'all'),
         ]);
 
-        $buildPayload = function () use ($compact, $viewer, $status, $request, $branchId, $fieldOfficer, $limit) {
+        $buildPayload = function () use ($compact, $viewer, $status, $request, $branchId, $fieldOfficer, $limit, $collectionPreview) {
             $relations = [
                 'branch:id,name',
                 'approvalEmployee:id,first_name,last_name',
@@ -2551,18 +2552,53 @@ class LoanRequestController extends Controller
                 }
             }
 
-            $scopedBranchId = $this->scopedBranchId($request);
-            if ($scopedBranchId !== null) {
-                $query->where('branch_id', $scopedBranchId);
-            } elseif ($branchId > 0) {
-                $query->where('branch_id', $branchId);
+            $collectionPreviewForApproved = false;
+            if ($collectionPreview) {
+                $requestedStatuses = [];
+
+                if (is_array($status)) {
+                    foreach ($status as $rawStatus) {
+                        $normalized = strtolower(trim((string) $rawStatus));
+                        if ($normalized !== '') {
+                            $requestedStatuses[] = $normalized;
+                        }
+                    }
+                } else {
+                    foreach (explode(',', (string) $status) as $rawStatus) {
+                        $normalized = strtolower(trim((string) $rawStatus));
+                        if ($normalized !== '') {
+                            $requestedStatuses[] = $normalized;
+                        }
+                    }
+                }
+
+                $requestedStatuses = array_values(array_unique($requestedStatuses));
+
+                $collectionPreviewAllowedStatuses = ['approved', 'released'];
+                $collectionPreviewForApproved = count($requestedStatuses) > 0;
+
+                foreach ($requestedStatuses as $requestedStatus) {
+                    if (!in_array($requestedStatus, $collectionPreviewAllowedStatuses, true)) {
+                        $collectionPreviewForApproved = false;
+                        break;
+                    }
+                }
+            }
+
+            if (!$collectionPreviewForApproved) {
+                $scopedBranchId = $this->scopedBranchId($request);
+                if ($scopedBranchId !== null) {
+                    $query->where('branch_id', $scopedBranchId);
+                } elseif ($branchId > 0) {
+                    $query->where('branch_id', $branchId);
+                }
             }
 
             if ($fieldOfficer !== '') {
                 $query->whereRaw('LOWER(TRIM(field_officer)) = ?', [mb_strtolower($fieldOfficer)]);
             }
 
-            if (!$this->isAdminUser($viewer)) {
+            if (!$this->isAdminUser($viewer) && !$collectionPreviewForApproved) {
                 $viewerUserId = (int) ($viewer?->id ?? 0);
                 $viewerEmployeeId = (int) ($viewer?->employee_id ?? 0);
                 $viewerBranchId = $this->resolveUserBranchId($viewer);

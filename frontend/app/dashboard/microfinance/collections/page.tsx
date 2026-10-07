@@ -538,13 +538,15 @@ export default function CollectionManagementPage() {
           params:
             isFieldOfficer && authUser?.branch_id
               ? {
-                  status: 'approved',
+                  status: 'approved,released',
+                  collection_preview: 1,
                   branch_id: authUser.branch_id,
                   compact: loadProfile === 'fast' ? 1 : undefined,
                   limit: loadProfile === 'fast' ? loanFetchLimit : undefined,
                 }
               : {
-                  status: 'approved',
+                  status: 'approved,released',
+                  collection_preview: 1,
                   compact: loadProfile === 'fast' ? 1 : undefined,
                   limit: loadProfile === 'fast' ? loanFetchLimit : undefined,
                 },
@@ -728,11 +730,13 @@ export default function CollectionManagementPage() {
           params:
             isFieldOfficer && authUser?.branch_id
               ? {
-                  status: 'approved',
+                  status: 'approved,released',
+                  collection_preview: 1,
                   branch_id: authUser.branch_id,
                 }
               : {
-                  status: 'approved',
+                  status: 'approved,released',
+                  collection_preview: 1,
                 },
         });
 
@@ -812,6 +816,8 @@ export default function CollectionManagementPage() {
       return isBranchMatch && isOfficerMatch;
     });
   }, [loans, isFieldOfficer, authUser?.branch_id, authUser?.id, authUser?.employee?.id, officerNameCandidates]);
+
+  const finderLoans = loans;
 
   const paidTotalByLoan = useMemo(() => {
     const map = new Map<number, number>();
@@ -1370,7 +1376,7 @@ export default function CollectionManagementPage() {
     const keyword = finderCustomerNo.trim().toLowerCase();
     if (!keyword) return [] as LoanRow[];
 
-    return scopedLoans
+    return finderLoans
       .filter((loan) => {
         const customerNo = String(loan.customer_no || '').toLowerCase();
         const customerCode = String(loan.customer_code || '').toLowerCase();
@@ -1378,7 +1384,7 @@ export default function CollectionManagementPage() {
       })
       .sort((a, b) => String(a.customer_no || '').localeCompare(String(b.customer_no || '')))
       .slice(0, 20);
-  }, [finderCustomerNo, scopedLoans]);
+  }, [finderCustomerNo, finderLoans]);
 
   const filteredLoans = useMemo(() => {
     const keyword = query.trim().toLowerCase();
