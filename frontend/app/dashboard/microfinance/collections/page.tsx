@@ -64,6 +64,8 @@ type LoanRow = {
   collections_max_collection_date?: string | null;
   refund_option?: 'day' | 'week' | 'month' | string;
   arrears_balance?: number | string;
+  total_paid_amount?: number | string;
+  collections_sum_collected_amount?: number | string;
   status: string;
 };
 
@@ -819,7 +821,26 @@ export default function CollectionManagementPage() {
 
   const finderLoans = loans;
 
-  const paidTotalByLoan = useMemo(() => {
+  const serverPaidTotalByLoan = useMemo(() => {
+    const map = new Map<number, number>();
+
+    loans.forEach((loan) => {
+      const loanId = Number(loan.id || 0);
+      if (!loanId) return;
+
+      const loanTotal = Number(
+        loan.total_paid_amount ?? loan.collections_sum_collected_amount ?? 0
+      );
+
+      if (loanTotal > 0) {
+        map.set(loanId, loanTotal);
+      }
+    });
+
+    return map;
+  }, [loans]);
+
+  const derivedPaidTotalByLoan = useMemo(() => {
     const map = new Map<number, number>();
 
     collections.forEach((row) => {
@@ -876,7 +897,14 @@ export default function CollectionManagementPage() {
     return map;
   }, [collections]);
 
-  const getPaidTotal = (loanId: number) => paidTotalByLoan.get(loanId) || 0;
+  const getPaidTotal = (loanId: number) => {
+    const serverTotal = serverPaidTotalByLoan.get(loanId) || 0;
+    const derivedTotal = derivedPaidTotalByLoan.get(loanId) || 0;
+
+    // Collection payload can be partial (role/limit scoped), so never show less
+    // than the server-computed loan total.
+    return Math.max(serverTotal, derivedTotal);
+  };
 
   const getLastPayDate = (loan: LoanRow) => {
     const fromLoan = String(loan.last_pay_date || loan.collections_max_collection_date || '').trim();
@@ -1555,6 +1583,17 @@ export default function CollectionManagementPage() {
       .sort((a, b) => a.routeName.localeCompare(b.routeName));
   }, [filteredScopedLoans, query]);
 
+  const getLoanServerPaidTotal = (loan: LoanRow) =>
+    Number(loan.total_paid_amount ?? loan.collections_sum_collected_amount ?? 0);
+
+  const isActiveCollectionLoan = (loan: LoanRow) => {
+    const refundableAmount = Number(loan.refundable_amount || 0);
+    if (refundableAmount <= 0) return false;
+
+    const paidTotal = getLoanServerPaidTotal(loan);
+    return refundableAmount - paidTotal > 0.0001;
+  };
+
   const centerCollections = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     const centerMap = new Map<
@@ -1572,7 +1611,7 @@ export default function CollectionManagementPage() {
     >();
 
     filteredScopedLoans
-      .filter((loan) => loan.loan_scope === 'center_loan' && loan.center?.id)
+      .filter((loan) => loan.loan_scope === 'center_loan' && loan.center?.id && isActiveCollectionLoan(loan))
       .forEach((loan) => {
         const centerId = loan.center!.id;
         const existing = centerMap.get(centerId) || {
@@ -1672,7 +1711,10 @@ export default function CollectionManagementPage() {
     >();
 
     filteredScopedLoans
-      .filter((loan) => loan.loan_scope === 'center_loan' && loan.center?.id === selectedCenterId)
+      .filter(
+        (loan) =>
+          loan.loan_scope === 'center_loan' && loan.center?.id === selectedCenterId && isActiveCollectionLoan(loan)
+      )
       .forEach((loan) => {
         const groupId = loan.group?.id || 0;
         const existing = groupMap.get(groupId) || {
@@ -1731,7 +1773,8 @@ export default function CollectionManagementPage() {
       (loan) =>
         loan.loan_scope === 'center_loan' &&
         loan.center?.id === selectedCenterId &&
-        (loan.group?.id || 0) === selectedGroupId
+        (loan.group?.id || 0) === selectedGroupId &&
+        isActiveCollectionLoan(loan)
     );
 
     if (!keyword) return rows;
@@ -2584,7 +2627,12 @@ export default function CollectionManagementPage() {
         setLoans((prev) =>
           prev.map((loan) =>
             loan.id === collectModal.loanId
-              ? { ...loan, last_pay_date: collectModal.date || loan.last_pay_date }
+              ? {
+                  ...loan,
+                  last_pay_date: collectModal.date || loan.last_pay_date,
+                  total_paid_amount:
+                    Number(loan.total_paid_amount ?? loan.collections_sum_collected_amount ?? 0) + amountNumber,
+                }
               : loan
           )
         );
@@ -2631,7 +2679,13 @@ export default function CollectionManagementPage() {
         setCollections(nextCollections);
         nextLoans = loans.map((loan) =>
           loan.id === normalizedCollection.mf_loan_request_id
-            ? { ...loan, last_pay_date: normalizedCollection.collection_date || loan.last_pay_date }
+            ? {
+                ...loan,
+                last_pay_date: normalizedCollection.collection_date || loan.last_pay_date,
+                total_paid_amount:
+                  Number(loan.total_paid_amount ?? loan.collections_sum_collected_amount ?? 0) +
+                  Number(normalizedCollection.collected_amount || 0),
+              }
             : loan
         );
         setLoans(nextLoans);
@@ -3501,8 +3555,8 @@ export default function CollectionManagementPage() {
                         <tr>
                           {isColumnVisible('center_group_code') && renderColumnHeader('center_group_code', 'Group Code')}
                           {isColumnVisible('center_group_name') && renderColumnHeader('center_group_name', 'Group Name')}
-                          {isColumnVisible('center_loan_count') && renderColumnHeader('center_loan_count', 'Loan Count')}
-                          {isColumnVisible('center_total_installment') && renderColumnHeader('center_total_installment', 'Total Installment')}
+                          {isColumnVisible('center_loan_count') && renderColumnHeader('center_loan_count', 'Active Loan Count')}
+                          {isColumnVisible('center_total_installment') && renderColumnHeader('center_total_installment', 'Active Total Installment')}
                           {isColumnVisible('center_next_due_date') && renderColumnHeader('center_next_due_date', 'Next Due Date')}
                           {isColumnVisible('center_group_bulk_collection_action') &&
                             renderColumnHeader('center_group_bulk_collection_action', 'Action')}
@@ -3512,8 +3566,8 @@ export default function CollectionManagementPage() {
                           {isColumnVisible('center_center_code') && renderColumnHeader('center_center_code', 'Center Code')}
                           {isColumnVisible('center_center_name') && renderColumnHeader('center_center_name', 'Center Name')}
                           {isColumnVisible('center_route') && renderColumnHeader('center_route', 'Route')}
-                          {isColumnVisible('center_loan_count') && renderColumnHeader('center_loan_count', 'Loan Count')}
-                          {isColumnVisible('center_total_installment') && renderColumnHeader('center_total_installment', 'Total Installment')}
+                          {isColumnVisible('center_loan_count') && renderColumnHeader('center_loan_count', 'Active Loan Count')}
+                          {isColumnVisible('center_total_installment') && renderColumnHeader('center_total_installment', 'Active Total Installment')}
                           {isColumnVisible('center_next_due_date') && renderColumnHeader('center_next_due_date', 'Next Due Date')}
                         </tr>
                       )}

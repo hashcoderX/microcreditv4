@@ -1649,7 +1649,10 @@ export default function RequestLoanPage() {
         void (async () => {
           try {
             const [customerRes, loanRequestRes] = await Promise.all([
-              axios.get(`${API_BASE}/customers`, { headers, params: { per_page: 1000, include_all_customers: 1 } }),
+              axios.get(`${API_BASE}/customers`, {
+                headers,
+                params: { per_page: 1000, include_all_customers: 1, all_customers: 1 },
+              }),
               axios.get(`${API_BASE}/microfinance/loan-requests`, { headers }),
             ]);
 
@@ -1899,31 +1902,66 @@ export default function RequestLoanPage() {
 
     const timer = setTimeout(async () => {
       try {
-        const response = await axios.get(`${API_BASE}/customers/finance-search`, {
-          headers,
-          params: {
-            include_all_customers: 1,
-            customer_no: query,
-            nic_passport: query,
-            name: query,
-            phone: query,
-            limit: 20,
-          },
-        });
+        const baseParams = {
+          include_all_customers: 1,
+          all_customers: 1,
+          limit: 20,
+        } as const;
 
-        if (cancelled) return;
+        const digitOnly = /^\d+$/.test(query);
+        const likelyCustomerNo = /^[A-Za-z]{1,4}[\-\/]?\d/.test(query) || /^CL[-\/]?/i.test(query);
 
-        const matches = Array.isArray(response.data?.matches) ? response.data.matches : [];
-        const customersFromSearch = matches
-          .map((row: unknown) => {
-            if (!row || typeof row !== 'object') return null;
-            const customer = (row as { customer?: unknown }).customer;
-            if (!customer || typeof customer !== 'object') return null;
-            return customer as ExistingCustomer;
-          })
-          .filter((customer: ExistingCustomer | null): customer is ExistingCustomer => Boolean(customer?.id));
+        const searchAttempts: Array<Record<string, string | number>> = digitOnly
+          ? [
+              { ...baseParams, nic_passport: query },
+              { ...baseParams, customer_no: query },
+              { ...baseParams, phone: query },
+            ]
+          : likelyCustomerNo
+          ? [
+              { ...baseParams, customer_no: query },
+              { ...baseParams, nic_passport: query },
+              { ...baseParams, name: query },
+            ]
+          : [
+              { ...baseParams, name: query },
+              { ...baseParams, customer_no: query },
+              { ...baseParams, nic_passport: query },
+            ];
 
-        setRemoteCustomerMatches(customersFromSearch);
+        const uniqueById = new Map<number, ExistingCustomer>();
+
+        for (const params of searchAttempts) {
+          const response = await axios.get(`${API_BASE}/customers/finance-search`, {
+            headers,
+            params,
+          });
+
+          if (cancelled) return;
+
+          const matches = Array.isArray(response.data?.matches) ? response.data.matches : [];
+          const customersFromSearch = matches
+            .map((row: unknown) => {
+              if (!row || typeof row !== 'object') return null;
+              const customer = (row as { customer?: unknown }).customer;
+              if (!customer || typeof customer !== 'object') return null;
+              return customer as ExistingCustomer;
+            })
+            .filter((customer: ExistingCustomer | null): customer is ExistingCustomer => Boolean(customer?.id));
+
+          customersFromSearch.forEach((customer: ExistingCustomer) => {
+            const id = Number(customer.id || 0);
+            if (id > 0 && !uniqueById.has(id)) {
+              uniqueById.set(id, customer);
+            }
+          });
+
+          if (uniqueById.size > 0) {
+            break;
+          }
+        }
+
+        setRemoteCustomerMatches(Array.from(uniqueById.values()));
       } catch {
         if (!cancelled) {
           setRemoteCustomerMatches([]);

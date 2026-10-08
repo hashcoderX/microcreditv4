@@ -20,7 +20,19 @@ class CustomerController extends Controller
     private function shouldIncludeAllCustomers(Request $request): bool
     {
         // Opt-in flag for modules that require cross-branch customer lookup.
-        return $request->boolean('include_all_customers') || $request->boolean('all_customers');
+        // Be permissive because clients may send this as "1", 1, "true", or just presence.
+        foreach (['include_all_customers', 'all_customers'] as $key) {
+            if (!$request->has($key)) {
+                continue;
+            }
+
+            $value = strtolower(trim((string) $request->input($key)));
+            if (!in_array($value, ['', '0', 'false', 'no', 'off'], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function defaultCompanyId(): int
