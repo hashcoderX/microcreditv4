@@ -17,6 +17,7 @@ use App\Models\MortgageSchedule;
 use App\Models\MortgagePayment;
 use App\Models\MortgageDocument;
 use App\Models\User;
+use Illuminate\Validation\ValidationException;
 use App\Services\SmsGatewayService;
 use App\Services\WhatsappGatewayService;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -414,29 +415,85 @@ class MortgageController extends Controller
                 ]);
             }
 
-            // Optional Guarantors
+            $normalizedGuarantors = [];
+
+            $collectGuarantor = function (array $raw, string $keyPrefix) use (&$normalizedGuarantors): void {
+                $name = trim((string) ($raw['name'] ?? $raw['full_name'] ?? ''));
+                $nic = trim((string) ($raw['nic'] ?? ''));
+                $relationship = trim((string) ($raw['relationship'] ?? ''));
+                $address = trim((string) ($raw['address'] ?? ''));
+                $contact = trim((string) ($raw['contact_number'] ?? ''));
+                $incomeRaw = $raw['income'] ?? $raw['monthly_income'] ?? null;
+
+                $incomeProvided = !is_null($incomeRaw) && trim((string) $incomeRaw) !== '';
+                $income = $incomeProvided ? (float) $incomeRaw : null;
+
+                $hasAny =
+                    $name !== '' ||
+                    $nic !== '' ||
+                    $relationship !== '' ||
+                    $address !== '' ||
+                    $contact !== '' ||
+                    $incomeProvided;
+
+                if (!$hasAny) {
+                    return;
+                }
+
+                $errors = [];
+                if ($name === '') {
+                    $errors["{$keyPrefix}.name"] = ['Guarantor name is required.'];
+                }
+                if ($nic === '') {
+                    $errors["{$keyPrefix}.nic"] = ['Guarantor NIC or passport is required.'];
+                }
+                if ($relationship === '') {
+                    $errors["{$keyPrefix}.relationship"] = ['Guarantor relationship is required.'];
+                }
+                if ($address === '') {
+                    $errors["{$keyPrefix}.address"] = ['Guarantor address is required.'];
+                }
+                if (!$incomeProvided || $income <= 0) {
+                    $errors["{$keyPrefix}.income"] = ['Guarantor monthly income must be greater than zero.'];
+                }
+
+                if (!empty($errors)) {
+                    throw ValidationException::withMessages($errors);
+                }
+
+                $normalizedGuarantors[] = [
+                    'name' => $name,
+                    'nic' => $nic,
+                    'relationship' => $relationship,
+                    'address' => $address,
+                    'income' => $income,
+                    'contact_number' => $contact !== '' ? $contact : null,
+                ];
+            };
+
             if (!empty($validated['guarantors']) && is_array($validated['guarantors'])) {
-                foreach ($validated['guarantors'] as $g) {
-                    MortgageGuarantor::create([
-                        'mortgage_id' => $mortgage->id,
-                        'name' => $g['name'] ?? $g['full_name'] ?? null,
-                        'nic' => $g['nic'] ?? null,
-                        'relationship' => $g['relationship'] ?? null,
-                        'income' => $g['income'] ?? null,
-                        'contact_number' => $g['contact_number'] ?? null,
-                    ]);
+                foreach ($validated['guarantors'] as $index => $g) {
+                    if (!is_array($g)) {
+                        continue;
+                    }
+                    $collectGuarantor($g, "guarantors.{$index}");
                 }
             }
 
-            // Handle co_borrower as a guarantor
-            if (!empty($validated['co_borrower'])) {
+            // Backward compatibility for older clients that still post co_borrower.
+            if (!empty($validated['co_borrower']) && is_array($validated['co_borrower'])) {
+                $collectGuarantor($validated['co_borrower'], 'co_borrower');
+            }
+
+            foreach ($normalizedGuarantors as $g) {
                 MortgageGuarantor::create([
                     'mortgage_id' => $mortgage->id,
-                    'name' => $validated['co_borrower']['full_name'] ?? null,
-                    'nic' => $validated['co_borrower']['nic'] ?? null,
-                    'relationship' => $validated['co_borrower']['relationship'] ?? null,
-                    'income' => $validated['co_borrower']['monthly_income'] ?? null,
-                    'contact_number' => $validated['co_borrower']['contact_number'] ?? null,
+                    'name' => $g['name'],
+                    'nic' => $g['nic'],
+                    'relationship' => $g['relationship'],
+                    'address' => $g['address'],
+                    'income' => $g['income'],
+                    'contact_number' => $g['contact_number'],
                 ]);
             }
 

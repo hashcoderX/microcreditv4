@@ -28,8 +28,10 @@ class LoanCollectionController extends Controller
     private function cacheScopeKey(Request $request, bool $includeDeleted, bool $compact, int $limit, int $loanRequestId, string $dateFrom, string $dateTo, bool $todayOnly, bool $selfOnly): string
     {
         $user = $request->user();
+        $requestedBranchId = $this->scopedBranchId($request);
+        $requestedBranchScope = $requestedBranchId !== null ? (string) $requestedBranchId : 'all';
         $scope = $this->isAdminUser($user)
-            ? 'admin'
+            ? ('admin_' . $requestedBranchScope)
             : ('branch_' . ((int) ($user?->branch_id ?? 0)));
 
         return implode(':', [
@@ -191,9 +193,14 @@ class LoanCollectionController extends Controller
 
     private function scopedBranchId(Request $request): ?int
     {
-        $requestedBranchId = (int) ($request->get('branch_id', 0));
+        $requestedBranch = strtolower(trim((string) $request->get('branch_id', '')));
+        $requestedBranchId = (int) $requestedBranch;
 
         if ($this->isAdminUser($request->user())) {
+            if ($requestedBranch === '' || $requestedBranch === 'all') {
+                return null;
+            }
+
             return $requestedBranchId > 0 ? $requestedBranchId : null;
         }
 
@@ -563,7 +570,7 @@ class LoanCollectionController extends Controller
                 $query->select(['id', 'mf_loan_request_id', 'collected_amount', 'collection_date']);
             } else {
                 $query->with([
-                    'loanRequest:id,branch_id,customer_no,customer_name,nic,field_officer,loan_code,mf_route_id,mf_center_id,mf_group_id,loan_scope,refund_option,status,loan_amount,net_disbursed_amount,loan_request_date,created_at,installment_amount,refundable_amount',
+                    'loanRequest:id,branch_id,customer_no,customer_name,nic,field_officer,loan_code,mf_route_id,mf_center_id,mf_group_id,loan_scope,refund_option,status,loan_amount,net_disbursed_amount,loan_request_date,created_at,installment_amount,terms_count,refundable_amount',
                     'loanRequest.route:id,name,code',
                     'loanRequest.center:id,name,code,meeting_day,mf_route_id',
                     'loanRequest.group:id,name,code,mf_center_id,mf_route_id',

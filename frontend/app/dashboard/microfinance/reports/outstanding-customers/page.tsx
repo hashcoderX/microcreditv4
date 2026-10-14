@@ -32,6 +32,29 @@ const API_BASE = getApiBaseUrl();
 const isUnauthorizedError = (error: unknown): boolean =>
   axios.isAxiosError(error) && (error.response?.status === 401 || error.response?.status === 403);
 
+const buildConicGradient = (segments: Array<{ value: number; color: string }>): string => {
+  const total = segments.reduce((sum, segment) => sum + Math.max(segment.value, 0), 0);
+  if (total <= 0) {
+    return 'conic-gradient(#e2e8f0 0deg 360deg)';
+  }
+
+  let running = 0;
+  const parts: string[] = [];
+  segments.forEach((segment) => {
+    const value = Math.max(segment.value, 0);
+    if (value <= 0) return;
+
+    const start = (running / total) * 360;
+    running += value;
+    const end = (running / total) * 360;
+    parts.push(`${segment.color} ${start.toFixed(2)}deg ${end.toFixed(2)}deg`);
+  });
+
+  return parts.length > 0
+    ? `conic-gradient(${parts.join(', ')})`
+    : 'conic-gradient(#e2e8f0 0deg 360deg)';
+};
+
 export default function OutstandingCustomersReportPage() {
   const router = useRouter();
   const [token, setToken] = useState('');
@@ -211,6 +234,59 @@ export default function OutstandingCustomersReportPage() {
       ...totals,
     };
   }, [filteredRows]);
+
+  const statusChartData = useMemo(() => {
+    const counts = {
+      approved: 0,
+      released: 0,
+      completed: 0,
+      other: 0,
+    };
+
+    filteredRows.forEach((row) => {
+      const status = String(row.status || '').toLowerCase();
+      if (status === 'approved') counts.approved += 1;
+      else if (status === 'released') counts.released += 1;
+      else if (status === 'completed') counts.completed += 1;
+      else counts.other += 1;
+    });
+
+    return [
+      { label: 'Approved', value: counts.approved, color: '#f97316' },
+      { label: 'Released', value: counts.released, color: '#0ea5e9' },
+      { label: 'Completed', value: counts.completed, color: '#10b981' },
+      { label: 'Other', value: counts.other, color: '#64748b' },
+    ];
+  }, [filteredRows]);
+
+  const statusChartTotal = useMemo(
+    () => statusChartData.reduce((sum, item) => sum + item.value, 0),
+    [statusChartData]
+  );
+
+  const statusChartBackground = useMemo(
+    () => buildConicGradient(statusChartData),
+    [statusChartData]
+  );
+
+  const amountMixData = useMemo(
+    () => [
+      { label: 'Outstanding', value: summary.outstanding, color: '#e11d48' },
+      { label: 'Arrears', value: summary.arrears, color: '#f97316' },
+      { label: 'Collected', value: summary.collected, color: '#10b981' },
+    ],
+    [summary.outstanding, summary.arrears, summary.collected]
+  );
+
+  const amountMixTotal = useMemo(
+    () => amountMixData.reduce((sum, item) => sum + item.value, 0),
+    [amountMixData]
+  );
+
+  const amountMixBackground = useMemo(
+    () => buildConicGradient(amountMixData),
+    [amountMixData]
+  );
 
   const formatMoney = (value: number) => Number(value || 0).toFixed(2);
 
@@ -396,6 +472,7 @@ export default function OutstandingCustomersReportPage() {
   ];
   const visibleSummaryCards = summaryCards.filter((card) => !hiddenWidgetKeys.has(card.key));
   const showFilterSection = !hiddenWidgetKeys.has(`${widgetPrefix}filters_section`);
+  const showChartsSection = !hiddenWidgetKeys.has(`${widgetPrefix}charts_section`);
   const showTableSection = !hiddenWidgetKeys.has(`${widgetPrefix}table_section`);
 
   return (
@@ -530,6 +607,110 @@ export default function OutstandingCustomersReportPage() {
         </div>
         )}
 
+        {showChartsSection && (
+        <div className="relative rounded-3xl border border-rose-100 bg-white/90 p-5 backdrop-blur-xl shadow-[0_18px_45px_-28px_rgba(190,24,93,0.35)]">
+          <WidgetCloseGate>
+            <button
+              type="button"
+              onClick={() => void hideWidget(`${widgetPrefix}charts_section`)}
+              className="absolute right-4 top-4 z-10 inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-sm font-bold text-slate-600 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
+              aria-label="Hide charts widget"
+            >
+              ×
+            </button>
+          </WidgetCloseGate>
+
+          <div className="mb-4">
+            <h2 className="text-xl font-black text-slate-900">Graphical Insights</h2>
+            <p className="text-xs text-slate-500">Visualize portfolio composition from the current filtered result set.</p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <div className="rounded-2xl border border-rose-100 bg-gradient-to-br from-white to-rose-50/50 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-rose-600">Status Mix</p>
+                  <h3 className="text-base font-extrabold text-slate-900">Loan Status Distribution</h3>
+                </div>
+                <span className="rounded-lg bg-rose-100 px-2 py-1 text-[11px] font-semibold text-rose-700">Accounts: {statusChartTotal}</span>
+              </div>
+
+              <div className="mt-3 flex flex-col items-center gap-4 lg:flex-row lg:items-start">
+                <div className="relative h-44 w-44 shrink-0 rounded-full border border-rose-100 bg-white p-2 shadow-inner">
+                  <div className="h-full w-full rounded-full" style={{ backgroundImage: statusChartBackground }} />
+                  <div className="absolute inset-[30%] flex items-center justify-center rounded-full border border-rose-100 bg-white/95 text-center shadow-sm">
+                    <div>
+                      <p className="text-lg font-black text-slate-900">{statusChartTotal}</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Loans</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
+                  {statusChartData.map((item) => {
+                    const percentage = statusChartTotal > 0 ? (item.value / statusChartTotal) * 100 : 0;
+                    return (
+                      <div key={item.label} className="rounded-xl border border-slate-100 bg-white p-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                            <p className="text-xs font-semibold text-slate-700">{item.label}</p>
+                          </div>
+                          <p className="text-sm font-black text-slate-900">{item.value}</p>
+                        </div>
+                        <p className="mt-1 text-[11px] text-slate-500">{percentage.toFixed(1)}%</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-orange-100 bg-gradient-to-br from-white to-orange-50/50 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-orange-600">Amount Mix</p>
+                  <h3 className="text-base font-extrabold text-slate-900">Exposure Composition</h3>
+                </div>
+                <span className="rounded-lg bg-orange-100 px-2 py-1 text-[11px] font-semibold text-orange-700">
+                  Total: {new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 0 }).format(amountMixTotal)}
+                </span>
+              </div>
+
+              <div className="mt-3 flex flex-col items-center gap-4 lg:flex-row lg:items-start">
+                <div className="relative h-44 w-44 shrink-0 rounded-full border border-orange-100 bg-white p-2 shadow-inner">
+                  <div className="h-full w-full rounded-full" style={{ backgroundImage: amountMixBackground }} />
+                  <div className="absolute inset-[28%] flex items-center justify-center rounded-full border border-orange-100 bg-white/95 text-center shadow-sm">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customers</p>
+                      <p className="text-sm font-black text-slate-900">{summary.customers}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-3">
+                  {amountMixData.map((item) => {
+                    const percentage = amountMixTotal > 0 ? (item.value / amountMixTotal) * 100 : 0;
+                    return (
+                      <div key={item.label} className="rounded-xl border border-slate-100 bg-white p-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                          <p className="text-xs font-semibold text-slate-700">{item.label}</p>
+                        </div>
+                        <p className="mt-1 text-sm font-black text-slate-900">
+                          {new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 0 }).format(item.value)}
+                        </p>
+                        <p className="text-[11px] text-slate-500">{percentage.toFixed(1)}%</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        )}
+
         {showTableSection && (
         <div className="relative rounded-3xl border border-rose-100 bg-white/90 p-4 backdrop-blur-xl shadow-[0_18px_45px_-28px_rgba(190,24,93,0.35)]">
           <WidgetCloseGate>
@@ -631,7 +812,7 @@ export default function OutstandingCustomersReportPage() {
           )}
         </div>
         )}
-        {!showFilterSection && !showTableSection && visibleSummaryCards.length === 0 && (
+        {!showFilterSection && !showChartsSection && !showTableSection && visibleSummaryCards.length === 0 && (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
             All widgets on this page are hidden. Use "Restore Hidden Widgets" on dashboard to show them again.
           </div>

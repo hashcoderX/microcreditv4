@@ -15,7 +15,9 @@ import {
   Circle,
   FileText,
   Home,
+  Plus,
   Sparkles,
+  Trash2,
   User,
   Users,
   Wallet,
@@ -85,6 +87,15 @@ type Step =
   | "loanCollateral"
   | "documentsReview";
 
+type GuarantorForm = {
+  full_name: string;
+  nic: string;
+  relationship: string;
+  address: string;
+  contact_number: string;
+  monthly_income: string;
+};
+
 const STEP_ORDER: Step[] = [
   "profile",
   "financial",
@@ -142,6 +153,36 @@ const isCustomerDetail = (value: unknown): value is CustomerDetail => {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<CustomerDetail>;
   return typeof candidate.id === "number";
+};
+
+const createEmptyGuarantor = (): GuarantorForm => ({
+  full_name: "",
+  nic: "",
+  relationship: "",
+  address: "",
+  contact_number: "",
+  monthly_income: "",
+});
+
+const guarantorHasAnyValue = (guarantor: GuarantorForm) => {
+  return (
+    hasText(guarantor.full_name) ||
+    hasText(guarantor.nic) ||
+    hasText(guarantor.relationship) ||
+    hasText(guarantor.address) ||
+    hasText(guarantor.contact_number) ||
+    hasText(guarantor.monthly_income)
+  );
+};
+
+const guarantorHasRequiredValues = (guarantor: GuarantorForm) => {
+  return (
+    hasText(guarantor.full_name) &&
+    hasText(guarantor.nic) &&
+    hasText(guarantor.relationship) &&
+    hasText(guarantor.address) &&
+    hasPositiveNumber(guarantor.monthly_income)
+  );
 };
 
 export default function CreateMortgage() {
@@ -230,13 +271,8 @@ export default function CreateMortgage() {
   const [existingLoans, setExistingLoans] = useState(false);
   const [monthlyLoanObligations, setMonthlyLoanObligations] = useState("");
   const [creditScore, setCreditScore] = useState("");
-  // Co-Borrower / Guarantor
-  const [coBorrowerName, setCoBorrowerName] = useState("");
-  const [coBorrowerNic, setCoBorrowerNic] = useState("");
-  const [coBorrowerRelationship, setCoBorrowerRelationship] = useState("");
-  const [coBorrowerAddress, setCoBorrowerAddress] = useState("");
-  const [coBorrowerContact, setCoBorrowerContact] = useState("");
-  const [coBorrowerIncome, setCoBorrowerIncome] = useState("");
+  // Guarantors
+  const [guarantors, setGuarantors] = useState<GuarantorForm[]>([createEmptyGuarantor()]);
 
   // Mortgage Loan Details
   const [requestedAmount, setRequestedAmount] = useState("");
@@ -631,24 +667,34 @@ export default function CreateMortgage() {
   }, [monthlyIncome]);
 
   const isCoBorrowerStepComplete = useMemo(() => {
-    const hasAny =
-      hasText(coBorrowerName) ||
-      hasText(coBorrowerNic) ||
-      hasText(coBorrowerRelationship) ||
-      hasText(coBorrowerAddress) ||
-      hasText(coBorrowerContact) ||
-      hasText(coBorrowerIncome);
+    const filledRows = guarantors.filter(guarantorHasAnyValue);
+    if (filledRows.length === 0) return true;
+    return filledRows.every(guarantorHasRequiredValues);
+  }, [guarantors]);
 
-    if (!hasAny) return true;
+  const updateGuarantorField = useCallback(
+    (index: number, field: keyof GuarantorForm, value: string) => {
+      setGuarantors((prev) =>
+        prev.map((row, rowIndex) =>
+          rowIndex === index ? { ...row, [field]: value } : row
+        )
+      );
+    },
+    []
+  );
 
-    return (
-      hasText(coBorrowerName) &&
-      hasText(coBorrowerNic) &&
-      hasText(coBorrowerRelationship) &&
-      hasText(coBorrowerAddress) &&
-      hasPositiveNumber(coBorrowerIncome)
-    );
-  }, [coBorrowerName, coBorrowerNic, coBorrowerRelationship, coBorrowerAddress, coBorrowerContact, coBorrowerIncome]);
+  const addGuarantor = useCallback(() => {
+    setGuarantors((prev) => [...prev, createEmptyGuarantor()]);
+  }, []);
+
+  const removeGuarantor = useCallback((index: number) => {
+    setGuarantors((prev) => {
+      if (prev.length <= 1) {
+        return [createEmptyGuarantor()];
+      }
+      return prev.filter((_, rowIndex) => rowIndex !== index);
+    });
+  }, []);
 
   const isLoanCollateralStepComplete = useMemo(() => {
     const approvedOk = !hasText(approvedAmount) || hasPositiveNumber(approvedAmount);
@@ -754,16 +800,20 @@ export default function CreateMortgage() {
         },
       };
 
-      // Attach co-borrower only if provided
-      if (coBorrowerName || coBorrowerNic || coBorrowerRelationship || coBorrowerAddress || coBorrowerIncome) {
-        mortgagePayload.co_borrower = {
-          full_name: coBorrowerName,
-          nic: coBorrowerNic,
-          relationship: coBorrowerRelationship,
-          address: coBorrowerAddress,
-          contact_number: coBorrowerContact || undefined,
-          monthly_income: coBorrowerIncome ? parseFloat(coBorrowerIncome) : undefined,
-        };
+      // Attach guarantors only when at least one row is filled.
+      const normalizedGuarantors = guarantors
+        .filter(guarantorHasAnyValue)
+        .map((row) => ({
+          full_name: row.full_name.trim(),
+          nic: row.nic.trim(),
+          relationship: row.relationship.trim(),
+          address: row.address.trim(),
+          contact_number: row.contact_number.trim() || undefined,
+          income: parseNumericInput(row.monthly_income),
+        }));
+
+      if (normalizedGuarantors.length > 0) {
+        mortgagePayload.guarantors = normalizedGuarantors;
       }
 
       // Attach optional legal/valuation/physical sections only if they have values
@@ -1554,69 +1604,107 @@ export default function CreateMortgage() {
           {step === "coBorrower" && isActiveStepWidgetVisible && (
             <>
             <div className="rounded-2xl border border-cyan-100 bg-cyan-50/60 px-4 py-3 text-sm text-slate-600">
-              Guarantor details are optional. Leave blank to skip this step, or complete all fields if adding a co-borrower.
+              Guarantor details are optional. Leave all rows blank to skip this step, or complete all required fields for each guarantor you add.
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className={labelClass}>
-                  Full Name
-                </label>
-                <input
-                  value={coBorrowerName}
-                  onChange={(e) => setCoBorrowerName(e.target.value)}
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label className={labelClass}>
-                  NIC / Passport
-                </label>
-                <input
-                  value={coBorrowerNic}
-                  onChange={(e) => setCoBorrowerNic(e.target.value)}
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label className={labelClass}>
-                  Relationship to Borrower
-                </label>
-                <input
-                  value={coBorrowerRelationship}
-                  onChange={(e) => setCoBorrowerRelationship(e.target.value)}
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label className={labelClass}>
-                  Address
-                </label>
-                <textarea
-                  value={coBorrowerAddress}
-                  onChange={(e) => setCoBorrowerAddress(e.target.value)}
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label className={labelClass}>
-                  Contact Number
-                </label>
-                <input
-                  value={coBorrowerContact}
-                  onChange={(e) => setCoBorrowerContact(e.target.value)}
-                  className={inputClass}
-                />
-              </div>
-              <div>
-                <label className={labelClass}>
-                  Income Details (Monthly)
-                </label>
-                <input
-                  value={coBorrowerIncome}
-                  onChange={(e) => setCoBorrowerIncome(e.target.value)}
-                  className={inputClass}
-                />
-              </div>
+            <div className="space-y-4">
+              {guarantors.map((guarantor, index) => {
+                const rowHasAnyValue = guarantorHasAnyValue(guarantor);
+                const rowComplete = guarantorHasRequiredValues(guarantor);
+
+                return (
+                  <div key={`guarantor-row-${index}`} className="rounded-2xl border border-slate-200 bg-white/80 p-4">
+                    <div className="mb-3 flex items-center justify-between">
+                      <p className="text-sm font-bold text-slate-800">Guarantor #{index + 1}</p>
+                      <button
+                        type="button"
+                        onClick={() => removeGuarantor(index)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Remove
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div>
+                        <label className={labelClass}>
+                          Full Name
+                        </label>
+                        <input
+                          value={guarantor.full_name}
+                          onChange={(e) => updateGuarantorField(index, "full_name", e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className={labelClass}>
+                          NIC / Passport
+                        </label>
+                        <input
+                          value={guarantor.nic}
+                          onChange={(e) => updateGuarantorField(index, "nic", e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className={labelClass}>
+                          Relationship to Borrower
+                        </label>
+                        <input
+                          value={guarantor.relationship}
+                          onChange={(e) => updateGuarantorField(index, "relationship", e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className={labelClass}>
+                          Address
+                        </label>
+                        <textarea
+                          value={guarantor.address}
+                          onChange={(e) => updateGuarantorField(index, "address", e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className={labelClass}>
+                          Contact Number
+                        </label>
+                        <input
+                          value={guarantor.contact_number}
+                          onChange={(e) => updateGuarantorField(index, "contact_number", e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className={labelClass}>
+                          Income Details (Monthly)
+                        </label>
+                        <input
+                          value={guarantor.monthly_income}
+                          onChange={(e) => updateGuarantorField(index, "monthly_income", e.target.value)}
+                          className={inputClass}
+                        />
+                      </div>
+                    </div>
+
+                    {rowHasAnyValue && !rowComplete ? (
+                      <p className="mt-3 text-xs font-semibold text-rose-600">
+                        Complete all required fields for this guarantor: full name, NIC/passport, relationship, address, and monthly income.
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })}
+
+              <button
+                type="button"
+                onClick={addGuarantor}
+                className="inline-flex items-center gap-2 rounded-xl border border-cyan-300 bg-cyan-50 px-3 py-2 text-sm font-bold text-cyan-800 transition hover:bg-cyan-100"
+              >
+                <Plus className="h-4 w-4" />
+                Add Another Guarantor
+              </button>
             </div>
             </>
           )}

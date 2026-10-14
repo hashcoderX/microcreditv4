@@ -15,6 +15,7 @@ type LoanRow = {
   field_officer?: string | null;
   status?: string | null;
   refundable_amount?: number | string | null;
+  loan_balance?: number | string | null;
   loan_amount?: number | string | null;
   installment_amount?: number | string | null;
   arrears_balance?: number | string | null;
@@ -190,7 +191,9 @@ export default function RepaymentReportPage() {
             const loanId = Number(loan.id || 0);
             const refundableAmount = Number(loan.refundable_amount || 0);
             const collectedAmount = paidByLoan.get(loanId) || 0;
-            const pendingAmount = Math.max(refundableAmount - collectedAmount, 0);
+            const backendOutstandingAmount = Number(loan.loan_balance || 0);
+            const derivedOutstandingAmount = Math.max(refundableAmount - collectedAmount, 0);
+            const pendingAmount = Math.max(backendOutstandingAmount, derivedOutstandingAmount, 0);
             const repaymentRate = refundableAmount > 0 ? (collectedAmount / refundableAmount) * 100 : 0;
 
             const dueDateText = String(loan.due_date || '').slice(0, 10);
@@ -348,6 +351,9 @@ export default function RepaymentReportPage() {
     return filteredRows.reduce(
       (acc, row) => {
         acc.count += 1;
+        if (row.pendingAmount > 0.009) {
+          acc.activeOutstandingCount += 1;
+        }
         acc.loanAmount += row.loanAmount;
         acc.refundable += row.refundableAmount;
         acc.collected += row.collectedAmount;
@@ -361,6 +367,7 @@ export default function RepaymentReportPage() {
       },
       {
         count: 0,
+        activeOutstandingCount: 0,
         loanAmount: 0,
         refundable: 0,
         collected: 0,
@@ -380,8 +387,8 @@ export default function RepaymentReportPage() {
   const summaryCards = [
     {
       key: `${widgetPrefix}summary_active_accounts`,
-      label: 'Active Accounts',
-      value: String(summary.count),
+      label: 'Active Accounts (Outstanding)',
+      value: String(summary.activeOutstandingCount),
       valueClass: 'text-slate-900',
     },
     {
@@ -398,7 +405,7 @@ export default function RepaymentReportPage() {
     },
     {
       key: `${widgetPrefix}summary_pending`,
-      label: 'Pending',
+      label: 'Outstanding',
       value: new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 2 }).format(summary.pending),
       valueClass: 'text-rose-700',
     },
@@ -468,7 +475,7 @@ export default function RepaymentReportPage() {
     { key: 'loan_status', label: 'Loan Status', render: (row) => row.loanStatus, tdClassName: 'capitalize' },
     { key: 'refundable', label: 'Refundable', render: (row) => formatMoney(row.refundableAmount) },
     { key: 'collected', label: 'Collected', render: (row) => formatMoney(row.collectedAmount), tdClassName: 'text-emerald-700 font-semibold' },
-    { key: 'pending', label: 'Pending', render: (row) => formatMoney(row.pendingAmount), tdClassName: 'text-rose-700 font-semibold' },
+    { key: 'pending', label: 'Outstanding', render: (row) => formatMoney(row.pendingAmount), tdClassName: 'text-rose-700 font-semibold' },
     { key: 'repayment_rate', label: 'Repayment %', render: (row) => `${row.repaymentRate.toFixed(2)}%`, tdClassName: 'font-semibold text-indigo-700' },
     { key: 'due_date', label: 'Due Date', render: (row) => formatDate(row.dueDate) },
     { key: 'next_payment', label: 'Next Payment', render: (row) => formatDate(row.nextPaymentDate) },
@@ -507,7 +514,7 @@ export default function RepaymentReportPage() {
       'Loan Amount',
       'Refundable Amount',
       'Collected Amount',
-      'Pending Amount',
+      'Outstanding Amount',
       'Repayment Rate (%)',
       'Due Date',
       'Next Payment Date',
@@ -578,7 +585,7 @@ export default function RepaymentReportPage() {
         'Officer',
         'Refundable',
         'Collected',
-        'Pending',
+        'Outstanding',
         'Rate %',
         'Overdue Days',
         'Status',
@@ -621,7 +628,7 @@ export default function RepaymentReportPage() {
       'Member Name',
       'Loan Amount',
       'Due Amount',
-      'Total Balance',
+      'Outstanding',
       'Arrears',
       `Paid Amount (${dateColumnMonthYear.month}/${dateColumnMonthYear.year})`,
       'Correction',
@@ -683,7 +690,7 @@ export default function RepaymentReportPage() {
         { content: 'Member Name', rowSpan: 2 },
         { content: 'Loan\nAmount', rowSpan: 2 },
         { content: 'Due\nAmount', rowSpan: 2 },
-        { content: 'Total\nBalance', rowSpan: 2 },
+        { content: 'Outstanding', rowSpan: 2 },
         { content: 'Arrears', rowSpan: 2 },
         { content: dateColumnLabel },
         { content: dateColumnLabel },
@@ -820,7 +827,7 @@ export default function RepaymentReportPage() {
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                 <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 font-semibold text-cyan-800">Accounts: {summary.count}</span>
                 <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 font-semibold text-emerald-700">Collected: {new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 0 }).format(summary.collected)}</span>
-                <span className="rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 font-semibold text-rose-700">Pending: {new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 0 }).format(summary.pending)}</span>
+                <span className="rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 font-semibold text-rose-700">Outstanding: {new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 0 }).format(summary.pending)}</span>
               </div>
             </div>
             <button
@@ -845,7 +852,7 @@ export default function RepaymentReportPage() {
                   </button>
                 </WidgetCloseGate>
                 <p className="pr-8 text-[10px] sm:text-[11px] uppercase tracking-[0.12em] text-slate-500">{card.label}</p>
-                <p className={`mt-1 text-xl sm:text-2xl font-extrabold leading-tight break-words ${card.valueClass}`}>{card.value}</p>
+                <p className={`mt-1 text-[12px] font-extrabold leading-tight break-words ${card.valueClass}`}>{card.value}</p>
               </div>
             ))}
           </div>
@@ -1045,7 +1052,7 @@ export default function RepaymentReportPage() {
               <p className="text-xl font-extrabold text-slate-900">{formatMoney(centerSectionSummary.dueAmount)}</p>
             </div>
             <div className="rounded-2xl bg-gradient-to-br from-rose-50 to-rose-100/70 border border-rose-100 p-3">
-              <p className="text-xs uppercase tracking-wide text-cyan-700">Total Balance</p>
+              <p className="text-xs uppercase tracking-wide text-cyan-700">Outstanding</p>
               <p className="text-xl font-extrabold text-rose-700">{formatMoney(centerSectionSummary.balance)}</p>
             </div>
             <div className="rounded-2xl bg-gradient-to-br from-amber-50 to-amber-100/70 border border-amber-100 p-3">
@@ -1071,7 +1078,7 @@ export default function RepaymentReportPage() {
                     <th rowSpan={2} className="px-3 py-2.5 font-semibold">Member Name</th>
                     <th rowSpan={2} className="px-3 py-2.5 font-semibold">Loan Amount</th>
                     <th rowSpan={2} className="px-3 py-2.5 font-semibold">Due Amount</th>
-                    <th rowSpan={2} className="px-3 py-2.5 font-semibold">Total Balance</th>
+                    <th rowSpan={2} className="px-3 py-2.5 font-semibold">Outstanding</th>
                     <th rowSpan={2} className="px-3 py-2.5 font-semibold">Arrears</th>
                     <th className="px-3 py-2.5 font-semibold whitespace-nowrap">{dateColumnLabel}</th>
                     <th className="px-3 py-2.5 font-semibold whitespace-nowrap">{dateColumnLabel}</th>

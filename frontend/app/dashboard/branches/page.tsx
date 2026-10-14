@@ -278,6 +278,15 @@ export default function Branches() {
     return first?.id ?? null;
   }, [companies]);
 
+  const openAllBranchReports = useCallback(() => {
+    if (mainBranchId && mainBranchId > 0) {
+      router.push(`/dashboard/branches/${mainBranchId}?branch_id=all#reports`);
+      return;
+    }
+
+    router.push('/dashboard/microfinance/reports/collection?branch_id=all');
+  }, [router, mainBranchId]);
+
   const isCreatingFirstBranch = !editingCompany && companies.length === 0;
   const isEditingMainBranch = Boolean(editingCompany && mainBranchId && editingCompany.id === mainBranchId);
   const showMainBranchSetup = isCreatingFirstBranch || isEditingMainBranch;
@@ -697,6 +706,14 @@ export default function Branches() {
                 </button>
                 <button
                   type="button"
+                  onClick={openAllBranchReports}
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/20"
+                >
+                  <Coins className="h-4 w-4" />
+                  All Branch Reports
+                </button>
+                <button
+                  type="button"
                   onClick={openCreateForm}
                   className="inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-teal-700 hover:bg-teal-50 shadow-sm"
                 >
@@ -806,15 +823,25 @@ export default function Branches() {
             </button>
           </WidgetCloseGate>
           <div className="border-b border-teal-100 px-4 sm:px-6 py-4">
-            <div className="relative max-w-md">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-teal-500/70" />
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search branch name, email, manager…"
-                className="w-full rounded-xl border border-teal-100 bg-white py-2.5 pl-10 pr-3 text-sm text-black focus:border-teal-300 focus:outline-none focus:ring-2 focus:ring-teal-100"
-              />
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="relative max-w-md w-full">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-teal-500/70" />
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search branch name, email, manager…"
+                  className="w-full rounded-xl border border-teal-100 bg-white py-2.5 pl-10 pr-3 text-sm text-black focus:border-teal-300 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={openAllBranchReports}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-teal-200 bg-teal-50 px-3.5 py-2.5 text-sm font-semibold text-teal-800 hover:bg-teal-100"
+              >
+                <Coins className="h-4 w-4" />
+                View All Branch Reports
+              </button>
             </div>
           </div>
 

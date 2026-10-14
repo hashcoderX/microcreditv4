@@ -164,6 +164,100 @@ export default function YearEndSummaryReportPage() {
       .join(' ');
   }, [monthSummary, chartScale]);
   const formatMoney = (value: number) => Number(value || 0).toFixed(2);
+  const getReportFileDate = () => new Date().toISOString().slice(0, 10);
+
+  const handleDownloadCsv = () => {
+    const headers = ['Year', 'Month', 'Total Collection', 'Capital Collection', 'Profit'];
+
+    const escapeCsv = (value: string | number) => {
+      const text = String(value ?? '');
+      if (text.includes(',') || text.includes('"') || text.includes('\n')) {
+        return `"${text.replace(/"/g, '""')}"`;
+      }
+      return text;
+    };
+
+    const body = monthSummary.map((row) => [
+      selectedYear,
+      row.monthName,
+      formatMoney(row.totalCollection),
+      formatMoney(row.totalCapital),
+      formatMoney(row.totalProfit),
+    ]);
+
+    body.push([
+      selectedYear,
+      'Total',
+      formatMoney(totals.collection),
+      formatMoney(totals.capital),
+      formatMoney(totals.profit),
+    ]);
+
+    const csv = [headers, ...body].map((line) => line.map(escapeCsv).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `year-end-summary-${selectedYear}-${getReportFileDate()}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  const handleDownloadPdf = async () => {
+    const [{ jsPDF }, { default: autoTable }] = await Promise.all([
+      import('jspdf'),
+      import('jspdf-autotable'),
+    ]);
+
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+    const generatedAt = new Intl.DateTimeFormat('en-LK', {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(new Date());
+
+    doc.setFontSize(16);
+    doc.text('Year End Summary Report', 40, 40);
+    doc.setFontSize(10);
+    doc.text(`Year: ${selectedYear} | Generated: ${generatedAt}`, 40, 58);
+
+    autoTable(doc, {
+      startY: 72,
+      head: [['Month', 'Total Collection', 'Capital Collection', 'Profit']],
+      body: [
+        ...monthSummary.map((row) => [
+          row.monthName,
+          formatMoney(row.totalCollection),
+          formatMoney(row.totalCapital),
+          formatMoney(row.totalProfit),
+        ]),
+        [
+          'Total',
+          formatMoney(totals.collection),
+          formatMoney(totals.capital),
+          formatMoney(totals.profit),
+        ],
+      ],
+      styles: {
+        fontSize: 9,
+        cellPadding: 5,
+      },
+      headStyles: {
+        fillColor: [79, 70, 229],
+        textColor: [255, 255, 255],
+      },
+      alternateRowStyles: {
+        fillColor: [238, 242, 255],
+      },
+      margin: { left: 24, right: 24, top: 72, bottom: 24 },
+      theme: 'striped',
+    });
+
+    doc.save(`year-end-summary-${selectedYear}-${getReportFileDate()}.pdf`);
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-violet-50 to-sky-100 p-5 md:p-7">
@@ -203,18 +297,38 @@ export default function YearEndSummaryReportPage() {
                 ))}
               </select>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 min-w-[320px]">
-              <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
-                <p className="text-xs uppercase tracking-wide text-indigo-700">Year Collection</p>
-                <p className="text-lg font-extrabold text-indigo-700">{formatMoney(totals.collection)}</p>
+            <div className="flex flex-col gap-2 w-full lg:w-auto">
+              <div className="flex justify-start lg:justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={handleDownloadCsv}
+                  disabled={loading}
+                  className="rounded-xl border border-indigo-200 bg-white px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Download CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadPdf()}
+                  disabled={loading}
+                  className="rounded-xl border border-cyan-200 bg-white px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Download PDF
+                </button>
               </div>
-              <div className="rounded-xl border border-cyan-100 bg-cyan-50/70 p-3">
-                <p className="text-xs uppercase tracking-wide text-cyan-700">Year Capital</p>
-                <p className="text-lg font-extrabold text-cyan-700">{formatMoney(totals.capital)}</p>
-              </div>
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
-                <p className="text-xs uppercase tracking-wide text-emerald-700">Year Profit</p>
-                <p className="text-lg font-extrabold text-emerald-700">{formatMoney(totals.profit)}</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 min-w-[320px]">
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-3">
+                  <p className="text-xs uppercase tracking-wide text-indigo-700">Year Collection</p>
+                  <p className="text-lg font-extrabold text-indigo-700">{formatMoney(totals.collection)}</p>
+                </div>
+                <div className="rounded-xl border border-cyan-100 bg-cyan-50/70 p-3">
+                  <p className="text-xs uppercase tracking-wide text-cyan-700">Year Capital</p>
+                  <p className="text-lg font-extrabold text-cyan-700">{formatMoney(totals.capital)}</p>
+                </div>
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-3">
+                  <p className="text-xs uppercase tracking-wide text-emerald-700">Year Profit</p>
+                  <p className="text-lg font-extrabold text-emerald-700">{formatMoney(totals.profit)}</p>
+                </div>
               </div>
             </div>
           </div>

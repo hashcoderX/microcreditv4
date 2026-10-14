@@ -153,12 +153,19 @@ export default function CustomerPaymentHistoryReportPage() {
   const [issuedLoans, setIssuedLoans] = useState<IssuedLoanRow[]>([]);
   const [paymentHistory, setPaymentHistory] = useState<HistoryRow[]>([]);
   const [selectedLoanId, setSelectedLoanId] = useState<number | null>(null);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [loanSearch, setLoanSearch] = useState('');
+  const [loanCurrentPage, setLoanCurrentPage] = useState(1);
+  const [loanPageSize, setLoanPageSize] = useState(10);
   const [historySearch, setHistorySearch] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [exportingCsv, setExportingCsv] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
+
+  const closeHistoryModal = useCallback(() => {
+    setIsHistoryModalOpen(false);
+  }, []);
 
   const headers = useMemo(
     () => ({
@@ -231,6 +238,25 @@ export default function CustomerPaymentHistoryReportPage() {
     loadIssuedLoans();
   }, [token, headers]);
 
+  useEffect(() => {
+    if (!isHistoryModalOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsHistoryModalOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isHistoryModalOpen]);
+
   const selectedLoan = useMemo(
     () => issuedLoans.find((loan) => loan.id === selectedLoanId) || null,
     [issuedLoans, selectedLoanId]
@@ -240,7 +266,11 @@ export default function CustomerPaymentHistoryReportPage() {
     async (loan: IssuedLoanRow) => {
       if (!token) return;
 
+      setIsHistoryModalOpen(true);
       setSelectedLoanId(loan.id);
+      setHistorySearch('');
+      setFromDate('');
+      setToDate('');
       setHistoryLoading(true);
       setPaymentHistory([]);
 
@@ -285,6 +315,20 @@ export default function CustomerPaymentHistoryReportPage() {
       return haystack.includes(keyword);
     });
   }, [issuedLoans, loanSearch]);
+
+  useEffect(() => {
+    setLoanCurrentPage(1);
+  }, [loanSearch, issuedLoans.length, loanPageSize]);
+
+  const loanTotalPages = Math.max(1, Math.ceil(filteredLoans.length / loanPageSize));
+  const safeLoanPage = Math.min(loanCurrentPage, loanTotalPages);
+  const paginatedLoans = useMemo(() => {
+    const start = (safeLoanPage - 1) * loanPageSize;
+    return filteredLoans.slice(start, start + loanPageSize);
+  }, [filteredLoans, loanPageSize, safeLoanPage]);
+
+  const loanPageStart = filteredLoans.length === 0 ? 0 : (safeLoanPage - 1) * loanPageSize + 1;
+  const loanPageEnd = Math.min(safeLoanPage * loanPageSize, filteredLoans.length);
 
   const filteredHistory = useMemo(() => {
     const keyword = historySearch.trim().toLowerCase();
@@ -584,75 +628,137 @@ export default function CustomerPaymentHistoryReportPage() {
           ) : filteredLoans.length === 0 ? (
             <p className="py-8 text-center text-slate-600">No issued loans found.</p>
           ) : (
-            <div className="mt-4 overflow-x-auto rounded-2xl border border-fuchsia-100">
-              <table className="min-w-full text-sm text-left text-slate-700 bg-white">
-                <thead className="bg-fuchsia-50 text-slate-700">
-                  <tr>
-                    <th className="px-3 py-2 font-semibold">Loan Code</th>
-                    <th className="px-3 py-2 font-semibold">Customer No</th>
-                    <th className="px-3 py-2 font-semibold">Customer</th>
-                    <th className="px-3 py-2 font-semibold">Field Officer</th>
-                    <th className="px-3 py-2 font-semibold">Route</th>
-                    <th className="px-3 py-2 font-semibold">Center</th>
-                    <th className="px-3 py-2 font-semibold">Group</th>
-                    <th className="px-3 py-2 font-semibold">Status</th>
-                    <th className="px-3 py-2 font-semibold">Issue Date</th>
-                    <th className="px-3 py-2 font-semibold">Issue Amount</th>
-                    <th className="px-3 py-2 font-semibold">Refundable</th>
-                    <th className="px-3 py-2 font-semibold">Total Paid</th>
-                    <th className="px-3 py-2 font-semibold">Outstanding</th>
-                    <th className="px-3 py-2 font-semibold">Last Payment</th>
-                    <th className="px-3 py-2 font-semibold">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredLoans.map((loan) => {
-                    const isSelected = selectedLoanId === loan.id;
+            <>
+              <div className="mt-4 flex items-center justify-between gap-3 text-sm text-slate-600">
+                <span>
+                  Showing {loanPageStart}-{loanPageEnd} of {filteredLoans.length} loans
+                </span>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs uppercase tracking-wide text-slate-500">Rows</label>
+                  <select
+                    value={loanPageSize}
+                    onChange={(e) => setLoanPageSize(Number(e.target.value) || 10)}
+                    className="rounded-lg border border-fuchsia-100 bg-white px-2 py-1.5 text-xs text-black focus:outline-none focus:ring-2 focus:ring-fuchsia-200"
+                  >
+                    <option value={10}>10</option>
+                    <option value={15}>15</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                  </select>
+                </div>
+              </div>
 
-                    return (
-                      <tr
-                        key={loan.id}
-                        onClick={() => loadPaymentHistory(loan)}
-                        className={`border-b border-fuchsia-100 last:border-b-0 cursor-pointer transition-colors ${
-                          isSelected ? 'bg-fuchsia-100/70' : 'hover:bg-fuchsia-50/50'
-                        }`}
-                      >
-                        <td className="px-3 py-2 font-semibold text-slate-900">{loan.loanCode}</td>
-                        <td className="px-3 py-2">{loan.customerNo}</td>
-                        <td className="px-3 py-2">{loan.customerName}</td>
-                        <td className="px-3 py-2">{loan.fieldOfficer}</td>
-                        <td className="px-3 py-2">{loan.routeName}</td>
-                        <td className="px-3 py-2">{loan.centerName}</td>
-                        <td className="px-3 py-2">{loan.groupName}</td>
-                        <td className="px-3 py-2 capitalize">{loan.status}</td>
-                        <td className="px-3 py-2">{formatDisplayDate(loan.issueDate)}</td>
-                        <td className="px-3 py-2 font-semibold text-cyan-700">{formatMoney(loan.issueAmount)}</td>
-                        <td className="px-3 py-2 font-semibold text-indigo-700">{formatMoney(loan.refundableAmount)}</td>
-                        <td className="px-3 py-2 font-semibold text-emerald-700">{formatMoney(loan.totalPaidAmount)}</td>
-                        <td className="px-3 py-2 font-semibold text-rose-700">{formatMoney(loan.outstandingAmount)}</td>
-                        <td className="px-3 py-2">{formatDisplayDate(loan.lastPayDate)}</td>
-                        <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              loadPaymentHistory(loan);
-                            }}
-                            className="rounded-lg bg-gradient-to-r from-fuchsia-500 to-rose-500 px-3 py-1.5 text-xs font-semibold text-white hover:from-fuchsia-600 hover:to-rose-600"
-                          >
-                            Payment History
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+              <div className="mt-2 overflow-x-auto rounded-2xl border border-fuchsia-100">
+                <table className="min-w-full text-sm text-left text-slate-700 bg-white">
+                  <thead className="bg-fuchsia-50 text-slate-700">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold">Loan Code</th>
+                      <th className="px-3 py-2 font-semibold">Customer No</th>
+                      <th className="px-3 py-2 font-semibold">Customer</th>
+                      <th className="px-3 py-2 font-semibold">Field Officer</th>
+                      <th className="px-3 py-2 font-semibold">Route</th>
+                      <th className="px-3 py-2 font-semibold">Center</th>
+                      <th className="px-3 py-2 font-semibold">Group</th>
+                      <th className="px-3 py-2 font-semibold">Status</th>
+                      <th className="px-3 py-2 font-semibold">Issue Date</th>
+                      <th className="px-3 py-2 font-semibold">Issue Amount</th>
+                      <th className="px-3 py-2 font-semibold">Refundable</th>
+                      <th className="px-3 py-2 font-semibold">Total Paid</th>
+                      <th className="px-3 py-2 font-semibold">Outstanding</th>
+                      <th className="px-3 py-2 font-semibold">Last Payment</th>
+                      <th className="px-3 py-2 font-semibold">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedLoans.map((loan) => {
+                      const isSelected = selectedLoanId === loan.id;
+
+                      return (
+                        <tr
+                          key={loan.id}
+                          onClick={() => loadPaymentHistory(loan)}
+                          className={`border-b border-fuchsia-100 last:border-b-0 cursor-pointer transition-colors ${
+                            isSelected ? 'bg-fuchsia-100/70' : 'hover:bg-fuchsia-50/50'
+                          }`}
+                        >
+                          <td className="px-3 py-2 font-semibold text-slate-900">{loan.loanCode}</td>
+                          <td className="px-3 py-2">{loan.customerNo}</td>
+                          <td className="px-3 py-2">{loan.customerName}</td>
+                          <td className="px-3 py-2">{loan.fieldOfficer}</td>
+                          <td className="px-3 py-2">{loan.routeName}</td>
+                          <td className="px-3 py-2">{loan.centerName}</td>
+                          <td className="px-3 py-2">{loan.groupName}</td>
+                          <td className="px-3 py-2 capitalize">{loan.status}</td>
+                          <td className="px-3 py-2">{formatDisplayDate(loan.issueDate)}</td>
+                          <td className="px-3 py-2 font-semibold text-cyan-700">{formatMoney(loan.issueAmount)}</td>
+                          <td className="px-3 py-2 font-semibold text-indigo-700">{formatMoney(loan.refundableAmount)}</td>
+                          <td className="px-3 py-2 font-semibold text-emerald-700">{formatMoney(loan.totalPaidAmount)}</td>
+                          <td className="px-3 py-2 font-semibold text-rose-700">{formatMoney(loan.outstandingAmount)}</td>
+                          <td className="px-3 py-2">{formatDisplayDate(loan.lastPayDate)}</td>
+                          <td className="px-3 py-2">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                loadPaymentHistory(loan);
+                              }}
+                              className="rounded-lg bg-gradient-to-r from-fuchsia-500 to-rose-500 px-3 py-1.5 text-xs font-semibold text-white hover:from-fuchsia-600 hover:to-rose-600"
+                            >
+                              Preview History
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <p className="text-xs text-slate-500">
+                  Page {safeLoanPage} of {loanTotalPages}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setLoanCurrentPage((prev) => Math.max(1, prev - 1))}
+                    disabled={safeLoanPage <= 1}
+                    className="rounded-lg border border-fuchsia-100 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLoanCurrentPage((prev) => Math.min(loanTotalPages, prev + 1))}
+                    disabled={safeLoanPage >= loanTotalPages}
+                    className="rounded-lg border border-fuchsia-100 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </>
           )}
         </div>
 
-        <div className="rounded-3xl border border-fuchsia-100 bg-white/90 p-5 backdrop-blur-xl shadow-[0_18px_45px_-28px_rgba(217,70,239,0.4)]">
+        <div className="rounded-2xl border border-fuchsia-100 bg-white/80 p-4 text-sm text-slate-600 shadow-[0_12px_30px_-20px_rgba(217,70,239,0.35)]">
+          Click a loan row or the Preview History button to open payment history in a modal.
+        </div>
+
+        {isHistoryModalOpen && (
+          <div className="fixed inset-0 z-[95] flex items-start justify-center p-4 md:p-6">
+            <div className="absolute inset-0 bg-slate-900/45 backdrop-blur-sm" onClick={closeHistoryModal} />
+            <div className="relative w-full max-w-7xl max-h-[92vh] overflow-y-auto rounded-3xl border border-fuchsia-200 bg-white/95 p-5 shadow-[0_28px_70px_-30px_rgba(217,70,239,0.6)] backdrop-blur-xl">
+              <button
+                type="button"
+                onClick={closeHistoryModal}
+                className="absolute right-4 top-4 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-lg font-bold text-slate-600 shadow-sm transition hover:bg-fuchsia-50 hover:text-fuchsia-700"
+                aria-label="Close history preview"
+              >
+                ×
+              </button>
+
+              <div className="rounded-3xl border border-fuchsia-100 bg-white/90 p-5 backdrop-blur-xl shadow-[0_18px_45px_-28px_rgba(217,70,239,0.4)]">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div>
               <h2 className="text-lg font-bold text-slate-900">Payment History</h2>
@@ -844,7 +950,10 @@ export default function CustomerPaymentHistoryReportPage() {
               </table>
             </div>
           )}
-        </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

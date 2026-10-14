@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 
 type LoanRow = {
   id: number;
+  loan_scope?: string | null;
   loan_code?: string | null;
   customer_no?: string | null;
   customer_name?: string | null;
@@ -45,6 +46,7 @@ type AuthUser = {
 type ReportRow = {
   id: number;
   date: string;
+  loanScope: string;
   loanCode: string;
   customerNo: string;
   customerName: string;
@@ -73,9 +75,12 @@ export default function CenterCollectionReportPage() {
   const [rows, setRows] = useState<ReportRow[]>([]);
   const [centerFilter, setCenterFilter] = useState('all');
   const [officerFilter, setOfficerFilter] = useState('all');
+  const [loanTypeFilter, setLoanTypeFilter] = useState('center_loan');
   const [dateFilter, setDateFilter] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
 
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
@@ -140,6 +145,7 @@ export default function CenterCollectionReportPage() {
             return {
               id: Number(collection.id),
               date: String(collection.collection_date || collection.created_at || ''),
+              loanScope: String(loan?.loan_scope || '').trim().toLowerCase(),
               loanCode: String(loan?.loan_code || `LR-${loanId || 0}`),
               customerNo: String(loan?.customer_no || '-'),
               customerName: String(loan?.customer_name || '-'),
@@ -224,9 +230,43 @@ export default function CenterCollectionReportPage() {
         }
       }
 
+      if (loanTypeFilter !== 'all') {
+        if (row.loanScope !== loanTypeFilter) {
+          return false;
+        }
+      }
+
       return true;
     });
-  }, [rows, dateFilter, fromDate, toDate, centerFilter, officerFilter]);
+  }, [rows, dateFilter, fromDate, toDate, centerFilter, officerFilter, loanTypeFilter]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [centerFilter, officerFilter, dateFilter, fromDate, toDate, loanTypeFilter]);
+
+  const totalPages = useMemo(() => {
+    return Math.max(1, Math.ceil(filteredRows.length / rowsPerPage));
+  }, [filteredRows.length, rowsPerPage]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * rowsPerPage;
+    return filteredRows.slice(start, start + rowsPerPage);
+  }, [filteredRows, currentPage, rowsPerPage]);
+
+  const visibleRange = useMemo(() => {
+    if (filteredRows.length === 0) {
+      return { from: 0, to: 0 };
+    }
+    const from = (currentPage - 1) * rowsPerPage + 1;
+    const to = Math.min(currentPage * rowsPerPage, filteredRows.length);
+    return { from, to };
+  }, [filteredRows.length, currentPage, rowsPerPage]);
 
   const summary = useMemo(() => {
     const totals = filteredRows.reduce(
@@ -248,6 +288,102 @@ export default function CenterCollectionReportPage() {
       transactionCount: filteredRows.length,
       centerCount: uniqueCenters.size,
       officerCount: uniqueOfficers.size,
+    };
+  }, [filteredRows]);
+
+  const collectionMixChart = useMemo(() => {
+    const segments = [
+      { key: 'capital', label: 'Capital', value: summary.capital, color: '#10b981' },
+      { key: 'interest', label: 'Interest', value: summary.interest, color: '#3b82f6' },
+      { key: 'penalty', label: 'Penalty', value: summary.penalty, color: '#f43f5e' },
+    ];
+
+    const total = segments.reduce((acc, segment) => acc + segment.value, 0);
+    if (total <= 0) {
+      return {
+        total,
+        gradient: '#e2e8f0',
+        segments: segments.map((segment) => ({ ...segment, percent: 0 })),
+      };
+    }
+
+    let cursor = 0;
+    const gradientParts = segments.map((segment) => {
+      const percent = (segment.value / total) * 100;
+      const start = cursor;
+      const end = cursor + percent;
+      cursor = end;
+      return `${segment.color} ${start}% ${end}%`;
+    });
+
+    return {
+      total,
+      gradient: `conic-gradient(${gradientParts.join(', ')})`,
+      segments: segments.map((segment) => ({
+        ...segment,
+        percent: total > 0 ? (segment.value / total) * 100 : 0,
+      })),
+    };
+  }, [summary.capital, summary.interest, summary.penalty]);
+
+  const loanTypeChart = useMemo(() => {
+    const raw = filteredRows.reduce(
+      (acc, row) => {
+        const scope = row.loanScope || 'unknown';
+        acc[scope] = (acc[scope] || 0) + row.collected;
+        return acc;
+      },
+      {} as Record<string, number>
+    );
+
+    const colorMap: Record<string, string> = {
+      center_loan: '#06b6d4',
+      direct_loan: '#f59e0b',
+      route_loan: '#6366f1',
+      unknown: '#94a3b8',
+    };
+
+    const labelMap: Record<string, string> = {
+      center_loan: 'Center Loan',
+      direct_loan: 'Direct Loan',
+      route_loan: 'Route Loan',
+      unknown: 'Other/Unknown',
+    };
+
+    const segments = Object.entries(raw)
+      .map(([key, value]) => ({
+        key,
+        label: labelMap[key] || key.replace(/_/g, ' '),
+        value,
+        color: colorMap[key] || '#94a3b8',
+      }))
+      .sort((a, b) => b.value - a.value);
+
+    const total = segments.reduce((acc, segment) => acc + segment.value, 0);
+    if (total <= 0) {
+      return {
+        total,
+        gradient: '#e2e8f0',
+        segments: [] as Array<{ key: string; label: string; value: number; color: string; percent: number }>,
+      };
+    }
+
+    let cursor = 0;
+    const gradientParts = segments.map((segment) => {
+      const percent = (segment.value / total) * 100;
+      const start = cursor;
+      const end = cursor + percent;
+      cursor = end;
+      return `${segment.color} ${start}% ${end}%`;
+    });
+
+    return {
+      total,
+      gradient: `conic-gradient(${gradientParts.join(', ')})`,
+      segments: segments.map((segment) => ({
+        ...segment,
+        percent: total > 0 ? (segment.value / total) * 100 : 0,
+      })),
     };
   }, [filteredRows]);
 
@@ -351,7 +487,7 @@ export default function CenterCollectionReportPage() {
         </div>
 
         <div className="rounded-3xl border border-cyan-100 bg-white/90 p-5 shadow-[0_18px_40px_-24px_rgba(14,116,144,0.5)] backdrop-blur-xl">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
             <div>
               <label className="mb-1 block text-sm font-medium text-black">Center</label>
               <select
@@ -365,6 +501,20 @@ export default function CenterCollectionReportPage() {
                     {center.label}
                   </option>
                 ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium text-black">Loan Type</label>
+              <select
+                value={loanTypeFilter}
+                onChange={(event) => setLoanTypeFilter(event.target.value)}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-black"
+              >
+                <option value="all">All Loan Types</option>
+                <option value="center_loan">Center Loan</option>
+                <option value="direct_loan">Direct Loan</option>
+                <option value="route_loan">Route Loan</option>
               </select>
             </div>
 
@@ -427,9 +577,82 @@ export default function CenterCollectionReportPage() {
           <SummaryCard label="Interest + Penalty" value={formatMoney(summary.interest + summary.penalty)} accent="text-orange-700" />
         </div>
 
+        <div className="grid gap-4 xl:grid-cols-2">
+          <div className="rounded-3xl border border-cyan-100 bg-white/90 p-5 shadow-[0_18px_40px_-24px_rgba(14,116,144,0.5)] backdrop-blur-xl">
+            <h3 className="text-sm font-bold text-slate-900">Collection Mix Preview</h3>
+            <p className="mt-1 text-xs text-slate-500">Capital, interest, and penalty contribution based on active filters.</p>
+            <div className="mt-4 flex flex-wrap items-center gap-4">
+              <div
+                className="h-36 w-36 rounded-full border border-slate-200 shadow-inner"
+                style={{ background: collectionMixChart.gradient }}
+                aria-label="Collection mix pie chart"
+              />
+              <div className="space-y-2">
+                {collectionMixChart.segments.map((segment) => (
+                  <div key={segment.key} className="flex items-center gap-2 text-xs text-slate-700">
+                    <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: segment.color }} />
+                    <span className="font-semibold">{segment.label}</span>
+                    <span>{segment.percent.toFixed(1)}%</span>
+                    <span className="text-slate-500">({formatMoney(segment.value)})</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-cyan-100 bg-white/90 p-5 shadow-[0_18px_40px_-24px_rgba(14,116,144,0.5)] backdrop-blur-xl">
+            <h3 className="text-sm font-bold text-slate-900">Loan Type Distribution Preview</h3>
+            <p className="mt-1 text-xs text-slate-500">Collected amount split by loan type from current result set.</p>
+            <div className="mt-4 flex flex-wrap items-center gap-4">
+              <div
+                className="h-36 w-36 rounded-full border border-slate-200 shadow-inner"
+                style={{ background: loanTypeChart.gradient }}
+                aria-label="Loan type distribution pie chart"
+              />
+              <div className="space-y-2">
+                {loanTypeChart.segments.length === 0 ? (
+                  <p className="text-xs text-slate-500">No data for selected filters.</p>
+                ) : (
+                  loanTypeChart.segments.map((segment) => (
+                    <div key={segment.key} className="flex items-center gap-2 text-xs text-slate-700">
+                      <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: segment.color }} />
+                      <span className="font-semibold">{segment.label}</span>
+                      <span>{segment.percent.toFixed(1)}%</span>
+                      <span className="text-slate-500">({formatMoney(segment.value)})</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="rounded-3xl border border-cyan-100 bg-white/90 shadow-[0_18px_40px_-24px_rgba(14,116,144,0.5)] backdrop-blur-xl">
           <div className="border-b border-slate-200 px-5 py-3">
             <h2 className="text-lg font-semibold text-slate-900">Center Collection Details</h2>
+            {!loading && (
+              <div className="mt-2 flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-xs text-slate-600">
+                  Showing {visibleRange.from}-{visibleRange.to} of {filteredRows.length} transactions
+                </p>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">Rows</label>
+                  <select
+                    value={rowsPerPage}
+                    onChange={(event) => {
+                      setRowsPerPage(Number(event.target.value) || 25);
+                      setCurrentPage(1);
+                    }}
+                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-black"
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="overflow-x-auto">
@@ -465,7 +688,7 @@ export default function CenterCollectionReportPage() {
                     </td>
                   </tr>
                 ) : (
-                  filteredRows.map((row) => (
+                  paginatedRows.map((row) => (
                     <tr key={row.id} className="hover:bg-cyan-50/40">
                       <td className="whitespace-nowrap px-4 py-3 text-slate-700">{formatDateTime(row.date)}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-slate-700">
@@ -488,6 +711,32 @@ export default function CenterCollectionReportPage() {
               </tbody>
             </table>
           </div>
+
+          {!loading && filteredRows.length > 0 && (
+            <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-5 py-3">
+              <p className="text-xs text-slate-600">
+                Page {currentPage} of {totalPages}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                  disabled={currentPage <= 1}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                  disabled={currentPage >= totalPages}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -14,6 +14,7 @@ type LoanRow = {
   field_officer?: string | null;
   status?: string | null;
   refundable_amount?: number | string | null;
+  loan_balance?: number | string | null;
   loan_amount?: number | string | null;
   arrears_balance?: number | string | null;
   due_date?: string | null;
@@ -44,6 +45,29 @@ type RecoveryRow = {
 
 const API_BASE = getApiBaseUrl();
 
+const buildConicGradient = (segments: Array<{ value: number; color: string }>): string => {
+  const total = segments.reduce((sum, segment) => sum + Math.max(segment.value, 0), 0);
+  if (total <= 0) {
+    return 'conic-gradient(#e2e8f0 0deg 360deg)';
+  }
+
+  let running = 0;
+  const parts: string[] = [];
+  segments.forEach((segment) => {
+    const value = Math.max(segment.value, 0);
+    if (value <= 0) return;
+
+    const start = (running / total) * 360;
+    running += value;
+    const end = (running / total) * 360;
+    parts.push(`${segment.color} ${start.toFixed(2)}deg ${end.toFixed(2)}deg`);
+  });
+
+  return parts.length > 0
+    ? `conic-gradient(${parts.join(', ')})`
+    : 'conic-gradient(#e2e8f0 0deg 360deg)';
+};
+
 export default function RecoveryReportPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -52,6 +76,8 @@ export default function RecoveryReportPage() {
   const [rows, setRows] = useState<RecoveryRow[]>([]);
   const [officerFilter, setOfficerFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState<'all' | 'urgent' | 'high' | 'medium' | 'low'>('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
 
   const branchId = Number(searchParams.get('branch_id') || 0) || undefined;
 
@@ -114,7 +140,9 @@ export default function RecoveryReportPage() {
             const loanId = Number(loan.id || 0);
             const refundableAmount = Number(loan.refundable_amount || 0);
             const collectedAmount = paidByLoan.get(loanId) || 0;
-            const pendingAmount = Math.max(refundableAmount - collectedAmount, 0);
+            const backendOutstandingAmount = Number(loan.loan_balance || 0);
+            const derivedOutstandingAmount = Math.max(refundableAmount - collectedAmount, 0);
+            const pendingAmount = Math.max(backendOutstandingAmount, derivedOutstandingAmount, 0);
             const arrearsAmount = Math.max(Number(loan.arrears_balance || 0), 0);
 
             const dueDateText = String(loan.due_date || '').slice(0, 10);
@@ -188,6 +216,19 @@ export default function RecoveryReportPage() {
     });
   }, [rows, officerFilter, priorityFilter]);
 
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [officerFilter, priorityFilter, rows.length, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredRows.slice(start, start + pageSize);
+  }, [filteredRows, currentPage, pageSize]);
+
+  const pageStart = filteredRows.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const pageEnd = Math.min(currentPage * pageSize, filteredRows.length);
+
   const summary = useMemo(() => {
     return filteredRows.reduce(
       (acc, row) => {
@@ -224,6 +265,45 @@ export default function RecoveryReportPage() {
     return ((summary.urgent + summary.high) / summary.count) * 100;
   }, [summary.count, summary.urgent, summary.high]);
 
+  const priorityChartData = useMemo(
+    () => [
+      { label: 'Urgent', value: summary.urgent, color: '#ef4444' },
+      { label: 'High', value: summary.high, color: '#f97316' },
+      { label: 'Medium', value: summary.medium, color: '#f59e0b' },
+      { label: 'Low', value: summary.low, color: '#10b981' },
+    ],
+    [summary.urgent, summary.high, summary.medium, summary.low]
+  );
+
+  const priorityTotal = useMemo(
+    () => priorityChartData.reduce((sum, item) => sum + item.value, 0),
+    [priorityChartData]
+  );
+
+  const priorityChartBackground = useMemo(
+    () => buildConicGradient(priorityChartData),
+    [priorityChartData]
+  );
+
+  const amountChartData = useMemo(
+    () => [
+      { label: 'Outstanding', value: summary.pending, color: '#e11d48' },
+      { label: 'Arrears', value: summary.arrears, color: '#ea580c' },
+      { label: 'Collected', value: summary.collected, color: '#059669' },
+    ],
+    [summary.pending, summary.arrears, summary.collected]
+  );
+
+  const amountTotal = useMemo(
+    () => amountChartData.reduce((sum, item) => sum + item.value, 0),
+    [amountChartData]
+  );
+
+  const amountChartBackground = useMemo(
+    () => buildConicGradient(amountChartData),
+    [amountChartData]
+  );
+
   const formatMoney = (value: number) => Number(value || 0).toFixed(2);
 
   const formatDate = (value: string) => {
@@ -250,7 +330,7 @@ export default function RecoveryReportPage() {
       'Loan Amount',
       'Refundable Amount',
       'Collected Amount',
-      'Pending Amount',
+      'Outstanding Amount',
       'Arrears Amount',
       'Due Date',
       'Next Payment Date',
@@ -319,7 +399,7 @@ export default function RecoveryReportPage() {
         'Customer No',
         'Customer',
         'Officer',
-        'Pending',
+        'Outstanding',
         'Arrears',
         'Overdue Days',
         'Priority',
@@ -404,7 +484,7 @@ export default function RecoveryReportPage() {
               <p className="mt-1 text-lg font-black text-white">{summary.count}</p>
             </div>
             <div className="rounded-2xl border border-rose-200/70 bg-white p-4 shadow-sm">
-              <p className="text-[10px] uppercase tracking-wide text-rose-500">Pending</p>
+              <p className="text-[10px] uppercase tracking-wide text-rose-500">Outstanding</p>
               <p className="mt-1 text-lg font-black text-rose-700">
                 {new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 2 }).format(summary.pending)}
               </p>
@@ -496,6 +576,19 @@ export default function RecoveryReportPage() {
             >
               Reset
             </button>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Rows</label>
+              <select
+                value={String(pageSize)}
+                onChange={(e) => setPageSize(Number(e.target.value) || 15)}
+                className="mt-1 rounded-xl border border-cyan-100 bg-white px-3 py-2 text-sm text-slate-900"
+              >
+                <option value="10">10</option>
+                <option value="15">15</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+              </select>
+            </div>
           </div>
 
           <div className="mt-4 rounded-xl border border-cyan-100 bg-cyan-50/50 p-3">
@@ -516,6 +609,84 @@ export default function RecoveryReportPage() {
             </div>
           </div>
 
+          <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
+            <div className="rounded-2xl border border-cyan-100 bg-gradient-to-br from-white to-cyan-50/40 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Graphical Preview</p>
+                  <h3 className="text-base font-black text-slate-900">Priority Distribution</h3>
+                </div>
+                <span className="rounded-lg bg-cyan-100 px-2 py-1 text-[11px] font-semibold text-cyan-700">Filtered Accounts: {priorityTotal}</span>
+              </div>
+              <div className="mt-3 flex flex-col items-center gap-4 lg:flex-row lg:items-start">
+                <div className="relative h-44 w-44 shrink-0 rounded-full border border-cyan-100 bg-white p-2 shadow-inner">
+                  <div className="h-full w-full rounded-full" style={{ backgroundImage: priorityChartBackground }} />
+                  <div className="absolute inset-[30%] flex items-center justify-center rounded-full border border-cyan-100 bg-white/95 text-center shadow-sm">
+                    <div>
+                      <p className="text-lg font-black text-slate-900">{priorityTotal}</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Accounts</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
+                  {priorityChartData.map((item) => {
+                    const percentage = priorityTotal > 0 ? (item.value / priorityTotal) * 100 : 0;
+                    return (
+                      <div key={item.label} className="rounded-xl border border-slate-100 bg-white p-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                            <p className="text-xs font-semibold text-slate-700">{item.label}</p>
+                          </div>
+                          <p className="text-sm font-black text-slate-900">{item.value}</p>
+                        </div>
+                        <p className="mt-1 text-[11px] text-slate-500">{percentage.toFixed(1)}%</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-cyan-100 bg-gradient-to-br from-white to-emerald-50/40 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Graphical Preview</p>
+                  <h3 className="text-base font-black text-slate-900">Amount Mix</h3>
+                </div>
+                <span className="rounded-lg bg-emerald-100 px-2 py-1 text-[11px] font-semibold text-emerald-700">
+                  Total: {new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 0 }).format(amountTotal)}
+                </span>
+              </div>
+              <div className="mt-3 flex flex-col items-center gap-4 lg:flex-row lg:items-start">
+                <div className="relative h-44 w-44 shrink-0 rounded-full border border-emerald-100 bg-white p-2 shadow-inner">
+                  <div className="h-full w-full rounded-full" style={{ backgroundImage: amountChartBackground }} />
+                  <div className="absolute inset-[28%] flex items-center justify-center rounded-full border border-emerald-100 bg-white/95 text-center shadow-sm">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Exposure</p>
+                      <p className="text-sm font-black text-slate-900">{new Intl.NumberFormat('en-LK', { maximumFractionDigits: 0 }).format(totalExposure)}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-3">
+                  {amountChartData.map((item) => {
+                    const percentage = amountTotal > 0 ? (item.value / amountTotal) * 100 : 0;
+                    return (
+                      <div key={item.label} className="rounded-xl border border-slate-100 bg-white p-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                          <p className="text-xs font-semibold text-slate-700">{item.label}</p>
+                        </div>
+                        <p className="mt-1 text-sm font-black text-slate-900">{new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 0 }).format(item.value)}</p>
+                        <p className="text-[11px] text-slate-500">{percentage.toFixed(1)}%</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+
           {filteredRows.length === 0 ? (
             <div className="mt-4 rounded-2xl border border-cyan-100 bg-gradient-to-br from-cyan-100/60 to-teal-100/40 p-8 text-center text-sm text-slate-700">
               No recovery data found for selected filters.
@@ -530,7 +701,7 @@ export default function RecoveryReportPage() {
                     <th className="px-3 py-2 font-semibold">Customer</th>
                     <th className="px-3 py-2 font-semibold">Field Officer</th>
                     <th className="px-3 py-2 font-semibold">Loan Status</th>
-                    <th className="px-3 py-2 font-semibold">Pending</th>
+                    <th className="px-3 py-2 font-semibold">Outstanding</th>
                     <th className="px-3 py-2 font-semibold">Arrears</th>
                     <th className="px-3 py-2 font-semibold">Due Date</th>
                     <th className="px-3 py-2 font-semibold">Next Payment</th>
@@ -539,7 +710,7 @@ export default function RecoveryReportPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.map((row) => (
+                  {paginatedRows.map((row) => (
                     <tr key={row.loanId} className="border-b border-cyan-100 transition-colors hover:bg-cyan-50/40 last:border-b-0">
                       <td className="px-3 py-2">{row.loanId}</td>
                       <td className="px-3 py-2 font-semibold text-slate-900">{row.customerNo}</td>
@@ -568,6 +739,35 @@ export default function RecoveryReportPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {filteredRows.length > 0 && (
+            <div className="mt-3 flex flex-col gap-2 rounded-xl border border-cyan-100 bg-cyan-50/45 px-3 py-2 text-sm text-slate-700 sm:flex-row sm:items-center sm:justify-between">
+              <p>
+                Showing {pageStart}-{pageEnd} of {filteredRows.length} rows
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                  disabled={currentPage <= 1}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 transition enabled:hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  Page {currentPage} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
+                  disabled={currentPage >= totalPages}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 transition enabled:hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
             </div>
           )}
         </div>

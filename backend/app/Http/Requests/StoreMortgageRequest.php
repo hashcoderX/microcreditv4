@@ -57,6 +57,7 @@ class StoreMortgageRequest extends FormRequest
             'co_borrower.nic' => ['nullable', 'string'],
             'co_borrower.relationship' => ['nullable', 'string'],
             'co_borrower.address' => ['nullable', 'string'],
+            'co_borrower.contact_number' => ['nullable', 'string'],
             'co_borrower.monthly_income' => ['nullable', 'numeric', 'min:0'],
 
             // Optional guarantors array
@@ -65,7 +66,9 @@ class StoreMortgageRequest extends FormRequest
             'guarantors.*.full_name' => ['nullable', 'string'],
             'guarantors.*.nic' => ['nullable', 'string'],
             'guarantors.*.relationship' => ['nullable', 'string'],
+            'guarantors.*.address' => ['nullable', 'string'],
             'guarantors.*.income' => ['nullable', 'numeric', 'min:0'],
+            'guarantors.*.monthly_income' => ['nullable', 'numeric', 'min:0'],
             'guarantors.*.contact_number' => ['nullable', 'string'],
 
             // Optional nested asset sub-sections (legal, valuation, physical, vehicle)

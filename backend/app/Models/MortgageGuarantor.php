@@ -14,6 +14,7 @@ class MortgageGuarantor extends Model
         'name',
         'nic',
         'relationship',
+        'address',
         'income',
         'contact_number',
     ];

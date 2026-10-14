@@ -281,7 +281,7 @@ export default function MicrofinanceActiveMembersReportPage() {
     },
     {
       key: 'mf_active_members_widget_summary_pending',
-      label: 'Pending',
+      label: 'Outstanding',
       value: new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', maximumFractionDigits: 2 }).format(summary.pending),
       valueClass: 'text-rose-700',
     },
@@ -301,7 +301,7 @@ export default function MicrofinanceActiveMembersReportPage() {
     { key: 'loanAmount', label: 'Loan Amount' },
     { key: 'refundable', label: 'Refundable' },
     { key: 'collected', label: 'Collected' },
-    { key: 'pending', label: 'Pending' },
+    { key: 'pending', label: 'Outstanding' },
     { key: 'dueDate', label: 'Due Date' },
   ];
   const visibleTableColumns = tableColumns.filter(
@@ -336,7 +336,7 @@ export default function MicrofinanceActiveMembersReportPage() {
       'Loan Amount',
       'Refundable Amount',
       'Collected Amount',
-      'Pending Amount',
+      'Outstanding Amount',
       'Due Date',
     ];
 
@@ -409,7 +409,7 @@ export default function MicrofinanceActiveMembersReportPage() {
         'Loan',
         'Refundable',
         'Collected',
-        'Pending',
+        'Outstanding',
         'Due Date',
       ]],
       body: filteredRows.map((row) => [
@@ -553,7 +553,7 @@ export default function MicrofinanceActiveMembersReportPage() {
                 <p className="pr-8 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 sm:text-[11px]">
                   {card.label}
                 </p>
-                <p className={`mt-1.5 text-xl font-black leading-tight sm:text-2xl ${card.valueClass}`}>
+                <p className={`mt-1.5 text-[12px] font-black leading-tight ${card.valueClass}`}>
                   {card.value}
                 </p>
               </div>
@@ -783,6 +783,24 @@ export default function MicrofinanceActiveMembersReportPage() {
               </div>
             </>
           )}
+        </div>
+
+        <div className="rounded-2xl border border-cyan-100 bg-gradient-to-r from-cyan-50/70 via-white to-emerald-50/70 p-4">
+          <h3 className="text-sm font-bold text-slate-900">Count Definition</h3>
+          <div className="mt-2 grid gap-3 md:grid-cols-2">
+            <div className="rounded-xl border border-cyan-100 bg-white/90 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-cyan-800">Active Member Report</p>
+              <p className="mt-1 text-sm text-slate-700">
+                ණය වාර්තා මට්ටමින් ගණනය කරනවා. සක්රීයව පවතින ණය වාර්තා කිහිපයක් එකම පාරිභෝගිකයෙකුට තිබිය හැකියි.
+              </p>
+            </div>
+            <div className="rounded-xl border border-emerald-100 bg-white/90 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">Active Loan Customers</p>
+              <p className="mt-1 text-sm text-slate-700">
+                සක්රීය ණය ඇති වෙනස් පාරිභෝගිකයන් පමණක් ගණන් කරනවා. එකම පාරිභෝගිකයා දෙවරක් ගණන් කරන්නේ නැහැ.
+              </p>
+            </div>
+          </div>
         </div>
 
         {widgetNotice.open && (

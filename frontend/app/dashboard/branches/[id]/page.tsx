@@ -4,7 +4,7 @@ import axios from 'axios';
 import { getApiBaseUrl } from '@/lib/api';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 
 type Branch = {
   id: number;
@@ -67,8 +67,12 @@ type ReportCategory = {
 export default function BranchDashboardPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
 
   const branchId = Number(params?.id || 0);
+  const requestedBranchScope = String(searchParams.get('branch_id') || '').trim().toLowerCase();
+  const reportBranchScope = requestedBranchScope === 'all' ? 'all' : (branchId > 0 ? String(branchId) : '');
+  const isAllBranchReportScope = reportBranchScope === 'all';
 
   const apiBase = getApiBaseUrl();
 
@@ -456,9 +460,9 @@ export default function BranchDashboardPage() {
   };
 
   const withBranch = (path: string) => {
-    if (!branchId) return path;
-    if (path.includes('?')) return `${path}&branch_id=${branchId}`;
-    return `${path}?branch_id=${branchId}`;
+    if (!reportBranchScope) return path;
+    if (path.includes('?')) return `${path}&branch_id=${encodeURIComponent(reportBranchScope)}`;
+    return `${path}?branch_id=${encodeURIComponent(reportBranchScope)}`;
   };
 
   const categories = useMemo<ReportCategory[]>(
@@ -476,9 +480,19 @@ export default function BranchDashboardPage() {
             path: withBranch('/dashboard/microfinance/reports/collection'),
           },
           {
+            title: 'Charges Report',
+            description: 'Analyze loan charge collection by charge type and center.',
+            path: withBranch('/dashboard/microfinance/reports/charges'),
+          },
+          {
             title: 'Field Officer Collection Report',
             description: 'Performance and totals by field officer.',
             path: withBranch('/dashboard/microfinance/reports/field-officer-collection'),
+          },
+          {
+            title: 'Today Collection (My)',
+            description: 'Track your own report-zone collections for today.',
+            path: withBranch('/dashboard/microfinance/reports/today-collection'),
           },
           {
             title: 'Center Collection Report',
@@ -491,9 +505,24 @@ export default function BranchDashboardPage() {
             path: withBranch('/dashboard/microfinance/reports/par'),
           },
           {
+            title: 'Arrears Report',
+            description: 'Detailed overdue and arrears ledger with aging visibility.',
+            path: withBranch('/dashboard/microfinance/reports/arrears'),
+          },
+          {
             title: 'Active Member Report',
             description: 'Active borrowers and repayment visibility.',
             path: withBranch('/dashboard/microfinance/reports/active-members'),
+          },
+          {
+            title: 'Not Paid Customer Report',
+            description: 'Find customers with missed installments and unpaid dues.',
+            path: withBranch('/dashboard/microfinance/reports/not-paid-customers'),
+          },
+          {
+            title: 'Micro Finance Loan Disbursement Report',
+            description: 'Analyze disbursed loans, active borrowers, and completed loans.',
+            path: withBranch('/dashboard/microfinance/reports/loan-disbursement'),
           },
           {
             title: 'Blacklisted Customer Report',
@@ -509,6 +538,21 @@ export default function BranchDashboardPage() {
             title: 'Recovery Report',
             description: 'Recovery priority and difficult portfolio tracking.',
             path: withBranch('/dashboard/microfinance/reports/recovery'),
+          },
+          {
+            title: 'Outstanding Customer Report',
+            description: 'List customers with outstanding balances and unpaid installments.',
+            path: withBranch('/dashboard/microfinance/reports/outstanding-customers'),
+          },
+          {
+            title: 'Year End Summary Report',
+            description: 'View Jan to Dec monthly totals for collection, capital collection, and profit.',
+            path: withBranch('/dashboard/microfinance/reports/year-end-summary'),
+          },
+          {
+            title: 'Customer Payment History Report',
+            description: 'Track payment history by customer with capital, interest, and penalty details.',
+            path: withBranch('/dashboard/microfinance/reports/customer-payment-history'),
           },
         ],
       },
@@ -578,6 +622,16 @@ export default function BranchDashboardPage() {
         bg: 'from-emerald-50 to-teal-50',
         reports: [
           {
+            title: 'Finance Collection Report',
+            description: 'Collection history, payment tracking, and receipt visibility for finance accounts.',
+            path: withBranch('/dashboard/finance/reports/collections'),
+          },
+          {
+            title: 'Finance Portfolio Report',
+            description: 'Portfolio KPIs, trends, arrears, and profitability by finance account.',
+            path: withBranch('/dashboard/finance/reports'),
+          },
+          {
             title: 'Income and Expense Report',
             description: 'Track revenue, expenses, and profitability.',
             path: withBranch('/dashboard/reports/income-expense'),
@@ -596,7 +650,7 @@ export default function BranchDashboardPage() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [branchId]
+    [branchId, reportBranchScope]
   );
 
   const visibleCategories = categories.filter(
@@ -858,7 +912,7 @@ export default function BranchDashboardPage() {
                         </WidgetCloseGate>
                         <button
                           type="button"
-                          onClick={() => router.push(`/dashboard/reports/branch-performance?branch_id=${branchId}`)}
+                          onClick={() => router.push(withBranch('/dashboard/reports/branch-performance'))}
                           className="w-full px-4 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 text-white text-sm font-semibold shadow-sm hover:from-rose-700 hover:to-red-700"
                         >
                           Branch Performance Report
@@ -880,7 +934,7 @@ export default function BranchDashboardPage() {
                         </WidgetCloseGate>
                         <button
                           type="button"
-                          onClick={() => router.push(`/dashboard/reports/branch-collection?branch_id=${branchId}`)}
+                          onClick={() => router.push(withBranch('/dashboard/reports/branch-collection'))}
                           className="w-full px-4 py-2 rounded-xl bg-gradient-to-r from-orange-600 to-amber-600 text-white text-sm font-semibold shadow-sm hover:from-orange-700 hover:to-amber-700"
                         >
                           Branch Collection Report
@@ -902,7 +956,7 @@ export default function BranchDashboardPage() {
                         </WidgetCloseGate>
                         <button
                           type="button"
-                          onClick={() => router.push(`/dashboard/reports/branch-repayment?branch_id=${branchId}`)}
+                          onClick={() => router.push(withBranch('/dashboard/reports/branch-repayment'))}
                           className="w-full px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white text-sm font-semibold shadow-sm hover:from-violet-700 hover:to-purple-700"
                         >
                           Branch Repayment Report
@@ -924,7 +978,13 @@ export default function BranchDashboardPage() {
                         </WidgetCloseGate>
                         <button
                           type="button"
-                          onClick={() => router.push(`/dashboard/branches/${branchId}#reports`)}
+                          onClick={() =>
+                            router.push(
+                              isAllBranchReportScope
+                                ? `/dashboard/branches/${branchId}?branch_id=all#reports`
+                                : `/dashboard/branches/${branchId}#reports`
+                            )
+                          }
                           className="w-full px-4 py-2 rounded-xl bg-white hover:bg-gray-50 text-gray-800 text-sm font-semibold border border-gray-200 shadow-sm"
                         >
                           View All Branch Reports
@@ -1322,7 +1382,11 @@ export default function BranchDashboardPage() {
                   </button>
                 </WidgetCloseGate>
                 <h2 className="text-2xl font-bold text-gray-900">Branch Reports</h2>
-                <p className="text-gray-600 mt-1">Same Reports Hub, auto-filtered by this branch.</p>
+                <p className="text-gray-600 mt-1">
+                  {isAllBranchReportScope
+                    ? 'Reports Hub with all-branch data scope.'
+                    : 'Same Reports Hub, auto-filtered by this branch.'}
+                </p>
               </div>
             )}
 

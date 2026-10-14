@@ -64,7 +64,8 @@ type ChargeByOfficerRow = {
 type DashboardStatsCache = {
   cachedAt: string;
   stats: {
-    activeLoans: number;
+    disbursementLoans: number;
+    activeLoans?: number;
     totalCollections: number;
     pendingPayments: number;
     defaultRate: number;
@@ -99,7 +100,7 @@ export default function MicrofinanceDashboard() {
     message: '',
   });
   const [stats, setStats] = useState({
-    activeLoans: 0,
+    disbursementLoans: 0,
     totalCollections: 0,
     pendingPayments: 0,
     defaultRate: 0,
@@ -409,7 +410,7 @@ export default function MicrofinanceDashboard() {
   const reportModules = [
     {
       key: 'mf_widget_report_collection',
-      name: 'Collection Report',
+      name: 'Micro Finance Collection Report',
       icon: '📘',
       color: 'from-cyan-500 to-blue-500',
       bgColor: 'from-cyan-50 to-blue-50',
@@ -476,6 +477,26 @@ export default function MicrofinanceDashboard() {
       description: 'View active members and their current loan activity.',
       path: '/dashboard/microfinance/reports/active-members',
       permissionTokens: ['active member report', '/dashboard/microfinance/reports/active-members'],
+    },
+    {
+      key: 'mf_widget_report_not_paid_customers',
+      name: 'Not Paid Customer Report',
+      icon: '🚫',
+      color: 'from-orange-500 to-rose-500',
+      bgColor: 'from-orange-50 to-rose-50',
+      description: 'Find customers with missed installments and unpaid dues.',
+      path: '/dashboard/microfinance/reports/not-paid-customers',
+      permissionTokens: ['not paid customer report', '/dashboard/microfinance/reports/not-paid-customers'],
+    },
+    {
+      key: 'mf_widget_report_loan_disbursement',
+      name: 'Micro Finance Loan Disbursement Report',
+      icon: '💵',
+      color: 'from-cyan-500 to-emerald-500',
+      bgColor: 'from-cyan-50 to-emerald-50',
+      description: 'Analyze disbursed loans, active borrowers, completed loans, and key portfolio amounts.',
+      path: '/dashboard/microfinance/reports/loan-disbursement',
+      permissionTokens: ['loan disbursement report', '/dashboard/microfinance/reports/loan-disbursement'],
     },
     {
       key: 'mf_widget_report_blacklisted_customers',
@@ -676,7 +697,12 @@ export default function MicrofinanceDashboard() {
             cached?.summaryStats &&
             Array.isArray(cached?.chargesByOfficer)
           ) {
-            setStats(cached.stats);
+            setStats({
+              disbursementLoans: Number(cached.stats?.disbursementLoans ?? cached.stats?.activeLoans ?? 0),
+              totalCollections: Number(cached.stats?.totalCollections || 0),
+              pendingPayments: Number(cached.stats?.pendingPayments || 0),
+              defaultRate: Number(cached.stats?.defaultRate || 0),
+            });
             setSummaryStats(cached.summaryStats);
             setChargesByOfficer(cached.chargesByOfficer);
             hasUsableCache = true;
@@ -775,6 +801,11 @@ export default function MicrofinanceDashboard() {
           return status === 'approved' || status === 'released';
         });
 
+        const disbursementLoans = scopedLoans.filter((loan) => {
+          const status = String(loan.status || '').toLowerCase();
+          return status === 'approved' || status === 'released' || status === 'completed';
+        });
+
         const chargeMap = new Map<string, ChargeByOfficerRow>();
         scopedLoans.forEach((loan) => {
           const officer = String(loan.field_officer || '').trim() || 'Unassigned';
@@ -852,18 +883,11 @@ export default function MicrofinanceDashboard() {
           const refundable = Number(loan.refundable_amount || 0);
           const collected = paidByLoan.get(Number(loan.id)) || 0;
 
-          // Outstanding due amount = refundable total - total collected for each loan.
-          if (Number.isFinite(refundable) && refundable > 0) {
-            return sum + Math.max(refundable - collected, 0);
-          }
-
-          // Legacy fallback when refundable_amount is missing.
-          const loanBalance = Number(loan.loan_balance);
-          if (Number.isFinite(loanBalance) && loanBalance >= 0) {
-            return sum + loanBalance;
-          }
-
-          return sum;
+          // Keep outstanding aligned with report formulas:
+          // max(loan_balance, refundable - collected, 0)
+          const loanBalance = Number(loan.loan_balance || 0);
+          const derivedOutstanding = Math.max(refundable - collected, 0);
+          return sum + Math.max(loanBalance, derivedOutstanding, 0);
         }, 0);
 
         const assetValueTotal = activeLoans.reduce((sum, loan) => {
@@ -915,7 +939,7 @@ export default function MicrofinanceDashboard() {
         }, 0);
 
         setStats({
-          activeLoans: activeLoans.length,
+          disbursementLoans: disbursementLoans.length,
           totalCollections,
           pendingPayments,
           defaultRate,
@@ -936,7 +960,7 @@ export default function MicrofinanceDashboard() {
           JSON.stringify({
             cachedAt: new Date().toISOString(),
             stats: {
-              activeLoans: activeLoans.length,
+              disbursementLoans: disbursementLoans.length,
               totalCollections,
               pendingPayments,
               defaultRate,
@@ -956,7 +980,7 @@ export default function MicrofinanceDashboard() {
       } catch {
         if (!hasUsableCache) {
           setStats({
-            activeLoans: 0,
+            disbursementLoans: 0,
             totalCollections: 0,
             pendingPayments: 0,
             defaultRate: 0,
@@ -1035,8 +1059,8 @@ export default function MicrofinanceDashboard() {
   const quickStatsCards = [
     {
       key: 'mf_widget_quick_active_loans',
-      label: 'Active Loans',
-      value: statsLoading ? '...' : stats.activeLoans.toLocaleString(),
+      label: 'Disbursement Loans',
+      value: statsLoading ? '...' : stats.disbursementLoans.toLocaleString(),
       icon: '💰',
       color: 'from-green-500 to-emerald-500',
     },
@@ -1060,7 +1084,7 @@ export default function MicrofinanceDashboard() {
     },
     {
       key: 'mf_widget_quick_default_rate',
-      label: 'Default Rate',
+      label: 'At-Risk Loan Rate',
       value: statsLoading ? '...' : `${stats.defaultRate.toFixed(2)}%`,
       icon: '📉',
       color: 'from-red-500 to-pink-500',

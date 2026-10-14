@@ -24,6 +24,7 @@ type CollectionRow = {
     customer_no?: string | null;
     customer_name?: string | null;
     field_officer?: string | null;
+    loan_scope?: string | null;
     mf_route_id?: number | string | null;
     route_name?: string | null;
     route_code?: string | null;
@@ -42,6 +43,7 @@ type TransactionRow = {
   customerNo: string;
   customerName: string;
   fieldOfficer: string;
+  loanScope: string;
   routeName: string;
   collected: number;
   capital: number;
@@ -59,9 +61,12 @@ export default function FieldOfficerCollectionReportPage() {
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<TransactionRow[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [officerFilter, setOfficerFilter] = useState('all');
+  const [loanScopeFilter, setLoanScopeFilter] = useState('all');
   const [routeFilter, setRouteFilter] = useState('all');
   const [loadingWidgets, setLoadingWidgets] = useState(true);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
@@ -168,6 +173,7 @@ export default function FieldOfficerCollectionReportPage() {
               customerNo: String(relationLoan?.customer_no || '-'),
               customerName: String(relationLoan?.customer_name || '-'),
               fieldOfficer: String(relationLoan?.field_officer || 'Unassigned'),
+              loanScope: String(relationLoan?.loan_scope || 'route_loan').toLowerCase(),
               routeName: String(relationLoan?.route?.name || relationLoan?.route_name || relationLoan?.route_code || 'Unassigned Route'),
               collected: Number(collection.collected_amount || 0),
               capital: Number(collection.capital_amount || 0),
@@ -218,16 +224,54 @@ export default function FieldOfficerCollectionReportPage() {
       }
 
       if (officerFilter !== 'all') {
-        return row.fieldOfficer.toLowerCase() === officerFilter;
+        if (row.fieldOfficer.toLowerCase() !== officerFilter) {
+          return false;
+        }
+      }
+
+      if (loanScopeFilter !== 'all') {
+        if (row.loanScope !== loanScopeFilter) {
+          return false;
+        }
       }
 
       if (routeFilter !== 'all') {
-        return row.routeName.toLowerCase() === routeFilter;
+        if (row.routeName.toLowerCase() !== routeFilter) {
+          return false;
+        }
       }
 
       return true;
     });
-  }, [rows, fromDate, toDate, officerFilter, routeFilter]);
+  }, [rows, fromDate, toDate, officerFilter, loanScopeFilter, routeFilter]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [fromDate, toDate, officerFilter, loanScopeFilter, routeFilter]);
+
+  const transactionTotalPages = useMemo(() => {
+    return Math.max(1, Math.ceil(filteredRows.length / rowsPerPage));
+  }, [filteredRows.length, rowsPerPage]);
+
+  useEffect(() => {
+    if (currentPage > transactionTotalPages) {
+      setCurrentPage(transactionTotalPages);
+    }
+  }, [currentPage, transactionTotalPages]);
+
+  const paginatedTransactionRows = useMemo(() => {
+    const start = (currentPage - 1) * rowsPerPage;
+    return filteredRows.slice(start, start + rowsPerPage);
+  }, [filteredRows, currentPage, rowsPerPage]);
+
+  const transactionRange = useMemo(() => {
+    if (filteredRows.length === 0) {
+      return { from: 0, to: 0 };
+    }
+    const from = (currentPage - 1) * rowsPerPage + 1;
+    const to = Math.min(currentPage * rowsPerPage, filteredRows.length);
+    return { from, to };
+  }, [filteredRows.length, currentPage, rowsPerPage]);
 
   const officerSummaries = useMemo(() => {
     const map = new Map<string, {
@@ -366,6 +410,79 @@ export default function FieldOfficerCollectionReportPage() {
   const topOfficer = officerSummaries[0] || null;
   const topRoute = routeSummaries[0] || null;
 
+  const collectionMixChart = useMemo(() => {
+    const segments = [
+      { label: 'Capital', value: summary.capital, color: '#10b981' },
+      { label: 'Interest', value: summary.interest, color: '#3b82f6' },
+      { label: 'Penalty', value: summary.penalty, color: '#f43f5e' },
+    ];
+
+    const total = segments.reduce((acc, segment) => acc + segment.value, 0);
+    if (total <= 0) {
+      return {
+        total,
+        gradient: '#e2e8f0',
+        segments: segments.map((segment) => ({ ...segment, percent: 0 })),
+      };
+    }
+
+    let cursor = 0;
+    const gradientParts = segments.map((segment) => {
+      const percent = (segment.value / total) * 100;
+      const start = cursor;
+      const end = cursor + percent;
+      cursor = end;
+      return `${segment.color} ${start}% ${end}%`;
+    });
+
+    return {
+      total,
+      gradient: `conic-gradient(${gradientParts.join(', ')})`,
+      segments: segments.map((segment) => ({
+        ...segment,
+        percent: total > 0 ? (segment.value / total) * 100 : 0,
+      })),
+    };
+  }, [summary.capital, summary.interest, summary.penalty]);
+
+  const topOfficerShareChart = useMemo(() => {
+    const top = officerSummaries.slice(0, 5).map((item, index) => ({
+      label: item.officer,
+      value: item.collected,
+      color: ['#06b6d4', '#0ea5e9', '#3b82f6', '#6366f1', '#8b5cf6'][index],
+    }));
+
+    const othersValue = officerSummaries.slice(5).reduce((acc, item) => acc + item.collected, 0);
+    const segments = othersValue > 0 ? [...top, { label: 'Others', value: othersValue, color: '#94a3b8' }] : top;
+    const total = segments.reduce((acc, segment) => acc + segment.value, 0);
+
+    if (total <= 0) {
+      return {
+        total,
+        gradient: '#e2e8f0',
+        segments: segments.map((segment) => ({ ...segment, percent: 0 })),
+      };
+    }
+
+    let cursor = 0;
+    const gradientParts = segments.map((segment) => {
+      const percent = (segment.value / total) * 100;
+      const start = cursor;
+      const end = cursor + percent;
+      cursor = end;
+      return `${segment.color} ${start}% ${end}%`;
+    });
+
+    return {
+      total,
+      gradient: `conic-gradient(${gradientParts.join(', ')})`,
+      segments: segments.map((segment) => ({
+        ...segment,
+        percent: total > 0 ? (segment.value / total) * 100 : 0,
+      })),
+    };
+  }, [officerSummaries]);
+
   const formatDateTime = (value: string) => {
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) {
@@ -453,6 +570,10 @@ export default function FieldOfficerCollectionReportPage() {
         : 'Range: All Dates';
 
     const officerText = officerFilter === 'all' ? 'Officer: All' : `Officer: ${officerFilter}`;
+    const loanScopeText =
+      loanScopeFilter === 'all'
+        ? 'Loan Type: All'
+        : `Loan Type: ${loanScopeFilter.replace('_', ' ')}`;
     const routeText = routeFilter === 'all' ? 'Route: All' : `Route: ${routeFilter}`;
     const summaryText = `Transactions: ${summary.transactionCount} | Customers: ${summary.customerCount} | Loans: ${summary.loanCount} | Total Collections: LKR ${formatMoney(summary.collected)}`;
     const mixText = `Capital: ${formatMoney(summary.capital)} (${summary.capitalShare.toFixed(1)}%) | Interest: ${formatMoney(summary.interest)} (${summary.interestShare.toFixed(1)}%) | Penalty: ${formatMoney(summary.penalty)} (${summary.penaltyShare.toFixed(1)}%)`;
@@ -460,7 +581,7 @@ export default function FieldOfficerCollectionReportPage() {
     doc.setFontSize(16);
     doc.text('Field Officer Collection Report', 40, 40);
     doc.setFontSize(10);
-    doc.text(`${dateFilterText} | ${officerText} | ${routeText}`, 40, 58);
+    doc.text(`${dateFilterText} | ${officerText} | ${loanScopeText} | ${routeText}`, 40, 58);
     doc.text(summaryText, 40, 74);
     doc.text(mixText, 40, 90);
     doc.text(`Generated: ${generatedAt}`, 40, 106);
@@ -704,6 +825,19 @@ export default function FieldOfficerCollectionReportPage() {
                 </select>
               </div>
               <div>
+                <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Loan Type</label>
+                <select
+                  value={loanScopeFilter}
+                  onChange={(e) => setLoanScopeFilter(e.target.value)}
+                  className="mt-1 px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900"
+                >
+                  <option value="all">All Loan Types</option>
+                  <option value="route_loan">Route Loan</option>
+                  <option value="center_loan">Center Loan</option>
+                  <option value="direct_loan">Direct Loan</option>
+                </select>
+              </div>
+              <div>
                 <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">From Date</label>
                 <input
                   type="date"
@@ -725,9 +859,11 @@ export default function FieldOfficerCollectionReportPage() {
                 type="button"
                 onClick={() => {
                   setOfficerFilter('all');
+                  setLoanScopeFilter('all');
                   setRouteFilter('all');
                   setFromDate('');
                   setToDate('');
+                  setCurrentPage(1);
                 }}
                 className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold"
               >
@@ -752,6 +888,52 @@ export default function FieldOfficerCollectionReportPage() {
             <div className="rounded-xl border border-sky-100 bg-sky-50/70 p-3">
               <p className="text-xs uppercase tracking-wide text-sky-800">Top Route</p>
               <p className="mt-1 text-sm font-bold text-sky-900">{topRoute ? `${topRoute.routeName} (LKR ${formatMoney(topRoute.collected)})` : '-'}</p>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 xl:grid-cols-2 gap-3">
+            <div className="rounded-2xl border border-cyan-100 bg-white/90 p-4">
+              <h3 className="text-sm font-bold text-slate-900">Collection Mix Preview</h3>
+              <p className="mt-1 text-xs text-slate-500">Capital, interest, and penalty contribution to total collected value.</p>
+              <div className="mt-4 flex items-center gap-4 flex-wrap">
+                <div
+                  className="h-36 w-36 rounded-full border border-slate-200 shadow-inner"
+                  style={{ background: collectionMixChart.gradient }}
+                  aria-label="Collection mix pie chart"
+                />
+                <div className="space-y-2">
+                  {collectionMixChart.segments.map((segment) => (
+                    <div key={segment.label} className="flex items-center gap-2 text-xs text-slate-700">
+                      <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: segment.color }} />
+                      <span className="font-semibold">{segment.label}</span>
+                      <span>{segment.percent.toFixed(1)}%</span>
+                      <span className="text-slate-500">(LKR {formatMoney(segment.value)})</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-cyan-100 bg-white/90 p-4">
+              <h3 className="text-sm font-bold text-slate-900">Officer Share Preview</h3>
+              <p className="mt-1 text-xs text-slate-500">Collected amount share by top officers (with others grouped).</p>
+              <div className="mt-4 flex items-center gap-4 flex-wrap">
+                <div
+                  className="h-36 w-36 rounded-full border border-slate-200 shadow-inner"
+                  style={{ background: topOfficerShareChart.gradient }}
+                  aria-label="Officer share pie chart"
+                />
+                <div className="space-y-2">
+                  {topOfficerShareChart.segments.map((segment) => (
+                    <div key={segment.label} className="flex items-center gap-2 text-xs text-slate-700">
+                      <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: segment.color }} />
+                      <span className="font-semibold">{segment.label}</span>
+                      <span>{segment.percent.toFixed(1)}%</span>
+                      <span className="text-slate-500">(LKR {formatMoney(segment.value)})</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -813,7 +995,29 @@ export default function FieldOfficerCollectionReportPage() {
               No transactions available.
             </div>
           ) : (
-            <div className="mt-4 overflow-x-auto rounded-2xl border border-cyan-100">
+            <div className="mt-4 space-y-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-cyan-100 bg-cyan-50/50 px-3 py-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-cyan-900">
+                  Showing {transactionRange.from}-{transactionRange.to} of {filteredRows.length} transactions
+                </p>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">Rows</label>
+                  <select
+                    value={rowsPerPage}
+                    onChange={(e) => {
+                      setRowsPerPage(Number(e.target.value) || 25);
+                      setCurrentPage(1);
+                    }}
+                    className="rounded-lg border border-cyan-100 bg-white px-2 py-1 text-xs text-slate-900"
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
+              </div>
+              <div className="overflow-x-auto rounded-2xl border border-cyan-100">
               <table className="min-w-full text-sm text-left text-slate-700 bg-white">
                 <thead className="bg-cyan-50/70 text-slate-700">
                   <tr>
@@ -832,7 +1036,7 @@ export default function FieldOfficerCollectionReportPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.map((row) => (
+                  {paginatedTransactionRows.map((row) => (
                     <tr key={row.id} className="border-b border-cyan-100 last:border-b-0 hover:bg-cyan-50/40 transition-colors">
                       <td className="px-3 py-2">{formatDateTime(row.date)}</td>
                       <td className="px-3 py-2">{row.routeName}</td>
@@ -850,6 +1054,30 @@ export default function FieldOfficerCollectionReportPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-xs text-slate-600">
+                  Page {currentPage} of {transactionTotalPages}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                    disabled={currentPage <= 1}
+                    className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((prev) => Math.min(transactionTotalPages, prev + 1))}
+                    disabled={currentPage >= transactionTotalPages}
+                    className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>

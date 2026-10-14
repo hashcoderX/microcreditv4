@@ -11,6 +11,7 @@ import autoTable from 'jspdf-autotable';
 type LoanChargeRow = {
   id: number;
   status?: string | null;
+  loan_scope?: string | null;
   loan_code?: string | null;
   customer_no?: string | null;
   customer_name?: string | null;
@@ -27,6 +28,7 @@ type ChargeReportRow = {
   id: number;
   date: string;
   status: string;
+  loanScope: string;
   loanCode: string;
   customerNo: string;
   customerName: string;
@@ -58,7 +60,10 @@ export default function MicrofinanceChargesReportPage() {
   const [toDate, setToDate] = useState('');
   const [officerFilter, setOfficerFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [loanScopeFilter, setLoanScopeFilter] = useState<'all' | 'route_loan' | 'center_loan' | 'direct_loan'>('all');
   const [keyword, setKeyword] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
 
 
   const fetchWidgetPreferences = async (authToken: string) => {
@@ -158,11 +163,13 @@ export default function MicrofinanceChargesReportPage() {
             const totalCharges = documentCharges + stampCharges + insuranceCharges;
             const date = String(loan.loan_request_date || loan.created_at || '');
             const status = String(loan.status || '').toLowerCase();
+            const loanScope = String(loan.loan_scope || '').trim().toLowerCase();
 
             return {
               id: Number(loan.id || 0),
               date,
               status,
+              loanScope,
               loanCode: String(loan.loan_code || `LR-${loan.id || 0}`),
               customerNo: String(loan.customer_no || '-'),
               customerName: String(loan.customer_name || '-'),
@@ -216,6 +223,10 @@ export default function MicrofinanceChargesReportPage() {
         return false;
       }
 
+      if (loanScopeFilter !== 'all' && row.loanScope !== loanScopeFilter) {
+        return false;
+      }
+
       if (!search) return true;
 
       const haystack = [
@@ -230,7 +241,7 @@ export default function MicrofinanceChargesReportPage() {
 
       return haystack.includes(search);
     });
-  }, [rows, fromDate, toDate, officerFilter, statusFilter, keyword]);
+  }, [rows, fromDate, toDate, officerFilter, statusFilter, loanScopeFilter, keyword]);
 
   const summary = useMemo(() => {
     return filteredRows.reduce(
@@ -249,6 +260,44 @@ export default function MicrofinanceChargesReportPage() {
       }
     );
   }, [filteredRows]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [fromDate, toDate, officerFilter, statusFilter, loanScopeFilter, keyword, pageSize, rows.length]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const paginatedRows = useMemo(() => {
+    const start = (safePage - 1) * pageSize;
+    return filteredRows.slice(start, start + pageSize);
+  }, [filteredRows, safePage, pageSize]);
+
+  const pageStart = filteredRows.length === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const pageEnd = Math.min(safePage * pageSize, filteredRows.length);
+
+  const chargePreview = useMemo(() => {
+    const total = summary.total;
+    const documentPct = total > 0 ? (summary.document / total) * 100 : 0;
+    const stampPct = total > 0 ? (summary.stamp / total) * 100 : 0;
+    const insurancePct = total > 0 ? (summary.insurance / total) * 100 : 0;
+
+    const officerTotals = new Map<string, number>();
+    filteredRows.forEach((row) => {
+      officerTotals.set(row.fieldOfficer, (officerTotals.get(row.fieldOfficer) || 0) + row.totalCharges);
+    });
+
+    const topOfficers = Array.from(officerTotals.entries())
+      .map(([name, amount]) => ({ name, amount }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 3);
+
+    return {
+      documentPct,
+      stampPct,
+      insurancePct,
+      topOfficers,
+    };
+  }, [filteredRows, summary]);
 
   const summaryCards = [
     { key: 'mf_charges_widget_summary_document', label: 'Document Charges', value: summary.document, isCount: false },
@@ -498,6 +547,19 @@ export default function MicrofinanceChargesReportPage() {
                 <option value="hold">Hold</option>
               </select>
             </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600">Loan Type</label>
+              <select
+                value={loanScopeFilter}
+                onChange={(e) => setLoanScopeFilter(e.target.value as 'all' | 'route_loan' | 'center_loan' | 'direct_loan')}
+                className="mt-1 w-full rounded-lg border border-cyan-100 px-3 py-2 text-sm text-black"
+              >
+                <option value="all">All Loan Types</option>
+                <option value="route_loan">Route Loan Charges</option>
+                <option value="center_loan">Center Loan Charges</option>
+                <option value="direct_loan">Direct Loan Charges</option>
+              </select>
+            </div>
             <div className="md:col-span-2">
               <label className="text-xs font-semibold text-slate-600">Search</label>
               <input
@@ -537,6 +599,61 @@ export default function MicrofinanceChargesReportPage() {
           </div>
         )}
 
+        <div className="rounded-2xl border border-cyan-100 bg-white p-5">
+          <h2 className="text-base font-bold text-slate-900">Charges Composition Preview</h2>
+          <p className="mt-1 text-xs text-slate-500">Visual split of document, stamp, and insurance charges for current filters.</p>
+
+          <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="space-y-3">
+              <div>
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>Document</span>
+                  <span>{chargePreview.documentPct.toFixed(1)}%</span>
+                </div>
+                <div className="mt-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+                  <div className="h-full rounded-full bg-cyan-500" style={{ width: `${Math.min(chargePreview.documentPct, 100)}%` }} />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>Stamp</span>
+                  <span>{chargePreview.stampPct.toFixed(1)}%</span>
+                </div>
+                <div className="mt-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+                  <div className="h-full rounded-full bg-indigo-500" style={{ width: `${Math.min(chargePreview.stampPct, 100)}%` }} />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>Insurance</span>
+                  <span>{chargePreview.insurancePct.toFixed(1)}%</span>
+                </div>
+                <div className="mt-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+                  <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(chargePreview.insurancePct, 100)}%` }} />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-cyan-100 bg-cyan-50/40 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Top Officers by Charges</p>
+              <div className="mt-2 space-y-2 text-sm">
+                {chargePreview.topOfficers.length === 0 ? (
+                  <p className="text-slate-500">No officer data for selected filters.</p>
+                ) : (
+                  chargePreview.topOfficers.map((officer) => (
+                    <div key={officer.name} className="flex items-center justify-between gap-2">
+                      <span className="text-slate-700 truncate">{officer.name}</span>
+                      <span className="font-semibold text-slate-900">LKR {formatMoney(officer.amount)}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="overflow-x-auto rounded-2xl border border-cyan-100 bg-white">
           <table className="min-w-full text-sm">
             <thead className="bg-cyan-50 text-slate-700">
@@ -554,7 +671,7 @@ export default function MicrofinanceChargesReportPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row) => (
+              {paginatedRows.map((row) => (
                 <tr key={row.id} className="border-t border-cyan-50">
                   <td className="px-3 py-2 text-slate-700">{formatDateTime(row.date)}</td>
                   <td className="px-3 py-2 text-slate-700 uppercase">{row.status || '-'}</td>
@@ -571,6 +688,44 @@ export default function MicrofinanceChargesReportPage() {
             </tbody>
           </table>
         </div>
+
+        {filteredRows.length > 0 && (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-cyan-100 bg-white px-4 py-3 text-sm text-slate-600">
+            <p>
+              Showing {pageStart}-{pageEnd} of {filteredRows.length}
+            </p>
+            <div className="flex items-center gap-2">
+              <label className="text-xs uppercase tracking-wide text-slate-500">Rows</label>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                className="rounded-lg border border-cyan-100 px-2 py-1.5 text-xs text-black"
+              >
+                <option value={10}>10</option>
+                <option value={15}>15</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                disabled={safePage <= 1}
+                className="rounded-lg border border-cyan-100 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
+              >
+                Prev
+              </button>
+              <span className="text-xs text-slate-600">Page {safePage} / {totalPages}</span>
+              <button
+                type="button"
+                onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                disabled={safePage >= totalPages}
+                className="rounded-lg border border-cyan-100 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
 
         {!loading && filteredRows.length === 0 && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">

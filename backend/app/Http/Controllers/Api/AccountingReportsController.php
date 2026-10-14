@@ -1774,6 +1774,7 @@ class AccountingReportsController extends Controller
         $officerFilter = strtolower(trim((string) ($validated['officer'] ?? '')));
 
         $collectionSums = DB::table('mf_loan_collections')
+            ->whereNull('deleted_at')
             ->selectRaw('mf_loan_request_id, ROUND(COALESCE(SUM(collected_amount), 0), 2) as collected_amount')
             ->groupBy('mf_loan_request_id');
 
@@ -1846,6 +1847,7 @@ class AccountingReportsController extends Controller
             'branch_id' => ['nullable', 'integer', 'exists:companies,id'],
             'company_id' => ['nullable', 'integer', 'exists:companies,id'],
             'status' => ['nullable', 'string', 'in:all,approved,released,completed'],
+            'loan_scope' => ['nullable', 'string', 'in:all,route_loan,center_loan,direct_loan'],
             'officer' => ['nullable', 'string', 'max:150'],
             'q' => ['nullable', 'string', 'max:150'],
         ]);
@@ -1870,15 +1872,18 @@ class AccountingReportsController extends Controller
 
         $company = Company::query()->findOrFail($branchId);
         $statusFilter = strtolower(trim((string) ($validated['status'] ?? 'all')));
+        $loanScopeFilter = strtolower(trim((string) ($validated['loan_scope'] ?? 'all')));
         $officerFilter = strtolower(trim((string) ($validated['officer'] ?? '')));
         $search = strtolower(trim((string) ($validated['q'] ?? '')));
         $today = Carbon::today()->toDateString();
 
         $collectionSums = DB::table('mf_loan_collections')
+            ->whereNull('deleted_at')
             ->selectRaw('mf_loan_request_id, ROUND(COALESCE(SUM(collected_amount), 0), 2) as collected_amount')
             ->groupBy('mf_loan_request_id');
 
         $todaySums = DB::table('mf_loan_collections')
+            ->whereNull('deleted_at')
             ->selectRaw('mf_loan_request_id, ROUND(COALESCE(SUM(collected_amount), 0), 2) as paid_today_amount')
             ->whereDate('collection_date', '=', $today)
             ->groupBy('mf_loan_request_id');
@@ -1893,8 +1898,10 @@ class AccountingReportsController extends Controller
             ->where('loans.branch_id', $branchId)
             ->whereIn('loans.status', ['approved', 'released', 'completed'])
             ->when($statusFilter !== '' && $statusFilter !== 'all', fn ($query) => $query->whereRaw('LOWER(loans.status) = ?', [$statusFilter]))
+            ->when($loanScopeFilter !== '' && $loanScopeFilter !== 'all', fn ($query) => $query->whereRaw('LOWER(COALESCE(loans.loan_scope, "")) = ?', [$loanScopeFilter]))
             ->selectRaw('loans.id as loan_id')
             ->selectRaw('COALESCE(loans.loan_code, "") as loan_code')
+            ->selectRaw('COALESCE(loans.loan_scope, "") as loan_scope')
             ->selectRaw('COALESCE(loans.customer_no, "-") as customer_no')
             ->selectRaw('COALESCE(loans.customer_name, "-") as customer_name')
             ->selectRaw('COALESCE(loans.field_officer, "Unassigned") as field_officer')
@@ -1928,6 +1935,7 @@ class AccountingReportsController extends Controller
             ->map(fn ($row) => [
                 'loanId' => (int) ($row->loan_id ?? 0),
                 'loanCode' => trim((string) ($row->loan_code ?? '')) !== '' ? (string) $row->loan_code : ('LR-' . (int) ($row->loan_id ?? 0)),
+                'loanScope' => strtolower(trim((string) ($row->loan_scope ?? ''))),
                 'customerNo' => (string) ($row->customer_no ?? '-'),
                 'customerName' => (string) ($row->customer_name ?? '-'),
                 'fieldOfficer' => (string) ($row->field_officer ?? 'Unassigned'),
@@ -1972,6 +1980,7 @@ class AccountingReportsController extends Controller
             'filters' => [
                 'branch_id' => $branchId,
                 'status' => $statusFilter,
+                'loan_scope' => $loanScopeFilter !== '' ? $loanScopeFilter : 'all',
                 'officer' => $officerFilter !== '' ? $officerFilter : null,
                 'q' => $search !== '' ? $search : null,
                 'date' => $today,
