@@ -159,6 +159,9 @@ function formatDate(v: unknown): string {
   if (Number.isNaN(d.getTime())) return '-';
   return d.toLocaleDateString();
 }
+function roundCurrency(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
 
 type CustomerLike = {
   customer_code?: string | null;
@@ -647,6 +650,60 @@ export default function FinanceCollectionsPage() {
     () => isDraftProductType(selectedRecord?.product_type),
     [selectedRecord?.product_type],
   );
+  const openingOutstandingAmount = useMemo(() => {
+    if (!selectedRecord) return 0;
+
+    const balance = toNumber(selectedRecord.balance_amount);
+    const totalPaid = toNumber(selectedRecord.total_paid_amount);
+    if (Number.isFinite(balance) && Number.isFinite(totalPaid)) {
+      return roundCurrency(Math.max(balance + totalPaid, 0));
+    }
+
+    const refundable = toNumber(selectedRecord.refund_amount);
+    if (Number.isFinite(refundable)) {
+      return roundCurrency(Math.max(refundable, 0));
+    }
+
+    const financed = toNumber(selectedRecord.financed_amount);
+    return Number.isFinite(financed) ? roundCurrency(Math.max(financed, 0)) : 0;
+  }, [selectedRecord]);
+  const collectionOutstandingById = useMemo(() => {
+    const outstandingById = new Map<number, number>();
+    if (!selectedRecord || !Array.isArray(selectedRecord.collections)) {
+      return outstandingById;
+    }
+
+    const orderedCollections = [...selectedRecord.collections].sort((a, b) => {
+      const aTime = Date.parse(String(a.payment_date || ''));
+      const bTime = Date.parse(String(b.payment_date || ''));
+      const safeATime = Number.isNaN(aTime) ? 0 : aTime;
+      const safeBTime = Number.isNaN(bTime) ? 0 : bTime;
+      if (safeATime !== safeBTime) {
+        return safeATime - safeBTime;
+      }
+
+      return Number(a.id || 0) - Number(b.id || 0);
+    });
+
+    let runningPaid = 0;
+    for (const item of orderedCollections) {
+      const key = Number(item.id);
+      if (!Number.isFinite(key)) {
+        continue;
+      }
+
+      if (isSelectedRecordDraft) {
+        outstandingById.set(key, roundCurrency(Math.max(Number(item.remaining_capital || 0), 0)));
+        continue;
+      }
+
+      const paidNow = Math.max(0, Number(item.payment_amount || 0));
+      runningPaid = roundCurrency(runningPaid + paidNow);
+      outstandingById.set(key, roundCurrency(Math.max(openingOutstandingAmount - runningPaid, 0)));
+    }
+
+    return outstandingById;
+  }, [isSelectedRecordDraft, openingOutstandingAmount, selectedRecord]);
 
   const openFullRecord = async (id: number) => {
     if (!token) return;
@@ -779,6 +836,7 @@ export default function FinanceCollectionsPage() {
       if (!selectedRecord) return;
 
       const payTypeRaw = String(item.pay_type || 'cash').trim();
+      const outstandingAfterPayment = collectionOutstandingById.get(Number(item.id));
       const receipt = buildCollectionReceipt(
         selectedRecord,
         {
@@ -793,7 +851,7 @@ export default function FinanceCollectionsPage() {
             interest_paid: item.interest_paid,
             principal_paid: item.principal_paid,
             new_arrears: item.arrears,
-            balance_amount: item.remaining_capital,
+            balance_amount: outstandingAfterPayment ?? item.remaining_capital,
             total_paid_amount: selectedRecord.total_paid_amount,
           },
         }
@@ -909,7 +967,14 @@ export default function FinanceCollectionsPage() {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     },
-    [buildCollectionReceipt, receiptCompany.address, receiptCompany.contactNo, receiptCompany.name, selectedRecord]
+    [
+      buildCollectionReceipt,
+      collectionOutstandingById,
+      receiptCompany.address,
+      receiptCompany.contactNo,
+      receiptCompany.name,
+      selectedRecord,
+    ]
   );
 
   const deleteCollection = async (collectionId: number) => {
@@ -1374,6 +1439,7 @@ export default function FinanceCollectionsPage() {
                       <div><span className="text-slate-500">Next Collection Date: </span><span className="font-semibold text-slate-900">{formatDate(selectedRecord.next_collection_date)}</span></div>
                       <div><span className="text-slate-500">Interest: </span><span className="font-semibold text-slate-900">{Number.isFinite(toNumber(selectedRecord.interest_rate)) ? `${toNumber(selectedRecord.interest_rate).toFixed(2)}%` : '-'}</span></div>
                       <div><span className="text-slate-500">Interest Type: </span><span className="font-semibold text-slate-900 capitalize">{selectedRecord.interest_type || '-'}</span></div>
+                      <div><span className="text-slate-500">{isSelectedRecordDraft ? 'Opening Draft Value: ' : 'Opening Balance: '}</span><span className="font-semibold text-slate-900">{formatAmount(openingOutstandingAmount)}</span></div>
                       <div><span className="text-slate-500">Total Paid: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.total_paid_amount)}</span></div>
                       <div><span className="text-slate-500">Balance: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.balance_amount)}</span></div>
                       <div><span className="text-slate-500">Refund: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.refund_amount)}</span></div>
@@ -1664,7 +1730,7 @@ export default function FinanceCollectionsPage() {
                                 <td className="px-2 py-2">{formatAmount(item.interest_paid)}</td>
                                 <td className="px-2 py-2">{formatAmount(item.principal_paid)}</td>
                                 <td className="px-2 py-2">{formatAmount(item.arrears)}</td>
-                                <td className="px-2 py-2">{formatAmount(item.remaining_capital)}</td>
+                                <td className="px-2 py-2">{formatAmount(collectionOutstandingById.get(Number(item.id)) ?? item.remaining_capital)}</td>
                                 <td className="px-2 py-2">
                                   <button
                                     type="button"

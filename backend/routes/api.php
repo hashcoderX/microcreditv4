@@ -49,6 +49,7 @@ use App\Http\Controllers\Reports\EmployeeHierarchyReportController;
 use App\Http\Controllers\Reports\BranchPerformanceReportController;
 use App\Http\Controllers\Reports\BranchRepaymentReportController;
 use App\Http\Controllers\Api\SavingsAccountController;
+use App\Http\Controllers\Api\SavingsDepositsSettingsController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\PermissionController;
 use App\Models\User;
@@ -179,6 +180,8 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('system/whatsapp-gateway', [CompanyController::class, 'getWhatsappGatewayConfig']);
     Route::post('system/whatsapp-gateway', [CompanyController::class, 'updateWhatsappGatewayConfig']);
     Route::post('system/whatsapp-gateway/test', [CompanyController::class, 'testWhatsappGateway']);
+    Route::get('system/savings-deposits-settings', [SavingsDepositsSettingsController::class, 'show']);
+    Route::post('system/savings-deposits-settings', [SavingsDepositsSettingsController::class, 'update']);
     Route::post('system/reset', [CompanyController::class, 'resetSystem']);
     Route::post('system/reset-full', [CompanyController::class, 'resetSystemFull']);
     Route::get('manager-candidates', [CompanyController::class, 'managerCandidates']);

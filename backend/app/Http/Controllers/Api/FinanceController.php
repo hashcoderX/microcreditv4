@@ -3665,8 +3665,9 @@ class FinanceController extends Controller
         $dueCapitalAmount = $isSpeedDraft ? 0.0 : $this->computeDueCapitalAmount($finance);
 
         $totalPayable = $this->computeTotalPayableAmount($finance);
-        $isLease = strtolower((string) ($finance->product_type ?? '')) === 'lease';
-        $openingOutstanding = $isLease ? $totalPayable : round((float) $finance->financed_amount, 2);
+        $openingOutstanding = $isSpeedDraft
+            ? round((float) $finance->financed_amount, 2)
+            : $totalPayable;
 
         $dueInstallmentAmount = $isSpeedDraft
             ? $dueInterestAmount
@@ -3813,6 +3814,10 @@ class FinanceController extends Controller
             ->orderByDesc('payment_date')
             ->orderByDesc('id')
             ->first();
+        $previousPaymentDate = $latest && !empty($latest->payment_date)
+            ? Carbon::parse((string) $latest->payment_date)
+            : null;
+        $previousScheduleCredit = max(0.0, round((float) data_get($latest?->meta, 'schedule_credit', 0), 2));
 
         $isSpeedDraft = self::isDraftLoanProductType((string) ($finance->product_type ?? ''));
         $currentCapital = $latest ? (float) $latest->remaining_capital : (float) $finance->financed_amount;
@@ -3857,12 +3862,11 @@ class FinanceController extends Controller
                 $currentArrears,
             );
 
-        $isLease = strtolower((string) ($finance->product_type ?? '')) === 'lease';
         $openingOutstanding = (float) $finance->balance_amount;
         if ($openingOutstanding <= 0) {
-            $openingOutstanding = $isLease
-                ? $this->computeTotalPayableAmount($finance)
-                : round((float) $finance->financed_amount, 2);
+            $openingOutstanding = $isSpeedDraft
+                ? round((float) $finance->financed_amount, 2)
+                : $this->computeTotalPayableAmount($finance);
         }
 
         $paidTowardOutstanding = round(min($paymentAmount, $openingOutstanding), 2);
@@ -3901,6 +3905,10 @@ class FinanceController extends Controller
                     $scanRow = $planRows[$scanIndex];
                     $scanDueDate = Carbon::parse((string) $scanRow['payment_date']);
                     $scanGraceEnd = (clone $scanDueDate)->addDays($graceDays);
+                    if ($previousPaymentDate && $previousPaymentDate->gt($scanGraceEnd)) {
+                        $scanIndex++;
+                        continue;
+                    }
                     if (!$paymentDate->gt($scanGraceEnd)) {
                         break;
                     }
@@ -3912,19 +3920,28 @@ class FinanceController extends Controller
                 $scanDueDate = clone $currentDueDate;
                 $safeDueAmount = max($currentDueAmount, 0.0);
                 while ($safeDueAmount > 0 && $paymentDate->gt((clone $scanDueDate)->addDays($graceDays))) {
+                    $scanGraceEnd = (clone $scanDueDate)->addDays($graceDays);
+                    if ($previousPaymentDate && $previousPaymentDate->gt($scanGraceEnd)) {
+                        $scanDueDate = $this->computeNextDueDate($scanDueDate, (string) $finance->installment_frequency);
+                        continue;
+                    }
+
                     $accruedScheduleAmount = round($accruedScheduleAmount + $safeDueAmount, 2);
                     $scanDueDate = $this->computeNextDueDate($scanDueDate, (string) $finance->installment_frequency);
                 }
             }
         }
 
-        $scheduleArrearsBase = round($currentArrears + $accruedScheduleAmount, 2);
+        $scheduleRawOutstanding = round(($currentArrears + $accruedScheduleAmount) - $previousScheduleCredit - $paymentAmount, 2);
         $scheduleArrears = ($isSpeedDraft)
             ? 0.0
-            : round(max($scheduleArrearsBase - $paymentAmount, 0), 2);
+            : round(max($scheduleRawOutstanding, 0), 2);
+        $scheduleCredit = ($isSpeedDraft)
+            ? 0.0
+            : round(max(-$scheduleRawOutstanding, 0), 2);
         $finalArrears = $isSpeedDraft
             ? round((float) $calculation['new_arrears'], 2)
-            : round(max((float) $calculation['new_arrears'], $scheduleArrears), 2);
+            : $scheduleArrears;
 
         $updatedInstallmentIndex = $currentInstallmentIndex;
         $nextPlanRow = null;
@@ -3933,7 +3950,7 @@ class FinanceController extends Controller
 
         $scheduleCoverageBudget = $isSpeedDraft
             ? 0.0
-            : round(max($paymentAmount - max($currentArrears, 0), 0), 2);
+            : round(max(($paymentAmount + $previousScheduleCredit) - max($currentArrears, 0), 0), 2);
 
         if (!$isSpeedDraft && !empty($planRows)) {
             $scanIndex = $currentInstallmentIndex;
@@ -3959,7 +3976,7 @@ class FinanceController extends Controller
             }
         }
 
-        $collection = DB::transaction(function () use ($finance, $validated, $paymentAmount, $txnOverPayment, $calculation, $currentCapital, $currentArrears, $user, $newTotalPaid, $newBalance, $newRefundTotal, $nextDueDate, $nextDueInterest, $dueCapitalAmount, $periodRatePercent, $planState, $planRows, $updatedInstallmentIndex, $nextPlanRow, $currentPlanRow, $currentDueAmount, $currentPlanDueDate, $standardDueDateAfterCoverage, $finalArrears, $isSpeedDraft, $paidInterestInPeriod) {
+        $collection = DB::transaction(function () use ($finance, $validated, $paymentAmount, $txnOverPayment, $calculation, $currentCapital, $currentArrears, $previousScheduleCredit, $scheduleCredit, $user, $newTotalPaid, $newBalance, $newRefundTotal, $nextDueDate, $nextDueInterest, $dueCapitalAmount, $periodRatePercent, $planState, $planRows, $updatedInstallmentIndex, $nextPlanRow, $currentPlanRow, $currentDueAmount, $currentPlanDueDate, $standardDueDateAfterCoverage, $finalArrears, $isSpeedDraft, $paidInterestInPeriod) {
             /** @var \App\Models\FinanceCollection $created */
             $created = FinanceCollection::create([
                 'finance_id' => $finance->id,
@@ -3982,6 +3999,8 @@ class FinanceController extends Controller
                     'model' => $isSpeedDraft ? 'speed_draft_interest_first' : 'standard_interest_first',
                     'opening_capital' => round($currentCapital, 2),
                     'opening_arrears' => round($currentArrears, 2),
+                    'opening_schedule_credit' => round($previousScheduleCredit, 2),
+                    'schedule_credit' => $scheduleCredit,
                     'interest_rate_period' => round($periodRatePercent, 4),
                     'interest_paid_in_period_before' => round($paidInterestInPeriod, 2),
                     'due_amount' => $currentDueAmount,
@@ -4196,6 +4215,8 @@ class FinanceController extends Controller
         $runningBalance = (float) $finance->balance_amount;
         $runningArrears = 0.0;
         $runningCapital = (float) $finance->financed_amount;
+        $previousPaymentDate = null;
+        $runningScheduleCredit = 0.0;
 
         $speedDraftInterestPaidByPeriod = [];
 
@@ -4254,6 +4275,10 @@ class FinanceController extends Controller
                         $scanRow = $planRows[$scanIndex];
                         $scanDueDate = Carbon::parse((string) $scanRow['payment_date']);
                         $scanGraceEnd = (clone $scanDueDate)->addDays($graceDays);
+                        if ($previousPaymentDate && $previousPaymentDate->gt($scanGraceEnd)) {
+                            $scanIndex++;
+                            continue;
+                        }
                         if (!$paymentDate->gt($scanGraceEnd)) {
                             break;
                         }
@@ -4265,19 +4290,28 @@ class FinanceController extends Controller
                     $scanDueDate = clone $currentDueDate;
                     $safeDueAmount = max($currentDueAmount, 0.0);
                     while ($safeDueAmount > 0 && $paymentDate->gt((clone $scanDueDate)->addDays($graceDays))) {
+                        $scanGraceEnd = (clone $scanDueDate)->addDays($graceDays);
+                        if ($previousPaymentDate && $previousPaymentDate->gt($scanGraceEnd)) {
+                            $scanDueDate = $this->computeNextDueDate($scanDueDate, (string) $finance->installment_frequency);
+                            continue;
+                        }
+
                         $accruedScheduleAmount = round($accruedScheduleAmount + $safeDueAmount, 2);
                         $scanDueDate = $this->computeNextDueDate($scanDueDate, (string) $finance->installment_frequency);
                     }
                 }
             }
 
-            $scheduleArrearsBase = round($runningArrears + $accruedScheduleAmount, 2);
+            $scheduleRawOutstanding = round(($runningArrears + $accruedScheduleAmount) - $runningScheduleCredit - $paymentAmount, 2);
             $scheduleArrears = ($isSpeedDraft)
                 ? 0.0
-                : round(max($scheduleArrearsBase - $paymentAmount, 0), 2);
+                : round(max($scheduleRawOutstanding, 0), 2);
+            $scheduleCredit = ($isSpeedDraft)
+                ? 0.0
+                : round(max(-$scheduleRawOutstanding, 0), 2);
             $finalArrears = $isSpeedDraft
                 ? round((float) $calculation['new_arrears'], 2)
-                : round(max((float) $calculation['new_arrears'], $scheduleArrears), 2);
+                : $scheduleArrears;
 
             $updatedInstallmentIndex = $currentInstallmentIndex;
             $nextPlanRow = null;
@@ -4286,7 +4320,7 @@ class FinanceController extends Controller
 
             $scheduleCoverageBudget = $isSpeedDraft
                 ? 0.0
-                : round(max($paymentAmount - max($runningArrears, 0), 0), 2);
+                : round(max(($paymentAmount + $runningScheduleCredit) - max($runningArrears, 0), 0), 2);
 
             if (!$isSpeedDraft && !empty($planRows)) {
                 $scanIndex = $currentInstallmentIndex;
@@ -4324,6 +4358,8 @@ class FinanceController extends Controller
                     'model' => $isSpeedDraft ? 'speed_draft_interest_first' : 'standard_interest_first',
                     'opening_capital' => round($runningCapital, 2),
                     'opening_arrears' => round($runningArrears, 2),
+                    'opening_schedule_credit' => round($runningScheduleCredit, 2),
+                    'schedule_credit' => $scheduleCredit,
                     'interest_rate_period' => round($periodRatePercent, 4),
                     'interest_paid_in_period_before' => round($paidInterestInPeriod, 2),
                     'due_amount' => $currentDueAmount,
@@ -4398,7 +4434,9 @@ class FinanceController extends Controller
             $openingOutstanding = $runningBalance;
             $runningCapital = round((float) $calculation['new_capital'], 2);
             $runningArrears = $finalArrears;
+            $runningScheduleCredit = $scheduleCredit;
             $currentInstallmentIndex = $updatedInstallmentIndex;
+            $previousPaymentDate = clone $paymentDate;
         }
 
         $this->syncDraftLoanFromFinance($finance);

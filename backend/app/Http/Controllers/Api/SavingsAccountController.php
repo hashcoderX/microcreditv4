@@ -9,9 +9,12 @@ use App\Models\SavingsAccountTransaction;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class SavingsAccountController extends Controller
 {
+    private const SAVINGS_SETTINGS_KEY = 'savings_deposits_settings';
+
     /** @var list<string> */
     private const ACCOUNT_TYPES = ['savings', 'current', 'fixed_deposit', 'investment'];
 
@@ -34,6 +37,88 @@ class SavingsAccountController extends Controller
             'investment' => 'compound_interest',
             default => 'simple_interest',
         };
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function savingsSettingsDefaults(): array
+    {
+        return [
+            'minimum_hold_amount' => 0.0,
+            'minimum_opening_deposit' => 0.0,
+            'maximum_daily_withdrawal_amount' => 0.0,
+            'withdrawal_requires_reference' => false,
+            'auto_apply_default_interest' => true,
+            'allow_early_fixed_deposit_withdrawal' => true,
+            'fixed_deposit_lock_months' => 12,
+            'default_interest_rates' => [
+                'savings' => 4.5,
+                'current' => 0.0,
+                'fixed_deposit' => 10.5,
+                'investment' => 12.0,
+            ],
+            'default_interest_types' => [
+                'savings' => 'simple_interest',
+                'current' => 'simple_interest',
+                'fixed_deposit' => 'maturity_payout',
+                'investment' => 'compound_interest',
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function savingsSettings(): array
+    {
+        $defaults = $this->savingsSettingsDefaults();
+        if (!Schema::hasTable('system_settings')) {
+            return $defaults;
+        }
+
+        $rawValue = DB::table('system_settings')
+            ->where('key', self::SAVINGS_SETTINGS_KEY)
+            ->value('value');
+
+        if (!is_string($rawValue) || trim($rawValue) === '') {
+            return $defaults;
+        }
+
+        $decoded = json_decode($rawValue, true);
+        if (!is_array($decoded)) {
+            return $defaults;
+        }
+
+        $rates = is_array($decoded['default_interest_rates'] ?? null)
+            ? $decoded['default_interest_rates']
+            : [];
+        $types = is_array($decoded['default_interest_types'] ?? null)
+            ? $decoded['default_interest_types']
+            : [];
+
+        $normalizedRates = [];
+        $normalizedTypes = [];
+        foreach (self::ACCOUNT_TYPES as $accountType) {
+            $normalizedRates[$accountType] = round(max((float) ($rates[$accountType] ?? $defaults['default_interest_rates'][$accountType]), 0), 4);
+            $type = strtolower(trim((string) ($types[$accountType] ?? $defaults['default_interest_types'][$accountType])));
+            if (!in_array($type, self::INTEREST_TYPES, true)) {
+                $type = (string) $defaults['default_interest_types'][$accountType];
+            }
+            $normalizedTypes[$accountType] = $type;
+        }
+
+        return [
+            'minimum_hold_amount' => round(max((float) ($decoded['minimum_hold_amount'] ?? $defaults['minimum_hold_amount']), 0), 2),
+            'minimum_opening_deposit' => round(max((float) ($decoded['minimum_opening_deposit'] ?? $defaults['minimum_opening_deposit']), 0), 2),
+            'maximum_daily_withdrawal_amount' => round(max((float) ($decoded['maximum_daily_withdrawal_amount'] ?? $defaults['maximum_daily_withdrawal_amount']), 0), 2),
+            'withdrawal_requires_reference' => (bool) ($decoded['withdrawal_requires_reference'] ?? $defaults['withdrawal_requires_reference']),
+            'auto_apply_default_interest' => (bool) ($decoded['auto_apply_default_interest'] ?? $defaults['auto_apply_default_interest']),
+            'allow_early_fixed_deposit_withdrawal' => (bool) ($decoded['allow_early_fixed_deposit_withdrawal'] ?? $defaults['allow_early_fixed_deposit_withdrawal']),
+            'fixed_deposit_lock_months' => max(0, min((int) ($decoded['fixed_deposit_lock_months'] ?? $defaults['fixed_deposit_lock_months']), 600)),
+            'default_interest_rates' => $normalizedRates,
+            'default_interest_types' => $normalizedTypes,
+        ];
     }
 
     private function isAdminUser(?object $user): bool
@@ -212,6 +297,44 @@ class SavingsAccountController extends Controller
 
         $openingDeposit = round((float) ($validated['opening_deposit'] ?? 0), 2);
         $accountType = (string) $validated['account_type'];
+        $settings = $this->savingsSettings();
+
+        $minimumOpeningDeposit = round(max((float) ($settings['minimum_opening_deposit'] ?? 0), 0), 2);
+        if ($openingDeposit < $minimumOpeningDeposit) {
+            return response()->json([
+                'message' => 'Opening deposit must be at least ' . number_format($minimumOpeningDeposit, 2, '.', '') . '.',
+            ], 422);
+        }
+
+        $defaultInterestRates = is_array($settings['default_interest_rates'] ?? null)
+            ? $settings['default_interest_rates']
+            : [];
+        $defaultInterestTypes = is_array($settings['default_interest_types'] ?? null)
+            ? $settings['default_interest_types']
+            : [];
+
+        $configuredDefaultInterestRate = round(max((float) ($defaultInterestRates[$accountType] ?? 0), 0), 4);
+        $inputInterestRate = array_key_exists('interest_rate', $validated) && $validated['interest_rate'] !== null
+            ? round(max((float) $validated['interest_rate'], 0), 4)
+            : null;
+
+        $interestRateToSave = $inputInterestRate ?? 0.0;
+        if ((bool) ($settings['auto_apply_default_interest'] ?? true) && ($inputInterestRate === null || $inputInterestRate <= 0)) {
+            $interestRateToSave = $configuredDefaultInterestRate;
+        }
+
+        $configuredDefaultInterestType = strtolower(trim((string) ($defaultInterestTypes[$accountType] ?? $this->defaultInterestTypeForAccount($accountType))));
+        if (!in_array($configuredDefaultInterestType, self::INTEREST_TYPES, true)) {
+            $configuredDefaultInterestType = $this->defaultInterestTypeForAccount($accountType);
+        }
+
+        $interestTypeToSave = strtolower(trim((string) ($validated['interest_type'] ?? '')));
+        if ($interestTypeToSave === '') {
+            $interestTypeToSave = $configuredDefaultInterestType;
+        }
+        if (!in_array($interestTypeToSave, self::INTEREST_TYPES, true)) {
+            $interestTypeToSave = $this->defaultInterestTypeForAccount($accountType);
+        }
 
         $account = SavingsAccount::create([
             'tenant_id' => $request->user()?->tenant_id ?? 1,
@@ -221,8 +344,8 @@ class SavingsAccountController extends Controller
             'account_type' => $accountType,
             'opening_deposit' => $openingDeposit,
             'balance' => $openingDeposit,
-            'interest_rate' => round((float) ($validated['interest_rate'] ?? 0), 4),
-            'interest_type' => (string) ($validated['interest_type'] ?? $this->defaultInterestTypeForAccount($accountType)),
+            'interest_rate' => $interestRateToSave,
+            'interest_type' => $interestTypeToSave,
             'opened_at' => $validated['opened_at'] ?? now()->toDateString(),
             'status' => (string) ($validated['status'] ?? 'active'),
             'created_by' => $request->user()?->id,
@@ -841,6 +964,18 @@ class SavingsAccountController extends Controller
             ], 422);
         }
 
+        $settings = $this->savingsSettings();
+        $transactionDate = !empty($validated['transaction_date'])
+            ? (string) $validated['transaction_date']
+            : now()->toDateString();
+        $referenceNo = trim((string) ($validated['reference_no'] ?? ''));
+
+        if ((bool) ($settings['withdrawal_requires_reference'] ?? false) && $referenceNo === '') {
+            return response()->json([
+                'message' => 'Reference number is required for withdrawal as per savings settings.',
+            ], 422);
+        }
+
         $amount = round((float) $validated['amount'], 2);
         $currentBalance = round((float) $account->balance, 2);
         if ($amount > $currentBalance) {
@@ -849,7 +984,49 @@ class SavingsAccountController extends Controller
             ], 422);
         }
 
-        $transaction = DB::transaction(function () use ($account, $amount, $validated, $request) {
+        $minimumHoldAmount = round(max((float) ($settings['minimum_hold_amount'] ?? 0), 0), 2);
+        $remainingAfterWithdrawal = round($currentBalance - $amount, 2);
+        if ($remainingAfterWithdrawal < $minimumHoldAmount) {
+            return response()->json([
+                'message' => 'Withdrawal would breach minimum hold amount of ' . number_format($minimumHoldAmount, 2, '.', '') . '.',
+            ], 422);
+        }
+
+        $maximumDailyWithdrawalAmount = round(max((float) ($settings['maximum_daily_withdrawal_amount'] ?? 0), 0), 2);
+        if ($maximumDailyWithdrawalAmount > 0) {
+            $alreadyWithdrawnToday = round((float) SavingsAccountTransaction::query()
+                ->where('savings_account_id', $account->id)
+                ->where('transaction_type', 'withdrawal')
+                ->whereDate('transaction_date', $transactionDate)
+                ->sum('amount'), 2);
+
+            if (($alreadyWithdrawnToday + $amount) > $maximumDailyWithdrawalAmount) {
+                return response()->json([
+                    'message' => 'Daily withdrawal limit exceeded. Maximum allowed is ' . number_format($maximumDailyWithdrawalAmount, 2, '.', '') . '.',
+                ], 422);
+            }
+        }
+
+        $accountType = strtolower(trim((string) ($account->account_type ?? '')));
+        $allowEarlyFixedDepositWithdrawal = (bool) ($settings['allow_early_fixed_deposit_withdrawal'] ?? true);
+        $fixedDepositLockMonths = max(0, (int) ($settings['fixed_deposit_lock_months'] ?? 0));
+
+        if ($accountType === 'fixed_deposit' && !$allowEarlyFixedDepositWithdrawal && $fixedDepositLockMonths > 0 && !empty($account->opened_at)) {
+            try {
+                $maturityDate = (new \DateTimeImmutable((string) $account->opened_at))
+                    ->modify('+' . $fixedDepositLockMonths . ' months')
+                    ->format('Y-m-d');
+                if ($transactionDate < $maturityDate) {
+                    return response()->json([
+                        'message' => 'Early withdrawal is blocked for fixed deposits until ' . $maturityDate . '.',
+                    ], 422);
+                }
+            } catch (\Throwable) {
+                // Ignore invalid dates and continue with withdrawal.
+            }
+        }
+
+        $transaction = DB::transaction(function () use ($account, $amount, $validated, $request, $transactionDate, $referenceNo) {
             $before = round((float) $account->balance, 2);
             $after = round(max($before - $amount, 0), 2);
 
@@ -859,8 +1036,8 @@ class SavingsAccountController extends Controller
                 'amount' => $amount,
                 'balance_before' => $before,
                 'balance_after' => $after,
-                'transaction_date' => $validated['transaction_date'] ?? now()->toDateString(),
-                'reference_no' => $validated['reference_no'] ?? null,
+                'transaction_date' => $transactionDate,
+                'reference_no' => $referenceNo !== '' ? $referenceNo : null,
                 'note' => $validated['note'] ?? null,
                 'created_by' => $request->user()?->id,
             ]);

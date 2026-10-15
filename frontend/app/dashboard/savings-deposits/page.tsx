@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
-import { ArrowLeft, UserPlus, PiggyBank, Wallet } from 'lucide-react';
+import { ArrowLeft, UserPlus, PiggyBank, Wallet, SlidersHorizontal } from 'lucide-react';
 import { WidgetCloseGate } from '@/lib/useWidgetsFixed';
 
 type SavingsAccountRow = {
@@ -205,6 +205,7 @@ export default function SavingsDepositsPage() {
     { key: 'action_register_customer', path: '/dashboard/savings-deposits/customers', title: '1. Register Customer', desc: 'Customer onboarding details in a dedicated page.', Icon: UserPlus },
     { key: 'action_open_account', path: '/dashboard/savings-deposits/accounts', title: '2. Open Account', desc: 'Open savings, current, or fixed-deposit accounts.', Icon: PiggyBank },
     { key: 'action_transactions', path: '/dashboard/savings-deposits/transactions', title: '3. Deposit & Withdrawals', desc: 'Post deposits and withdrawals in a separate operations page.', Icon: Wallet },
+    { key: 'action_settings', path: '/dashboard/savings-deposits/settings', title: '4. Savings Settings', desc: 'Control hold amount, interest rates, and policy rules for bank operations.', Icon: SlidersHorizontal },
   ];
   const visibleActionCards = actionCards.filter((card) => !hiddenWidgetKeys.has(`${widgetPrefix}${card.key}`));
   const showOverviewWidget = !hiddenWidgetKeys.has(`${widgetPrefix}overview`);
