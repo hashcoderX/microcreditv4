@@ -32,6 +32,14 @@ type GuarantorInput = {
   address: string;
 };
 
+type GuarantorLookupOption = {
+  id: number;
+  name: string;
+  nic: string;
+  phone: string;
+  address: string;
+};
+
 type RepaymentInstallmentRow = {
   installment_no: number;
   payment_date: string;
@@ -397,6 +405,10 @@ function asDateInput(value: unknown): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function hasText(value: unknown): boolean {
+  return String(value ?? '').trim().length > 0;
+}
+
 export default function IssueFinancePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -453,6 +465,10 @@ export default function IssueFinancePage() {
   const [regGuarantors, setRegGuarantors] = useState<GuarantorInput[]>([
     { name: '', nic: '', phone: '', address: '' },
   ]);
+  const [guarantorFinderQueryByIndex, setGuarantorFinderQueryByIndex] = useState<Record<number, string>>({});
+  const [guarantorFinderMatchesByIndex, setGuarantorFinderMatchesByIndex] = useState<Record<number, GuarantorLookupOption[]>>({});
+  const [activeGuarantorFinderIndex, setActiveGuarantorFinderIndex] = useState<number | null>(null);
+  const [loadingGuarantorFinder, setLoadingGuarantorFinder] = useState(false);
 
   const [regVehicleImages, setRegVehicleImages] = useState<File[]>([]);
   const [regVehicleCrFile, setRegVehicleCrFile] = useState<File | null>(null);
@@ -1930,6 +1946,140 @@ export default function IssueFinancePage() {
     selectAdvancedSearchMatch(match);
   };
 
+  const updateGuarantorField = (index: number, field: keyof GuarantorInput, value: string) => {
+    setRegGuarantors((prev) => prev.map((g, i) => (i === index ? { ...g, [field]: value } : g)));
+  };
+
+  const addGuarantorRow = () => {
+    setRegGuarantors((prev) => [...prev, { name: '', nic: '', phone: '', address: '' }]);
+  };
+
+  const removeGuarantorRow = (index: number) => {
+    setRegGuarantors((prev) => prev.filter((_, i) => i !== index));
+
+    setGuarantorFinderQueryByIndex((prev) => {
+      const next: Record<number, string> = {};
+      Object.entries(prev).forEach(([key, value]) => {
+        const currentIndex = Number(key);
+        if (currentIndex < index) {
+          next[currentIndex] = value;
+        } else if (currentIndex > index) {
+          next[currentIndex - 1] = value;
+        }
+      });
+      return next;
+    });
+
+    setGuarantorFinderMatchesByIndex((prev) => {
+      const next: Record<number, GuarantorLookupOption[]> = {};
+      Object.entries(prev).forEach(([key, value]) => {
+        const currentIndex = Number(key);
+        if (currentIndex < index) {
+          next[currentIndex] = value;
+        } else if (currentIndex > index) {
+          next[currentIndex - 1] = value;
+        }
+      });
+      return next;
+    });
+
+    setActiveGuarantorFinderIndex((prev) => {
+      if (prev === null) return null;
+      if (prev === index) return null;
+      return prev > index ? prev - 1 : prev;
+    });
+  };
+
+  const applyGuarantorFromFinder = (index: number, option: GuarantorLookupOption) => {
+    setRegGuarantors((prev) =>
+      prev.map((row, rowIndex) =>
+        rowIndex === index
+          ? {
+              ...row,
+              name: option.name,
+              nic: option.nic,
+              phone: option.phone || row.phone,
+              address: option.address || row.address,
+            }
+          : row
+      )
+    );
+
+    setGuarantorFinderQueryByIndex((prev) => ({
+      ...prev,
+      [index]: `${option.name} (${option.nic})`,
+    }));
+    setActiveGuarantorFinderIndex(null);
+  };
+
+  const fetchGuarantorFinderMatches = async (authToken: string, query: string): Promise<GuarantorLookupOption[]> => {
+    const keyword = query.trim();
+    if (keyword.length < 1) return [];
+
+    const digitOnly = /^\d+$/.test(keyword);
+    const likelyCustomerNo = /^[A-Za-z]{1,4}[\-\/]?\d/.test(keyword) || /^CL[-\/]?/i.test(keyword);
+
+    const searchAttempts: Array<Record<string, string | number>> = digitOnly
+      ? [
+          { nic_passport: keyword, limit: 8 },
+          { phone: keyword, limit: 8 },
+          { customer_no: keyword, limit: 8 },
+        ]
+      : likelyCustomerNo
+      ? [
+          { customer_no: keyword, limit: 8 },
+          { nic_passport: keyword, limit: 8 },
+          { name: keyword, limit: 8 },
+        ]
+      : [
+          { name: keyword, limit: 8 },
+          { nic_passport: keyword, limit: 8 },
+        ];
+
+    const optionsByKey = new Map<string, GuarantorLookupOption>();
+
+    for (const params of searchAttempts) {
+      const response = await axios.get('/api/customers/finance-search', {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: 'application/json',
+        },
+        params,
+      });
+
+      const rows = Array.isArray(response.data?.matches) ? response.data.matches : [];
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const candidate = row as { customer?: unknown };
+        if (!isCustomerDetail(candidate.customer)) continue;
+
+        const customer = candidate.customer;
+        const firstName = String(customer.first_name || '').trim();
+        const lastName = String(customer.last_name || '').trim();
+        const name = `${firstName} ${lastName}`.trim() || String(customer.customer_code || '').trim();
+        const nic = String(customer.nic_passport || customer.passport_no || '').trim();
+        if (!name || !nic) continue;
+
+        const key = `${String(customer.id || '')}:${nic.toLowerCase()}`;
+        if (optionsByKey.has(key)) continue;
+
+        optionsByKey.set(key, {
+          id: Number(customer.id || 0),
+          name,
+          nic,
+          phone: String(customer.phone || '').trim(),
+          address: String(customer.current_address || customer.permanent_address || '').trim(),
+        });
+      }
+
+      if (optionsByKey.size >= 8) {
+        break;
+      }
+    }
+
+    return Array.from(optionsByKey.values()).slice(0, 8);
+  };
+
   const searchCustomerForFinance = async (authToken: string) => {
     const keyword = regCustomerSearchValue.trim();
     if (!keyword) {
@@ -2058,15 +2208,175 @@ export default function IssueFinancePage() {
     return () => window.clearTimeout(timer);
   }, [token, regCustomerSearchBy, regCustomerSearchValue]);
 
-  const goToNextStep = async () => {
-    if (registerStep === 2) {
-      if (!token) return;
-      const ok = await searchCustomerForFinance(token);
-      if (!ok) {
-        setErrorMessage('Customer not found. Search and select an existing customer before continuing.');
-        return;
-      }
+  useEffect(() => {
+    if (!token || activeGuarantorFinderIndex === null) return;
+
+    const activeIndex = activeGuarantorFinderIndex;
+    const keyword = String(guarantorFinderQueryByIndex[activeIndex] || '').trim();
+
+    if (keyword.length < 1) {
+      setGuarantorFinderMatchesByIndex((prev) => ({ ...prev, [activeIndex]: [] }));
+      setLoadingGuarantorFinder(false);
+      return;
     }
+
+    let cancelled = false;
+    setLoadingGuarantorFinder(true);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const matches = await fetchGuarantorFinderMatches(token, keyword);
+        if (cancelled) return;
+        setGuarantorFinderMatchesByIndex((prev) => ({ ...prev, [activeIndex]: matches }));
+      } catch {
+        if (cancelled) return;
+        setGuarantorFinderMatchesByIndex((prev) => ({ ...prev, [activeIndex]: [] }));
+      } finally {
+        if (!cancelled) {
+          setLoadingGuarantorFinder(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [token, activeGuarantorFinderIndex, guarantorFinderQueryByIndex]);
+
+  const validateWizardStep = async (stepId: number): Promise<boolean> => {
+      if (stepId === 1) {
+        if (!hasText(regCustomerSearchValue)) {
+          setErrorMessage('Customer search value is required.');
+          setRegisterStep(1);
+          return false;
+        }
+        if (!hasText(regProductType)) {
+          setErrorMessage('Product type is required.');
+          setRegisterStep(1);
+          return false;
+        }
+        if (!hasText(regStartDate)) {
+          setErrorMessage('Start date is required.');
+          setRegisterStep(1);
+          return false;
+        }
+
+        const rate = toAnnualRatePercent(Number(regInterestRate), regInterestRatePeriod);
+        const tenure = Number(regTenureMonths);
+        if (!Number.isFinite(rate) || rate < 0) {
+          setErrorMessage('Interest rate must be valid.');
+          setRegisterStep(1);
+          return false;
+        }
+        if (!Number.isFinite(tenure) || tenure <= 0) {
+          setErrorMessage('Tenure must be a valid positive number.');
+          setRegisterStep(1);
+          return false;
+        }
+      }
+
+      if (stepId === 2) {
+        if (!token) {
+          setErrorMessage('Authentication token missing. Please login again.');
+          return false;
+        }
+
+        if (!regCustomerDetail) {
+          const ok = await searchCustomerForFinance(token);
+          if (!ok) {
+            setErrorMessage('Customer not found. Search and select an existing customer before continuing.');
+            setRegisterStep(2);
+            return false;
+          }
+        }
+      }
+
+      if (stepId === 3) {
+        const amount = Number(effectiveAmountInput);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          setErrorMessage(isOtherFinanceSelected ? 'Loan amount must be a valid amount.' : `${assetTypeLabel} value must be a valid amount.`);
+          setRegisterStep(3);
+          return false;
+        }
+
+        if (isOtherFinanceSelected) {
+          if (!hasText(regLoanDetails)) {
+            setErrorMessage('Loan details are required.');
+            setRegisterStep(3);
+            return false;
+          }
+        } else {
+          if (!hasText(regVehicleNo) || !hasText(regChassisNo) || !hasText(regEngineNo) || !hasText(regMakeModel)) {
+            setErrorMessage(`${assetTypeLabel} details are required: primary number, secondary number, third field, and description.`);
+            setRegisterStep(3);
+            return false;
+          }
+        }
+      }
+
+      if (stepId === 4) {
+        const validGuarantors = regGuarantors.filter((g) => hasText(g.name) || hasText(g.nic) || hasText(g.phone) || hasText(g.address));
+        if (validGuarantors.length === 0) {
+          setErrorMessage('At least one guarantor is required.');
+          setRegisterStep(4);
+          return false;
+        }
+
+        const incomplete = validGuarantors.find((g) => !hasText(g.name) || !hasText(g.nic) || !hasText(g.phone) || !hasText(g.address));
+        if (incomplete) {
+          setErrorMessage('Each guarantor must include name, NIC, phone, and address.');
+          setRegisterStep(4);
+          return false;
+        }
+      }
+
+      if (stepId === 5 && !isDraftLoanSelected) {
+        if (!hasText(regFrequency) || !hasText(regInstallmentMode)) {
+          setErrorMessage('Repayment frequency and installment mode are required.');
+          setRegisterStep(5);
+          return false;
+        }
+
+        if (regScheduleMode === 'custom_date' && !hasText(regFirstInstallmentDate)) {
+          setErrorMessage('First installment date is required for custom schedule mode.');
+          setRegisterStep(5);
+          return false;
+        }
+
+        if (regInstallmentMode === 'manual') {
+          const manualInstallment = Number(regManualInstallmentAmount);
+          if (!Number.isFinite(manualInstallment) || manualInstallment <= 0) {
+            setErrorMessage('Manual monthly payment must be a valid amount.');
+            setRegisterStep(5);
+            return false;
+          }
+
+          if (regInstallmentPlan.length === 0) {
+            setErrorMessage('Generate the installment plan in Repayment step.');
+            setRegisterStep(5);
+            return false;
+          }
+
+          const invalidRow = regInstallmentPlan.find((row) => !hasText(row.payment_date) || !Number.isFinite(Number(row.amount)) || Number(row.amount) <= 0);
+          if (invalidRow) {
+            setErrorMessage('Each installment row must have payment date and valid amount.');
+            setRegisterStep(5);
+            return false;
+          }
+        }
+      }
+
+      // Steps 6, 7, and 8 are optional and should not block navigation.
+
+      return true;
+    };
+
+  const goToNextStep = async () => {
+    setErrorMessage('');
+
+    const currentStepValid = await validateWizardStep(registerStep);
+    if (!currentStepValid) return;
 
     const currentIndex = visibleWizardSteps.findIndex((s) => s.id === registerStep);
     if (currentIndex < 0) {
@@ -2083,8 +2393,50 @@ export default function IssueFinancePage() {
     }
   };
 
+  const goToStepWithValidation = async (targetStepId: number) => {
+    if (targetStepId === registerStep) return;
+
+    const currentIndex = visibleWizardSteps.findIndex((s) => s.id === registerStep);
+    const targetIndex = visibleWizardSteps.findIndex((s) => s.id === targetStepId);
+    if (targetIndex < 0) return;
+
+    if (targetIndex <= currentIndex) {
+      setRegisterStep(targetStepId);
+      return;
+    }
+
+    setErrorMessage('');
+
+    for (let index = currentIndex; index < targetIndex; index++) {
+      const stepId = visibleWizardSteps[index]?.id;
+      if (!stepId) continue;
+      const valid = await validateWizardStep(stepId);
+
+      if (!valid) {
+        return;
+      }
+    }
+
+    if (registerStep >= 3) {
+      saveCurrentDraft();
+    }
+
+    setRegisterStep(targetStepId);
+  };
+
   const submitRegister = async () => {
     if (!token) return;
+
+    for (const step of visibleWizardSteps) {
+      if (step.id === 9) {
+        continue;
+      }
+
+      const ok = await validateWizardStep(step.id);
+      if (!ok) {
+        return;
+      }
+    }
 
     const amount = Number(effectiveAmountInput);
     const down = regDownPayment ? Number(regDownPayment) : 0;
@@ -2596,7 +2948,7 @@ export default function IssueFinancePage() {
                   <button
                     key={step.id}
                     type="button"
-                    onClick={() => setRegisterStep(step.id)}
+                    onClick={() => { void goToStepWithValidation(step.id); }}
                     className={`min-w-[7.25rem] flex-1 px-2.5 py-2.5 text-center transition border-b-2 ${
                       isActive
                         ? 'border-cyan-500 bg-cyan-50/60'
@@ -2696,7 +3048,7 @@ export default function IssueFinancePage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setRegisterStep(2)}
+                        onClick={() => { void goToStepWithValidation(2); }}
                         className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-cyan-200 bg-white px-4 py-2.5 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 transition shrink-0"
                       >
                         Open Step 2
@@ -3339,35 +3691,73 @@ export default function IssueFinancePage() {
                       <div className="flex items-center justify-between">
                         <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Guarantor {index + 1}</p>
                         {regGuarantors.length > 1 && (
-                          <button type="button" onClick={() => setRegGuarantors((prev) => prev.filter((_, i) => i !== index))} className="rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-100">Remove</button>
+                          <button type="button" onClick={() => removeGuarantorRow(index)} className="rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-100">Remove</button>
+                        )}
+                      </div>
+
+                      <div className="relative">
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Find Existing Guarantor (Name / NIC / Phone)</label>
+                        <input
+                          value={guarantorFinderQueryByIndex[index] || ''}
+                          onFocus={() => setActiveGuarantorFinderIndex(index)}
+                          onBlur={() => setTimeout(() => setActiveGuarantorFinderIndex((prev) => (prev === index ? null : prev)), 150)}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            setGuarantorFinderQueryByIndex((prev) => ({ ...prev, [index]: value }));
+                            setActiveGuarantorFinderIndex(index);
+                          }}
+                          className={inputClass}
+                          placeholder="Type guarantor name, NIC, or phone"
+                        />
+
+                        {activeGuarantorFinderIndex === index && (guarantorFinderQueryByIndex[index] || '').trim() !== '' && (
+                          <div className="absolute z-20 mt-1 w-full max-h-56 overflow-auto rounded-xl border border-cyan-100 bg-white shadow-xl">
+                            {loadingGuarantorFinder ? (
+                              <p className="px-3 py-2 text-xs text-slate-500">Searching customers...</p>
+                            ) : (guarantorFinderMatchesByIndex[index] || []).length === 0 ? (
+                              <p className="px-3 py-2 text-xs text-slate-500">No guarantor matches found.</p>
+                            ) : (
+                              (guarantorFinderMatchesByIndex[index] || []).map((option) => (
+                                <button
+                                  key={`${option.id}-${option.nic}`}
+                                  type="button"
+                                  onMouseDown={() => applyGuarantorFromFinder(index, option)}
+                                  className="w-full border-b border-cyan-50 px-3 py-2 text-left hover:bg-cyan-50 last:border-b-0"
+                                >
+                                  <p className="text-sm font-semibold text-slate-800">{option.name}</p>
+                                  <p className="text-xs text-slate-500">{option.nic}{option.phone ? ` • ${option.phone}` : ''}</p>
+                                </button>
+                              ))
+                            )}
+                          </div>
                         )}
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                           <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Guarantor Name</label>
-                          <input value={guarantor.name} onChange={(e) => setRegGuarantors((prev) => prev.map((g, i) => i === index ? { ...g, name: e.target.value } : g))} className={inputClass} />
+                          <input value={guarantor.name} onChange={(e) => updateGuarantorField(index, 'name', e.target.value)} className={inputClass} />
                         </div>
                         <div>
                           <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">NIC</label>
-                          <input value={guarantor.nic} onChange={(e) => setRegGuarantors((prev) => prev.map((g, i) => i === index ? { ...g, nic: e.target.value } : g))} className={inputClass} />
+                          <input value={guarantor.nic} onChange={(e) => updateGuarantorField(index, 'nic', e.target.value)} className={inputClass} />
                         </div>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                           <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Phone</label>
-                          <input value={guarantor.phone} onChange={(e) => setRegGuarantors((prev) => prev.map((g, i) => i === index ? { ...g, phone: e.target.value } : g))} className={inputClass} />
+                          <input value={guarantor.phone} onChange={(e) => updateGuarantorField(index, 'phone', e.target.value)} className={inputClass} />
                         </div>
                         <div>
                           <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Address</label>
-                          <input value={guarantor.address} onChange={(e) => setRegGuarantors((prev) => prev.map((g, i) => i === index ? { ...g, address: e.target.value } : g))} className={inputClass} />
+                          <input value={guarantor.address} onChange={(e) => updateGuarantorField(index, 'address', e.target.value)} className={inputClass} />
                         </div>
                       </div>
                     </div>
                   ))}
 
-                  <button type="button" onClick={() => setRegGuarantors((prev) => [...prev, { name: '', nic: '', phone: '', address: '' }])} className="rounded-lg border border-cyan-200 bg-white px-3 py-2 text-xs font-semibold text-cyan-800 hover:bg-cyan-50">
+                  <button type="button" onClick={addGuarantorRow} className="rounded-lg border border-cyan-200 bg-white px-3 py-2 text-xs font-semibold text-cyan-800 hover:bg-cyan-50">
                     + Add Another Guarantor
                   </button>
                 </div>

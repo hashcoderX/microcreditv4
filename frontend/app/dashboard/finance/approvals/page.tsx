@@ -284,6 +284,66 @@ function formatDate(v: unknown): string {
   return d.toLocaleDateString();
 }
 
+function hasMeaningfulText(value: unknown): boolean {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return false;
+  return !['-', 'n/a', 'na', 'null', 'undefined'].includes(text);
+}
+
+function roundCurrency(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function getRefundPreviewAmount(finance: FinanceApprovalRow | null): number {
+  if (!finance) return NaN;
+
+  const savedRefund = toNumber(finance.refund_amount);
+  if (Number.isFinite(savedRefund) && savedRefund > 0) {
+    return roundCurrency(savedRefund);
+  }
+
+  const plannedTotal = toNumber(finance.repayment_plan?.total_planned_amount);
+  if (Number.isFinite(plannedTotal) && plannedTotal > 0) {
+    return roundCurrency(plannedTotal);
+  }
+
+  const planRows = Array.isArray(finance.repayment_plan?.installments)
+    ? finance.repayment_plan?.installments
+    : [];
+  if (planRows.length > 0) {
+    const scheduleSum = planRows.reduce((sum, row) => {
+      const amount = toNumber(row.amount);
+      return Number.isFinite(amount) ? sum + amount : sum;
+    }, 0);
+
+    if (scheduleSum > 0) {
+      return roundCurrency(scheduleSum);
+    }
+  }
+
+  const financedAmount = toNumber(finance.financed_amount);
+  const annualRate = toNumber(finance.interest_rate);
+  const tenureMonths = toNumber(finance.tenure_months);
+  if (Number.isFinite(financedAmount) && financedAmount > 0 && Number.isFinite(annualRate) && Number.isFinite(tenureMonths) && tenureMonths > 0) {
+    const years = Math.max(1, Math.floor(tenureMonths)) / 12;
+    const simpleInterestTotal = financedAmount + (financedAmount * (annualRate / 100) * years);
+    if (Number.isFinite(simpleInterestTotal) && simpleInterestTotal > 0) {
+      return roundCurrency(simpleInterestTotal);
+    }
+  }
+
+  const installmentAmount = toNumber(finance.installment_amount);
+  if (Number.isFinite(installmentAmount) && Number.isFinite(tenureMonths) && installmentAmount > 0 && tenureMonths > 0) {
+    return roundCurrency(installmentAmount * Math.max(1, Math.floor(tenureMonths)));
+  }
+
+  if (Number.isFinite(financedAmount) && financedAmount > 0) {
+    return roundCurrency(financedAmount);
+  }
+
+  return NaN;
+}
+
 function toInputDate(v: unknown): string {
   if (!v) return '';
   const d = new Date(String(v));
@@ -1296,6 +1356,11 @@ export default function FinanceApprovalsPage() {
     };
   }, [deductionTotals]);
 
+  const refundPreviewAmount = useMemo(
+    () => getRefundPreviewAmount(selectedFinance),
+    [selectedFinance],
+  );
+
   const applyAutoBalanceHelper = () => {
     if (!autoBalanceSuggestion.canApply) {
       setDeductionError('Cannot auto-balance without financed amount and installment total.');
@@ -1961,6 +2026,30 @@ export default function FinanceApprovalsPage() {
   };
 
   const submitSecondCallAndMoveNext = async () => {
+    const requiredFields: Array<{ key: keyof FinanceSecondCallConfirmationForm; label: string }> = [
+      { key: 'customer_full_name', label: 'Customer full name' },
+      { key: 'nic_number', label: 'NIC number' },
+      { key: 'registered_mobile_number', label: 'Registered mobile number' },
+      { key: 'date_of_birth', label: 'Date of birth' },
+      { key: 'address', label: 'Address' },
+      { key: 'loan_amount', label: 'Loan amount' },
+      { key: 'loan_purpose', label: 'Loan purpose' },
+      { key: 'loan_term', label: 'Loan term' },
+      { key: 'installment', label: 'Installment' },
+      { key: 'payment_frequency', label: 'Payment frequency' },
+      { key: 'interest_rate', label: 'Interest rate' },
+      { key: 'first_payment_date', label: 'First payment date' },
+      { key: 'number_of_installments', label: 'Number of installments' },
+    ];
+
+    const missingField = requiredFields.find((row) => !hasMeaningfulText(secondCallForm[row.key]));
+    if (missingField) {
+      const message = `${missingField.label} is required before moving to Signature Check.`;
+      setDeductionError(message);
+      openAlertModal(message, 'Second Call Confirmation');
+      return;
+    }
+
     const allConfirmed =
       secondCallForm.confirm_customer_full_name
       && secondCallForm.confirm_nic_number
@@ -2103,6 +2192,16 @@ export default function FinanceApprovalsPage() {
     if (!stepTwoForm.customer_full_name.trim() || !stepTwoForm.nic_or_dob.trim()) {
       setDeductionError('Customer full name and NIC / date of birth are required.');
       openAlertModal('Customer full name and NIC / date of birth are required.', 'Validation');
+      return;
+    }
+    if (stepTwoForm.answered_by_customer && !hasMeaningfulText(stepTwoForm.customer_contact_no)) {
+      setDeductionError('Customer contact number is required when answered by customer is selected.');
+      openAlertModal('Customer contact number is required when answered by customer is selected.', 'Validation');
+      return;
+    }
+    if (stepTwoForm.answered_by_spouse && !hasMeaningfulText(stepTwoForm.spouse_contact_no)) {
+      setDeductionError('Spouse contact number is required when answered by spouse is selected.');
+      openAlertModal('Spouse contact number is required when answered by spouse is selected.', 'Validation');
       return;
     }
     if (!Number.isFinite(loanAmount) || loanAmount <= 0) {
@@ -3152,7 +3251,7 @@ export default function FinanceApprovalsPage() {
                       <div><span className="text-slate-500">Installment: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.installment_amount)}</span></div>
                       <div><span className="text-slate-500">Total Paid: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.total_paid_amount)}</span></div>
                       <div><span className="text-slate-500">Balance: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.balance_amount)}</span></div>
-                      <div><span className="text-slate-500">Refund: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.refund_amount)}</span></div>
+                      <div><span className="text-slate-500">Refund: </span><span className="font-semibold text-slate-900">{formatAmount(refundPreviewAmount)}</span></div>
                     </div>
                   </div>
 

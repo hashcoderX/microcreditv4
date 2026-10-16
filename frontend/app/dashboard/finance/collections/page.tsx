@@ -90,6 +90,7 @@ type FinanceRow = {
   interest_rate?: number | string | null;
   interest_type?: string | null;
   tenure_months?: number | string | null;
+  finance_end_date?: string | null;
   installment_frequency?: string | null;
   status?: string | null;
   created_at?: string | null;
@@ -704,6 +705,34 @@ export default function FinanceCollectionsPage() {
 
     return outstandingById;
   }, [isSelectedRecordDraft, openingOutstandingAmount, selectedRecord]);
+  const loanEndDatePreview = useMemo(() => {
+    if (!selectedRecord) return null;
+
+    const explicitEndDate = String(selectedRecord.finance_end_date || '').trim();
+    if (explicitEndDate) {
+      return explicitEndDate;
+    }
+
+    const startDateRaw = String(selectedRecord.start_date || '').trim();
+    const tenureMonths = toNumber(selectedRecord.tenure_months);
+    if (!startDateRaw || !Number.isFinite(tenureMonths) || tenureMonths <= 0) {
+      return null;
+    }
+
+    const startDate = new Date(startDateRaw);
+    if (Number.isNaN(startDate.getTime())) {
+      return null;
+    }
+
+    const months = Math.max(1, Math.floor(tenureMonths));
+    const endDate = new Date(startDate);
+    endDate.setMonth(endDate.getMonth() + months);
+
+    const year = endDate.getFullYear();
+    const month = String(endDate.getMonth() + 1).padStart(2, '0');
+    const day = String(endDate.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }, [selectedRecord]);
 
   const openFullRecord = async (id: number) => {
     if (!token) return;
@@ -1422,6 +1451,7 @@ export default function FinanceCollectionsPage() {
                       <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700">Timeline</p>
                       <p className="mt-2 text-xs text-slate-500">Start: {formatDate(selectedRecord.start_date)}</p>
                       <p className="text-xs text-slate-500">Created: {formatDate(selectedRecord.created_at)}</p>
+                      <p className="text-xs text-slate-500">Loan End: {formatDate(loanEndDatePreview)}</p>
                       <p className="text-xs text-slate-500">Frequency: {selectedRecord.installment_frequency || '-'}</p>
                     </div>
                   </div>

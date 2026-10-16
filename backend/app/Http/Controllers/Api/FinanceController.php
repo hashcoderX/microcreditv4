@@ -3729,6 +3729,18 @@ class FinanceController extends Controller
             return round(array_sum(array_map(static fn ($row) => (float) $row['amount'], $planRows)), 2);
         }
 
+        $isDraftLoan = self::isDraftLoanProductType((string) ($finance->product_type ?? ''));
+        $interestType = strtolower((string) ($finance->interest_type ?? 'fixed'));
+        $financedAmount = (float) ($finance->financed_amount ?? 0);
+        $annualRatePercent = (float) ($finance->interest_rate ?? 0);
+        $tenureMonths = max(0, (int) ($finance->tenure_months ?? 0));
+
+        if (!$isDraftLoan && $interestType === 'fixed' && $financedAmount > 0 && $tenureMonths > 0) {
+            $years = $tenureMonths / 12;
+            $interestAmount = $financedAmount * ($annualRatePercent / 100) * $years;
+            return round($financedAmount + $interestAmount, 2);
+        }
+
         $count = $this->computeInstallmentCount($finance);
         return round((float) $finance->installment_amount * $count, 2);
     }
