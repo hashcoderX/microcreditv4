@@ -905,11 +905,29 @@ class CompanyController extends Controller
         return $pdo->quote((string) $value);
     }
 
+    private function getBackupExcludedTables(): array
+    {
+        $tables = [];
+
+        $cacheTable = config('cache.stores.database.table');
+        if (is_string($cacheTable) && trim($cacheTable) !== '') {
+            $tables[] = trim($cacheTable);
+        }
+
+        $lockTable = config('cache.stores.database.lock_table');
+        if (is_string($lockTable) && trim($lockTable) !== '') {
+            $tables[] = trim($lockTable);
+        }
+
+        return array_values(array_unique(array_filter($tables, static fn ($table) => $table !== '')));
+    }
+
     private function buildSqlBackupFromConnection(string $connectionName): string
     {
         $connection = DB::connection($connectionName);
         $pdo = $connection->getPdo();
         $databaseName = (string) $connection->getDatabaseName();
+        $excludedTables = array_flip($this->getBackupExcludedTables());
 
         $sql = [];
         $sql[] = '-- BMS SQL Backup';
@@ -927,6 +945,10 @@ class CompanyController extends Controller
             $tableName = (string) ($tableValues[0] ?? '');
 
             if ($tableName === '') {
+                continue;
+            }
+
+            if (isset($excludedTables[$tableName])) {
                 continue;
             }
 
@@ -1008,6 +1030,7 @@ class CompanyController extends Controller
         $tempBase = tempnam(sys_get_temp_dir(), 'db_backup_');
         $sqlPath = $tempBase . '.sql';
         @unlink($tempBase);
+        $excludedTables = $this->getBackupExcludedTables();
 
         $binary = $this->resolveMysqldumpBinary();
 
@@ -1028,6 +1051,10 @@ class CompanyController extends Controller
                 "--result-file={$sqlPath}",
                 $database,
             ];
+
+            foreach ($excludedTables as $excludedTable) {
+                $command[] = '--ignore-table=' . $database . '.' . $excludedTable;
+            }
 
             try {
                 $process = new Process($command);
