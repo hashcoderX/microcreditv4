@@ -25,6 +25,7 @@ class LoanRequest extends Model
         'interest_rate_type',
         'tenure_months',
         'installment_frequency',
+        'penalty_scheme',
         'installments',
         'installment_amount',
         'total_payable',

@@ -23,6 +23,7 @@ use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\CustomerDocumentController;
 use App\Http\Controllers\Api\AccountingExpenseController;
 use App\Http\Controllers\Api\AccountingRefundController;
+use App\Http\Controllers\Api\AccountingLoanExtraChargeController;
 use App\Http\Controllers\Api\AccountingOverviewController;
 use App\Http\Controllers\Api\AccountingReportsController;
 use App\Http\Controllers\Api\UserDashboardWidgetController;
@@ -180,6 +181,9 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('system/whatsapp-gateway', [CompanyController::class, 'getWhatsappGatewayConfig']);
     Route::post('system/whatsapp-gateway', [CompanyController::class, 'updateWhatsappGatewayConfig']);
     Route::post('system/whatsapp-gateway/test', [CompanyController::class, 'testWhatsappGateway']);
+    Route::get('system/penalty-settings', [CompanyController::class, 'getPenaltySettings']);
+    Route::post('system/penalty-settings', [CompanyController::class, 'updatePenaltySettings']);
+    Route::post('system/penalty-settings/bulk-update', [CompanyController::class, 'bulkUpdatePenaltyScheme']);
     Route::get('system/savings-deposits-settings', [SavingsDepositsSettingsController::class, 'show']);
     Route::post('system/savings-deposits-settings', [SavingsDepositsSettingsController::class, 'update']);
     Route::post('system/reset', [CompanyController::class, 'resetSystem']);
@@ -207,6 +211,9 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('companies/{company}/refunds', [AccountingRefundController::class, 'index']);
     Route::post('companies/{company}/refunds', [AccountingRefundController::class, 'store']);
     Route::delete('companies/{company}/refunds/{accountingRefund}', [AccountingRefundController::class, 'destroy']);
+    Route::get('companies/{company}/loan-extra-charges', [AccountingLoanExtraChargeController::class, 'index']);
+    Route::post('companies/{company}/loan-extra-charges', [AccountingLoanExtraChargeController::class, 'store']);
+    Route::delete('companies/{company}/loan-extra-charges/{loanExtraCharge}', [AccountingLoanExtraChargeController::class, 'destroy']);
     Route::get('companies/{company}/accounting-overview', [AccountingOverviewController::class, 'show']);
     Route::get('companies/{company}/reports/bank-book', [AccountingReportsController::class, 'bankBookReport']);
     Route::get('companies/{company}/reports/cash-book', [AccountingReportsController::class, 'cashBookReport']);
@@ -333,6 +340,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     });
 
     // Mortgage Management Routes
+    Route::get('mortgages/penalty-schemes', [MortgageController::class, 'penaltySchemes']);
     Route::apiResource('mortgages', MortgageController::class)->only(['index', 'store', 'show', 'destroy']);
     Route::post('mortgages/{mortgage}/status', [MortgageController::class, 'updateStatus']);
     Route::get('mortgages/reports/collections', [MortgageController::class, 'collectionReport']);
@@ -437,6 +445,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::prefix('microfinance/loan-requests')->group(function () {
         Route::get('/', [MicrofinanceLoanRequestController::class, 'index']);
         Route::get('/meta', [MicrofinanceLoanRequestController::class, 'meta']);
+        Route::get('/penalty-schemes', [MicrofinanceLoanRequestController::class, 'penaltySchemes']);
         Route::get('/approval-candidates', [MicrofinanceLoanRequestController::class, 'approvalCandidates']);
         Route::post('/', [MicrofinanceLoanRequestController::class, 'store']);
         Route::put('/{loanRequest}', [MicrofinanceLoanRequestController::class, 'update']);

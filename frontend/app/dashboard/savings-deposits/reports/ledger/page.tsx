@@ -34,6 +34,7 @@ type Summary = {
   total_transactions: number;
   total_deposits: number;
   total_withdrawals: number;
+  total_interest_credits: number;
   net_movement: number;
   accounts_touched: number;
   latest_transaction_date?: string | null;
@@ -99,6 +100,7 @@ export default function SavingsLedgerReportPage() {
     total_transactions: 0,
     total_deposits: 0,
     total_withdrawals: 0,
+    total_interest_credits: 0,
     net_movement: 0,
     accounts_touched: 0,
     latest_transaction_date: null,
@@ -199,6 +201,7 @@ export default function SavingsLedgerReportPage() {
         total_transactions: Number(payload.summary?.total_transactions || 0),
         total_deposits: toNumber(payload.summary?.total_deposits),
         total_withdrawals: toNumber(payload.summary?.total_withdrawals),
+        total_interest_credits: toNumber(payload.summary?.total_interest_credits),
         net_movement: toNumber(payload.summary?.net_movement),
         accounts_touched: Number(payload.summary?.accounts_touched || 0),
         latest_transaction_date: payload.summary?.latest_transaction_date || null,
@@ -217,6 +220,7 @@ export default function SavingsLedgerReportPage() {
         total_transactions: 0,
         total_deposits: 0,
         total_withdrawals: 0,
+        total_interest_credits: 0,
         net_movement: 0,
         accounts_touched: 0,
         latest_transaction_date: null,
@@ -310,6 +314,7 @@ export default function SavingsLedgerReportPage() {
     { key: 'stat_total_transactions', label: 'Total Transactions', value: summary.total_transactions, valueClass: 'text-2xl font-extrabold text-slate-900 mt-1' },
     { key: 'stat_total_deposits', label: 'Total Deposits', value: amount(summary.total_deposits), valueClass: 'text-2xl font-extrabold text-emerald-700 mt-1' },
     { key: 'stat_total_withdrawals', label: 'Total Withdrawals', value: amount(summary.total_withdrawals), valueClass: 'text-2xl font-extrabold text-rose-700 mt-1' },
+    { key: 'stat_total_interest', label: 'Interest Credits', value: amount(summary.total_interest_credits), valueClass: 'text-2xl font-extrabold text-cyan-700 mt-1' },
     {
       key: 'stat_net_movement',
       label: 'Net Movement',
@@ -410,7 +415,7 @@ export default function SavingsLedgerReportPage() {
           </div>
 
           {visibleStatsCards.length > 0 ? (
-            <div className="mt-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <div className="mt-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
               {visibleStatsCards.map((card) => (
                 <div key={card.key} className="rounded-xl bg-white/90 border border-orange-100 shadow-sm p-4 relative">
                   <WidgetCloseGate>
@@ -494,6 +499,7 @@ export default function SavingsLedgerReportPage() {
               <option value="all">All Txn Types</option>
               <option value="deposit">Deposit</option>
               <option value="withdrawal">Withdrawal</option>
+              <option value="interest_credit">Interest Credit</option>
             </select>
             <select
               value={accountType}
@@ -590,7 +596,9 @@ export default function SavingsLedgerReportPage() {
                   <tbody>
                     {rows.map((row) => {
                       const customerName = `${row.savings_account?.customer?.first_name || ''} ${row.savings_account?.customer?.last_name || ''}`.trim();
-                      const isDeposit = String(row.transaction_type || '').toLowerCase() === 'deposit';
+                      const txnType = String(row.transaction_type || '').toLowerCase();
+                      const isDeposit = txnType === 'deposit';
+                      const isInterestCredit = txnType === 'interest_credit';
                       return (
                         <tr key={row.id} className="border-b border-orange-100 last:border-b-0">
                           {visibleLedgerColumns.map((column) => {
@@ -616,14 +624,14 @@ export default function SavingsLedgerReportPage() {
                             if (column.key === 'txn_type') {
                               return (
                                 <td key={column.key} className="px-3 py-2">
-                                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${isDeposit ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
+                                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${isDeposit ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : isInterestCredit ? 'bg-cyan-50 text-cyan-700 border border-cyan-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
                                     {row.transaction_type || '-'}
                                   </span>
                                 </td>
                               );
                             }
                             if (column.key === 'amount') {
-                              return <td key={column.key} className={`px-3 py-2 font-semibold ${isDeposit ? 'text-emerald-700' : 'text-rose-700'}`}>{amount(row.amount)}</td>;
+                              return <td key={column.key} className={`px-3 py-2 font-semibold ${isDeposit ? 'text-emerald-700' : isInterestCredit ? 'text-cyan-700' : 'text-rose-700'}`}>{amount(row.amount)}</td>;
                             }
                             if (column.key === 'before') {
                               return <td key={column.key} className="px-3 py-2">{amount(row.balance_before)}</td>;

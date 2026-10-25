@@ -21,6 +21,7 @@ type FinanceApprovalRow = {
   tenure_months?: number | string | null;
   installment_frequency?: string | null;
   installment_amount?: number | string | null;
+  penalty?: number | string | null;
   refund_amount?: number | string | null;
   total_paid_amount?: number | string | null;
   balance_amount?: number | string | null;
@@ -53,6 +54,10 @@ type FinanceApprovalRow = {
     first_installment_date?: string | null;
     collection_day_of_month?: number | string | null;
     grace_period_days?: number | string | null;
+    penalty_scheme?: string | null;
+    penalty_rate_percent?: number | string | null;
+    penalty_amount_or_rate?: number | string | null;
+    penalty_value_mode?: 'amount' | 'percentage' | string | null;
     installment_mode?: 'auto' | 'manual' | null;
     manual_installment_amount?: number | string | null;
     total_planned_amount?: number | string | null;
@@ -265,6 +270,11 @@ type AuthUser = {
   employee?: { designation?: { id?: number; name?: string | null } | null } | null;
 };
 
+type FinancePenaltyRuleMeta = {
+  valueMode: 'amount' | 'percentage';
+  amountOrRate: number;
+};
+
 function toNumber(v: unknown): number {
   if (typeof v === 'number') return v;
   const n = Number(v);
@@ -292,6 +302,21 @@ function hasMeaningfulText(value: unknown): boolean {
 
 function roundCurrency(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function installmentsPerYearFromFrequency(frequency: string | null | undefined): number {
+  switch (String(frequency || '').toLowerCase()) {
+    case 'daily':
+      return 365;
+    case 'weekly':
+      return 52;
+    case 'quarterly':
+      return 4;
+    case 'yearly':
+      return 1;
+    default:
+      return 12;
+  }
 }
 
 function getRefundPreviewAmount(finance: FinanceApprovalRow | null): number {
@@ -342,6 +367,36 @@ function getRefundPreviewAmount(finance: FinanceApprovalRow | null): number {
   }
 
   return NaN;
+}
+
+function getPenaltyRatePreview(
+  finance: FinanceApprovalRow | null,
+  penaltyRuleByScheme: Record<string, FinancePenaltyRuleMeta> = {},
+): string {
+  if (!finance) return '-';
+
+  const penaltyScheme = String(finance.repayment_plan?.penalty_scheme || '').trim();
+  if (penaltyScheme && penaltyRuleByScheme[penaltyScheme]) {
+    const mapped = penaltyRuleByScheme[penaltyScheme];
+    if (mapped.valueMode === 'amount') return `${mapped.amountOrRate.toFixed(2)} (amount)`;
+    return `${mapped.amountOrRate.toFixed(2)}%`;
+  }
+
+  const modeRaw = String(finance.repayment_plan?.penalty_value_mode || '').trim().toLowerCase();
+  const mode = modeRaw === 'amount' || modeRaw === 'percentage' ? modeRaw : '';
+
+  const amountOrRate = toNumber(finance.repayment_plan?.penalty_amount_or_rate);
+  if (Number.isFinite(amountOrRate) && amountOrRate >= 0) {
+    if (mode === 'amount') return `${amountOrRate.toFixed(2)} (amount)`;
+    return `${amountOrRate.toFixed(2)}%`;
+  }
+
+  const legacyRate = toNumber(finance.repayment_plan?.penalty_rate_percent);
+  if (Number.isFinite(legacyRate) && legacyRate >= 0) {
+    return `${legacyRate.toFixed(2)}%`;
+  }
+
+  return '-';
 }
 
 function toInputDate(v: unknown): string {
@@ -619,6 +674,7 @@ export default function FinanceApprovalsPage() {
   const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<FinanceApprovalRow[]>([]);
+  const [financePenaltyRuleByScheme, setFinancePenaltyRuleByScheme] = useState<Record<string, FinancePenaltyRuleMeta>>({});
   const [branchOptions, setBranchOptions] = useState<BranchOption[]>([]);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<string[]>([]);
   const [widgetNotice, setWidgetNotice] = useState('');
@@ -859,6 +915,49 @@ export default function FinanceApprovalsPage() {
   useEffect(() => {
     if (!token) return;
     fetchRows(token);
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+
+    const loadFinancePenaltyRules = async () => {
+      try {
+        const response = await axios.get('/api/system/penalty-settings', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+        });
+
+        const rules = Array.isArray(response.data?.config?.rules)
+          ? response.data.config.rules
+          : [];
+
+        const nextMap: Record<string, FinancePenaltyRuleMeta> = {};
+        for (const raw of rules) {
+          const row = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+          if (!row) continue;
+          if (String(row.applicable_for || '').trim() !== 'finance') continue;
+
+          const ruleId = String(row.id || '').trim();
+          if (!ruleId) continue;
+
+          const valueModeRaw = String(row.value_mode || '').trim().toLowerCase();
+          const valueMode = valueModeRaw === 'amount' ? 'amount' : 'percentage';
+          const amountOrRate = toNumber(row.amount_or_rate);
+          nextMap[`rule_${ruleId}`] = {
+            valueMode,
+            amountOrRate: Number.isFinite(amountOrRate) ? Math.max(amountOrRate, 0) : 0,
+          };
+        }
+
+        setFinancePenaltyRuleByScheme(nextMap);
+      } catch {
+        setFinancePenaltyRuleByScheme({});
+      }
+    };
+
+    void loadFinancePenaltyRules();
   }, [token]);
 
   useEffect(() => {
@@ -1332,6 +1431,67 @@ export default function FinanceApprovalsPage() {
       previewBalance,
     };
   }, [deductionPreviewRows, selectedFinance]);
+
+  const repaymentPlanPreview = useMemo(() => {
+    if (!selectedFinance) return null;
+
+    const plan = selectedFinance.repayment_plan || {};
+    const planInstallments = Array.isArray(plan.installments) ? plan.installments : [];
+    const validInstallments = planInstallments.filter((row) => {
+      const amount = toNumber(row?.amount);
+      return String(row?.payment_date || '').trim() !== '' && Number.isFinite(amount) && amount > 0;
+    });
+
+    const firstInstallmentDateRaw = String(plan.first_installment_date || '').trim();
+    const startDateRaw = String(selectedFinance.start_date || '').trim();
+    const firstFromRows = validInstallments[0]?.payment_date ? String(validInstallments[0].payment_date) : '';
+    const firstInstallmentDate = firstInstallmentDateRaw || firstFromRows || startDateRaw;
+
+    const fallbackCollectionDay = firstInstallmentDate
+      ? (() => {
+          const d = new Date(`${firstInstallmentDate}T00:00:00`);
+          return Number.isNaN(d.getTime()) ? NaN : d.getDate();
+        })()
+      : NaN;
+
+    const tenureMonths = toNumber(selectedFinance.tenure_months);
+    const perYear = installmentsPerYearFromFrequency(selectedFinance.installment_frequency);
+    const expectedInstallmentCount = validInstallments.length > 0
+      ? validInstallments.length
+      : (Number.isFinite(tenureMonths) && tenureMonths > 0
+        ? Math.max(1, Math.round((tenureMonths / 12) * perYear))
+        : 0);
+
+    const explicitPlannedTotal = toNumber(plan.total_planned_amount);
+    const rowsPlannedTotal = validInstallments.reduce((sum, row) => {
+      const amount = toNumber(row.amount);
+      return Number.isFinite(amount) ? sum + amount : sum;
+    }, 0);
+
+    const refundFallbackTotal = getRefundPreviewAmount(selectedFinance);
+    const installmentAmount = toNumber(selectedFinance.installment_amount);
+    const installmentFallbackTotal = Number.isFinite(installmentAmount) && installmentAmount > 0 && expectedInstallmentCount > 0
+      ? installmentAmount * expectedInstallmentCount
+      : NaN;
+
+    const plannedTotal =
+      (Number.isFinite(explicitPlannedTotal) && explicitPlannedTotal > 0) ? explicitPlannedTotal
+      : (rowsPlannedTotal > 0) ? rowsPlannedTotal
+      : (Number.isFinite(refundFallbackTotal) && refundFallbackTotal > 0) ? refundFallbackTotal
+      : (Number.isFinite(installmentFallbackTotal) && installmentFallbackTotal > 0) ? installmentFallbackTotal
+      : NaN;
+
+    return {
+      firstInstallmentLabel: firstInstallmentDate ? formatDate(firstInstallmentDate) : '-',
+      collectionDayLabel: Number.isFinite(toNumber(plan.collection_day_of_month))
+        ? String(Math.max(1, Math.floor(toNumber(plan.collection_day_of_month))))
+        : (Number.isFinite(fallbackCollectionDay) ? String(Math.max(1, Math.floor(fallbackCollectionDay))) : '-'),
+      plannedTotalLabel: Number.isFinite(plannedTotal) ? formatAmount(plannedTotal) : '-',
+      expectedInstallmentCountLabel: expectedInstallmentCount > 0 ? String(expectedInstallmentCount) : '-',
+      hasCustomRows: validInstallments.length > 0,
+      validInstallments,
+    };
+  }, [selectedFinance]);
 
   const autoBalanceSuggestion = useMemo(() => {
     const financed = deductionTotals.financed;
@@ -2641,11 +2801,11 @@ export default function FinanceApprovalsPage() {
                   const installmentAmount = Number.isFinite(toNumber(row.installment_amount))
                     ? Number(toNumber(row.installment_amount)).toFixed(2)
                     : '0.00';
-                  const refundableAmount = Number.isFinite(toNumber(row.refund_amount))
-                    ? Number(toNumber(row.refund_amount)).toFixed(2)
-                    : Number.isFinite(toNumber(row.financed_amount))
-                      ? Number(toNumber(row.financed_amount)).toFixed(2)
-                      : '0.00';
+                  const refundableAmountRaw = getRefundPreviewAmount(row);
+                  const refundableAmount = Number.isFinite(refundableAmountRaw)
+                    ? refundableAmountRaw.toFixed(2)
+                    : '0.00';
+                  const penaltyRatePreview = getPenaltyRatePreview(row, financePenaltyRuleByScheme);
                   const documentCharge = Number.isFinite(toNumber(row.amount))
                     ? Number((toNumber(row.amount) * 0.007).toFixed(2))
                     : 0;
@@ -2693,10 +2853,14 @@ export default function FinanceApprovalsPage() {
                         </div>
                       </div>
 
-                      <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+                      <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2">
                         <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-3 py-2">
                           <p className="text-[10px] font-bold uppercase text-slate-500">Refundable</p>
                           <p className="text-xs font-extrabold text-slate-900">{refundableAmount}</p>
+                        </div>
+                        <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-3 py-2">
+                          <p className="text-[10px] font-bold uppercase text-slate-500">Penalty Rate</p>
+                          <p className="text-xs font-extrabold text-slate-900">{penaltyRatePreview}</p>
                         </div>
                         <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-3 py-2">
                           <p className="text-[10px] font-bold uppercase text-slate-500">Installment</p>
@@ -3016,12 +3180,17 @@ export default function FinanceApprovalsPage() {
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                             <div><span className="text-slate-500">Installment Mode: </span><span className="font-semibold text-slate-900 capitalize">{selectedFinance.repayment_plan?.installment_mode || 'auto'}</span></div>
                             <div><span className="text-slate-500">Schedule Mode: </span><span className="font-semibold text-slate-900 capitalize">{String(selectedFinance.repayment_plan?.schedule_mode || 'auto').replace('_', ' ')}</span></div>
-                            <div><span className="text-slate-500">First Installment: </span><span className="font-semibold text-slate-900">{formatDate(selectedFinance.repayment_plan?.first_installment_date)}</span></div>
+                            <div><span className="text-slate-500">First Installment: </span><span className="font-semibold text-slate-900">{repaymentPlanPreview?.firstInstallmentLabel || '-'}</span></div>
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                             <div><span className="text-slate-500">Financed Amount: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.financed_amount)}</span></div>
                             <div><span className="text-slate-500">Installment: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.installment_amount)}</span></div>
                             <div><span className="text-slate-500">Balance: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.balance_amount)}</span></div>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div><span className="text-slate-500">Collection Day: </span><span className="font-semibold text-slate-900">{repaymentPlanPreview?.collectionDayLabel || '-'}</span></div>
+                            <div><span className="text-slate-500">Planned Total: </span><span className="font-semibold text-slate-900">{repaymentPlanPreview?.plannedTotalLabel || '-'}</span></div>
+                            <div><span className="text-slate-500">Expected Installments: </span><span className="font-semibold text-slate-900">{repaymentPlanPreview?.expectedInstallmentCountLabel || '-'}</span></div>
                           </div>
                         </div>
                       )}
@@ -3251,6 +3420,7 @@ export default function FinanceApprovalsPage() {
                       <div><span className="text-slate-500">Installment: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.installment_amount)}</span></div>
                       <div><span className="text-slate-500">Total Paid: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.total_paid_amount)}</span></div>
                       <div><span className="text-slate-500">Balance: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.balance_amount)}</span></div>
+                      <div><span className="text-slate-500">Penalty Rate: </span><span className="font-semibold text-slate-900">{getPenaltyRatePreview(selectedFinance, financePenaltyRuleByScheme)}</span></div>
                       <div><span className="text-slate-500">Refund: </span><span className="font-semibold text-slate-900">{formatAmount(refundPreviewAmount)}</span></div>
                     </div>
                   </div>
@@ -3375,13 +3545,14 @@ export default function FinanceApprovalsPage() {
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm mb-3">
                       <div><span className="text-slate-500">Installment Mode: </span><span className="font-semibold text-slate-900 capitalize">{selectedFinance.repayment_plan?.installment_mode || 'auto'}</span></div>
                       <div><span className="text-slate-500">Schedule Mode: </span><span className="font-semibold text-slate-900 capitalize">{String(selectedFinance.repayment_plan?.schedule_mode || 'auto').replace('_', ' ')}</span></div>
-                      <div><span className="text-slate-500">First Installment: </span><span className="font-semibold text-slate-900">{formatDate(selectedFinance.repayment_plan?.first_installment_date)}</span></div>
-                      <div><span className="text-slate-500">Collection Day: </span><span className="font-semibold text-slate-900">{selectedFinance.repayment_plan?.collection_day_of_month || '-'}</span></div>
+                      <div><span className="text-slate-500">First Installment: </span><span className="font-semibold text-slate-900">{repaymentPlanPreview?.firstInstallmentLabel || '-'}</span></div>
+                      <div><span className="text-slate-500">Collection Day: </span><span className="font-semibold text-slate-900">{repaymentPlanPreview?.collectionDayLabel || '-'}</span></div>
                       <div><span className="text-slate-500">Grace Days: </span><span className="font-semibold text-slate-900">{selectedFinance.repayment_plan?.grace_period_days || 0}</span></div>
-                      <div><span className="text-slate-500">Planned Total: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.repayment_plan?.total_planned_amount)}</span></div>
+                      <div><span className="text-slate-500">Planned Total: </span><span className="font-semibold text-slate-900">{repaymentPlanPreview?.plannedTotalLabel || '-'}</span></div>
+                      <div><span className="text-slate-500">Expected Installments: </span><span className="font-semibold text-slate-900">{repaymentPlanPreview?.expectedInstallmentCountLabel || '-'}</span></div>
                     </div>
 
-                    {Array.isArray(selectedFinance.repayment_plan?.installments) && selectedFinance.repayment_plan?.installments.length > 0 ? (
+                    {repaymentPlanPreview?.hasCustomRows ? (
                       <div className="overflow-x-auto rounded-lg border border-cyan-100">
                         <div className="px-2 py-2 text-[11px] font-semibold text-cyan-800 bg-cyan-50/60 border-b border-cyan-100">
                           Upcoming installment highlighted based on saved schedule progress.
@@ -3395,7 +3566,7 @@ export default function FinanceApprovalsPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {selectedFinance.repayment_plan.installments.map((item, index) => {
+                            {repaymentPlanPreview.validInstallments.map((item, index) => {
                               const nextIndexRaw = toNumber(selectedFinance.repayment_plan?.next_installment_index);
                               const nextIndex = Number.isFinite(nextIndexRaw) ? Math.max(0, Math.floor(nextIndexRaw)) : 0;
                               const isUpcoming = index === nextIndex;
@@ -3417,7 +3588,12 @@ export default function FinanceApprovalsPage() {
                         </table>
                       </div>
                     ) : (
-                      <p className="text-sm text-slate-500">Default equal-installment plan (no custom installment rows).</p>
+                      <div className="rounded-lg border border-cyan-100 bg-cyan-50/40 px-3 py-3 text-sm text-slate-700">
+                        <p className="font-semibold text-cyan-900">Default equal-installment plan (no custom installment rows).</p>
+                        <p className="mt-1">First installment: <span className="font-semibold">{repaymentPlanPreview?.firstInstallmentLabel || '-'}</span></p>
+                        <p>Expected installments: <span className="font-semibold">{repaymentPlanPreview?.expectedInstallmentCountLabel || '-'}</span></p>
+                        <p>Planned total (derived): <span className="font-semibold">{repaymentPlanPreview?.plannedTotalLabel || '-'}</span></p>
+                      </div>
                     )}
                   </div>
 

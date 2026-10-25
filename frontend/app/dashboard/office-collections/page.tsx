@@ -62,6 +62,9 @@ type CollectibleAccount = {
   installment_amount: number;
   due_amount: number;
   paid_amount: number;
+  arrears_amount?: number;
+  penalty_amount?: number;
+  lapse_days?: number;
   due_date: string | null;
   next_payment_date?: string | null;
   balance: number;
@@ -118,6 +121,16 @@ function formatAmount(value: unknown): string {
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function parseMoney(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const normalized = value.replace(/,/g, "").trim();
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 function formatDate(value: string | null): string {
@@ -546,7 +559,10 @@ export default function OfficeCollectionsPage() {
     { key: "installment", label: "Installment", className: "py-3 pr-4 whitespace-nowrap text-right" },
     { key: "due_amount", label: "Due amount", className: "py-3 pr-4 whitespace-nowrap text-right" },
     { key: "paid_amount", label: "Paid amount", className: "py-3 pr-4 whitespace-nowrap text-right" },
-    { key: "balance", label: "Balance", className: "py-3 pr-4 whitespace-nowrap text-right" },
+    { key: "arrears", label: "Arrears", className: "py-3 pr-4 whitespace-nowrap text-right" },
+    { key: "penalty", label: "Penalty", className: "py-3 pr-4 whitespace-nowrap text-right" },
+    { key: "lapse_days", label: "Lapse days", className: "py-3 pr-4 whitespace-nowrap text-right" },
+    { key: "balance", label: "Outstanding", className: "py-3 pr-4 whitespace-nowrap text-right" },
     { key: "due_date", label: "Due date", className: "py-3 pr-4 whitespace-nowrap" },
     { key: "next_payment", label: "Next payment", className: "py-3 pr-4 whitespace-nowrap" },
     { key: "status", label: "Status", className: "py-3 pr-4 whitespace-nowrap" },
@@ -905,6 +921,27 @@ export default function OfficeCollectionsPage() {
                     {filteredAccounts.map((account) => {
                       const styles = typeStyles(account.type);
                       const canCollect = account.can_collect !== false;
+                      const rawAccount = account as CollectibleAccount & Record<string, unknown>;
+                      const arrearsAmount = parseMoney(
+                        rawAccount.arrears_amount ??
+                        rawAccount.arrearsAmount ??
+                        rawAccount.arrears ??
+                        rawAccount.arrears_balance ??
+                        (account.type === "microfinance" ? account.due_amount : 0)
+                      );
+                      const penaltyAmount = parseMoney(
+                        rawAccount.penalty_amount ??
+                        rawAccount.penaltyAmount ??
+                        rawAccount.penalty ??
+                        rawAccount.calculated_penalty ??
+                        0
+                      );
+                      const lapseDays = Math.max(
+                        0,
+                        Math.trunc(
+                          parseMoney(rawAccount.lapse_days ?? rawAccount.lapseDays ?? rawAccount.late_days ?? 0)
+                        )
+                      );
                       return (
                         <tr
                           key={`${account.type}-${account.source_id}`}
@@ -958,6 +995,15 @@ export default function OfficeCollectionsPage() {
                             }
                             if (column.key === "paid_amount") {
                               return <td key={column.key} className="py-3.5 pr-4 text-right font-semibold text-emerald-800 tabular-nums whitespace-nowrap">{formatAmount(account.paid_amount)}</td>;
+                            }
+                            if (column.key === "arrears") {
+                              return <td key={column.key} className="py-3.5 pr-4 text-right font-semibold text-rose-800 tabular-nums whitespace-nowrap">{formatAmount(arrearsAmount)}</td>;
+                            }
+                            if (column.key === "penalty") {
+                              return <td key={column.key} className="py-3.5 pr-4 text-right font-semibold text-amber-800 tabular-nums whitespace-nowrap">{formatAmount(penaltyAmount)}</td>;
+                            }
+                            if (column.key === "lapse_days") {
+                              return <td key={column.key} className="py-3.5 pr-4 text-right font-semibold text-slate-700 tabular-nums whitespace-nowrap">{lapseDays}</td>;
                             }
                             if (column.key === "balance") {
                               return <td key={column.key} className="py-3.5 pr-4 text-right font-bold text-slate-900 tabular-nums whitespace-nowrap">{formatAmount(account.balance)}</td>;

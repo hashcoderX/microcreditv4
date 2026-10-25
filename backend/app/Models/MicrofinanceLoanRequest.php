@@ -51,6 +51,7 @@ class MicrofinanceLoanRequest extends Model
         'interest_type',
         'interest_rate',
         'terms_count',
+        'penalty_scheme',
         'refundable_amount',
         'installment_amount',
         'loan_balance',

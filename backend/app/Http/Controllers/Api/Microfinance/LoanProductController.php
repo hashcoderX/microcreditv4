@@ -31,6 +31,7 @@ class LoanProductController extends Controller
             'interest_calculation_scheme' => 'required|in:day,week,month,year',
             'terms_count' => 'required|integer|min:1|max:10000',
             'refund_option' => 'required|in:day,week,month',
+            'penalty_grace_days' => 'nullable|integer|min:0|max:365',
             'assumed_month_days' => 'nullable|integer|min:20|max:31',
             'is_active' => 'nullable|boolean',
         ]);
@@ -49,6 +50,7 @@ class LoanProductController extends Controller
             'interest_calculation_scheme' => $validated['interest_calculation_scheme'],
             'terms_count' => (int) $validated['terms_count'],
             'refund_option' => $validated['refund_option'],
+            'penalty_grace_days' => (int) ($validated['penalty_grace_days'] ?? 2),
             'assumed_month_days' => (int) ($validated['assumed_month_days'] ?? 30),
             'is_active' => $validated['is_active'] ?? true,
         ]);
@@ -77,6 +79,7 @@ class LoanProductController extends Controller
             'interest_calculation_scheme' => 'required|in:day,week,month,year',
             'terms_count' => 'required|integer|min:1|max:10000',
             'refund_option' => 'required|in:day,week,month',
+            'penalty_grace_days' => 'nullable|integer|min:0|max:365',
             'assumed_month_days' => 'nullable|integer|min:20|max:31',
             'is_active' => 'nullable|boolean',
         ]);
@@ -95,6 +98,7 @@ class LoanProductController extends Controller
             'interest_calculation_scheme' => $validated['interest_calculation_scheme'],
             'terms_count' => (int) $validated['terms_count'],
             'refund_option' => $validated['refund_option'],
+            'penalty_grace_days' => (int) ($validated['penalty_grace_days'] ?? ($loanProduct->penalty_grace_days ?? 2)),
             'assumed_month_days' => (int) ($validated['assumed_month_days'] ?? ($loanProduct->assumed_month_days ?? 30)),
             'is_active' => $validated['is_active'] ?? true,
         ]);

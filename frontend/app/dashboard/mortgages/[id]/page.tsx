@@ -38,8 +38,19 @@ type AuthUser = {
   id?: number;
   name?: string | null;
   email?: string | null;
+  branch_id?: number | string | null;
   designation?: { name?: string | null } | null;
   roles?: Array<{ name?: string | null }> | null;
+};
+
+type MortgageExtraCharge = {
+  id: number;
+  charge_date?: string | null;
+  charge_type?: string | null;
+  title?: string | null;
+  reference_no?: string | null;
+  extra_charges?: number | string | null;
+  amount?: number | string | null;
 };
 
 function toNumber(v: number | string | null | undefined): number {
@@ -96,6 +107,17 @@ function periodsPerYear(frequency: unknown): number {
   return 12;
 }
 
+function formatChargeType(value: unknown): string {
+  const normalized = String(value || '').replace(/[_\-]+/g, ' ').trim();
+  if (!normalized) return '—';
+
+  return normalized
+    .split(' ')
+    .filter(Boolean)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1).toLowerCase())
+    .join(' ');
+}
+
 export default function MortgageDetails() {
   const params = useParams();
   const router = useRouter();
@@ -111,6 +133,9 @@ export default function MortgageDetails() {
   const [actionInProgress, setActionInProgress] = useState<StatusAction | null>(null);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [widgetNotice, setWidgetNotice] = useState('');
+  const [extraChargesLoading, setExtraChargesLoading] = useState(false);
+  const [extraChargesError, setExtraChargesError] = useState('');
+  const [extraCharges, setExtraCharges] = useState<MortgageExtraCharge[]>([]);
   const widgetPrefix = 'mortgages_details_widget_';
 
   const fetchNotificationPreview = useCallback(async (authToken: string) => {
@@ -229,6 +254,45 @@ export default function MortgageDetails() {
     }
   }, [hiddenWidgetKeys, saveWidgetPreference]);
 
+  const fetchExtraCharges = useCallback(async (authToken: string, nextMortgage: any) => {
+    const sourceLoanId = Number(nextMortgage?.id || 0);
+    const branchId = Number(nextMortgage?.branch_id || authUser?.branch_id || 0);
+
+    if (!sourceLoanId || !branchId) {
+      setExtraCharges([]);
+      setExtraChargesError('');
+      setExtraChargesLoading(false);
+      return;
+    }
+
+    setExtraChargesLoading(true);
+    setExtraChargesError('');
+    try {
+      const res = await axios.get(`${getApiBaseUrl()}/companies/${branchId}/loan-extra-charges`, {
+        headers: { Authorization: `Bearer ${authToken}`, Accept: 'application/json' },
+        params: {
+          product_type: 'mortgage',
+          mf_loan_request_id: sourceLoanId,
+        },
+      });
+
+      const rows = Array.isArray(res.data?.charges) ? (res.data.charges as MortgageExtraCharge[]) : [];
+      setExtraCharges(rows);
+    } catch {
+      setExtraCharges([]);
+      setExtraChargesError('Failed to load extra charges preview.');
+    } finally {
+      setExtraChargesLoading(false);
+    }
+  }, [authUser?.branch_id]);
+
+  useEffect(() => {
+    if (!token || !mortgage) {
+      return;
+    }
+    void fetchExtraCharges(token, mortgage);
+  }, [token, mortgage, fetchExtraCharges]);
+
   const handleStatus = async (action: StatusAction) => {
     if (!token || !id) return;
     try {
@@ -286,6 +350,23 @@ export default function MortgageDetails() {
     return { installmentAmount, monthlyInterest, totalInterest };
   }, [mortgage]);
 
+  const penaltyDisplay = useMemo(() => {
+    if (!mortgage) return '—';
+
+    const mode = String(mortgage.penalty_value_mode || '').toLowerCase();
+    const configured = toNumber(mortgage.penalty_amount_or_rate);
+    const fallback = toNumber(mortgage.penalty_rate);
+    const value = Number.isFinite(configured) ? configured : fallback;
+
+    if (!Number.isFinite(value)) return '—';
+
+    if (mode === 'amount') {
+      return formatAmount(value);
+    }
+
+    return `${value.toFixed(2)}%`;
+  }, [mortgage]);
+
   const status = String(mortgage?.status || '').toLowerCase();
   const canSubmit = status === 'draft';
   const canApproveReject = status === 'draft' || status === 'submitted';
@@ -322,6 +403,12 @@ export default function MortgageDetails() {
   const showCollateralWidget = !hiddenWidgetKeys.has(`${widgetPrefix}collateral`);
   const showValuationWidget = !hiddenWidgetKeys.has(`${widgetPrefix}valuation`);
   const showGuarantorsWidget = !hiddenWidgetKeys.has(`${widgetPrefix}guarantors`);
+  const showExtraChargesWidget = !hiddenWidgetKeys.has(`${widgetPrefix}extra_charges`);
+  const extraChargeTotal = useMemo(() => {
+    return extraCharges.reduce((sum, charge) => {
+      return sum + Number(charge.extra_charges ?? charge.amount ?? 0);
+    }, 0);
+  }, [extraCharges]);
   const showAnyWidget =
     showHeroWidget ||
     (showStatsWidget && visibleStatCards.length > 0) ||
@@ -330,7 +417,8 @@ export default function MortgageDetails() {
     showRepaymentWidget ||
     showCollateralWidget ||
     showValuationWidget ||
-    showGuarantorsWidget;
+    showGuarantorsWidget ||
+    showExtraChargesWidget;
 
   const pageFallback = (
     <div className="flex min-h-screen items-center justify-center bg-[#071a22]">
@@ -610,7 +698,7 @@ export default function MortgageDetails() {
                   { icon: PercentCircle, label: 'Interest', value: `${mortgage.interest_rate}% (${mortgage.interest_type})` },
                   { icon: CalendarDays, label: 'Tenure', value: `${mortgage.tenure_months} months` },
                   { icon: Banknote, label: 'Processing Fee', value: formatAmount(mortgage.processing_fee) },
-                  { icon: PercentCircle, label: 'Penalty Rate', value: `${mortgage.penalty_rate ?? '—'}%` },
+                  { icon: PercentCircle, label: 'Penalty', value: penaltyDisplay },
                   { icon: Banknote, label: 'Installment Amount', value: formatAmount(mortgage.installment_amount ?? monthlyFigures.installmentAmount) },
                   { icon: PercentCircle, label: 'Interest / Month', value: formatAmount(monthlyFigures.monthlyInterest) },
                 ].map((row) => (
@@ -720,6 +808,77 @@ export default function MortgageDetails() {
               ) : null}
             </div>
             ) : null}
+          </section>
+          ) : null}
+
+          {showExtraChargesWidget ? (
+          <section className="relative overflow-hidden rounded-3xl border border-white/90 bg-white/95 shadow-sm backdrop-blur-xl">
+            <WidgetCloseGate>
+              <button
+                type="button"
+                onClick={() => void hideWidget(`${widgetPrefix}extra_charges`)}
+                className="absolute right-3 top-3 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-xs font-bold text-slate-700 shadow-sm hover:bg-rose-50 hover:text-rose-700"
+                aria-label="Hide extra charges widget"
+              >
+                ×
+              </button>
+            </WidgetCloseGate>
+            <div className="border-b border-slate-100 bg-gradient-to-r from-violet-50/90 to-indigo-50/70 px-5 py-4">
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-violet-700">Extra Charges</p>
+              <h2 className="mt-1 text-lg font-extrabold text-slate-900">Charge impact preview</h2>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div className="rounded-xl border border-violet-100 bg-violet-50/50 px-3 py-2.5 text-sm">
+                  <p className="text-xs font-bold uppercase tracking-wide text-violet-700">Entries</p>
+                  <p className="mt-1 text-lg font-black text-violet-900">{extraCharges.length}</p>
+                </div>
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 px-3 py-2.5 text-sm">
+                  <p className="text-xs font-bold uppercase tracking-wide text-indigo-700">Total Extra Charges</p>
+                  <p className="mt-1 text-lg font-black text-indigo-900">{formatAmount(extraChargeTotal)}</p>
+                </div>
+                <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2.5 text-sm">
+                  <p className="text-xs font-bold uppercase tracking-wide text-cyan-700">Balance with Charges</p>
+                  <p className="mt-1 text-lg font-black text-cyan-900">
+                    {formatAmount(Number(mortgage?.due_amount || 0) + Number(mortgage?.arrears_amount || 0))}
+                  </p>
+                </div>
+              </div>
+
+              {extraChargesLoading ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">Loading extra charges...</div>
+              ) : extraChargesError ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{extraChargesError}</div>
+              ) : extraCharges.length === 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">No extra charges found for this mortgage.</div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-violet-100">
+                  <table className="min-w-full text-sm text-left text-slate-700">
+                    <thead className="bg-violet-50 text-slate-700">
+                      <tr>
+                        <th className="px-3 py-2 font-semibold">Date</th>
+                        <th className="px-3 py-2 font-semibold">Type</th>
+                        <th className="px-3 py-2 font-semibold">Title</th>
+                        <th className="px-3 py-2 font-semibold">Reference</th>
+                        <th className="px-3 py-2 text-right font-semibold">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {extraCharges.slice(0, 12).map((charge) => (
+                        <tr key={`mortgage-extra-charge-${charge.id}`} className="border-t border-violet-100">
+                          <td className="px-3 py-2">{formatDate(charge.charge_date)}</td>
+                          <td className="px-3 py-2">{formatChargeType(charge.charge_type)}</td>
+                          <td className="px-3 py-2">{String(charge.title || '—')}</td>
+                          <td className="px-3 py-2">{String(charge.reference_no || '—')}</td>
+                          <td className="px-3 py-2 text-right font-semibold">{formatAmount(charge.extra_charges ?? charge.amount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </section>
           ) : null}
 

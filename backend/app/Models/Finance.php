@@ -40,6 +40,7 @@ class Finance extends Model
         'due_interest_amount',
         'arrears',
         'penalty',
+        'penalty_scheme',
         'next_collection_date',
         'finance_end_date',
         'status',

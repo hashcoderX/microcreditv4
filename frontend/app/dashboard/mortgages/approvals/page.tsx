@@ -39,6 +39,7 @@ type ViewMode = 'table' | 'cards';
 
 type MortgageApprovalRow = {
   id: number;
+  start_date?: string | null;
   due_date?: string | null;
   mortgage_type?: string | null;
   requested_amount?: number | string | null;
@@ -765,6 +766,7 @@ export default function MortgageApprovals() {
     { key: 'total_repay', label: 'Total Repay', className: 'font-bold text-emerald-700', render: (row) => formatAmount(calculateRefundAmount(row)) },
     { key: 'rate', label: 'Rate', className: 'text-black', render: (row) => `${formatPercent(row.interest_rate)} (${row.interest_type || '—'})` },
     { key: 'tenure', label: 'Tenure', className: 'text-black', render: (row) => `${row.tenure_months || '—'} mo` },
+    { key: 'start_date', label: 'Start Date', className: 'text-black', render: (row) => formatDate(row.start_date) },
     { key: 'due_date', label: 'Due Date', className: 'text-black', render: (row) => formatDate(row.due_date) },
     { key: 'status', label: 'Status', render: (row) => <Badge label={String(row.status || '—')} variant={statusVariant(row.status)} /> },
     { key: 'actions', label: 'Actions', className: 'text-center', render: (row) => <div className="flex justify-center">{renderRowActions(row)}</div> },
@@ -1162,7 +1164,8 @@ export default function MortgageApprovals() {
                         <div className="rounded-xl border border-slate-100 bg-white/90 p-3">
                           <p className="text-[11px] font-bold uppercase text-slate-500">Rate / Tenure</p>
                           <p className="mt-1 font-bold text-slate-900">{formatPercent(row.interest_rate)}</p>
-                          <p className="text-xs text-slate-500">{row.tenure_months || '—'} mo • {formatDate(row.due_date)}</p>
+                          <p className="text-xs text-slate-500">{row.tenure_months || '—'} mo • Start {formatDate(row.start_date)}</p>
+                          <p className="text-xs text-slate-500">Due {formatDate(row.due_date)}</p>
                         </div>
                       </div>
 
@@ -1187,6 +1190,7 @@ export default function MortgageApprovals() {
                               <p className="text-xs text-slate-700">Approved: <span className="font-semibold">{formatAmount(inlineDetail?.approved_amount ?? row.approved_amount)}</span></p>
                               <p className="text-xs text-slate-700">Interest: <span className="font-semibold">{formatPercent(inlineDetail?.interest_rate ?? row.interest_rate)} ({String((inlineDetail?.interest_type ?? row.interest_type) || '-').toLowerCase()})</span></p>
                               <p className="text-xs text-slate-700">Tenure: <span className="font-semibold">{(inlineDetail?.tenure_months ?? row.tenure_months) || '-'} months</span></p>
+                              <p className="text-xs text-slate-700">Start Date: <span className="font-semibold">{formatDate(inlineDetail?.start_date ?? row.start_date)}</span></p>
                               <p className="text-xs text-slate-700">Interest Frequency: <span className="font-semibold capitalize">{inlineDetail?.interest_calculation_frequency || '-'}</span></p>
                             </div>
 
@@ -1387,6 +1391,7 @@ export default function MortgageApprovals() {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                           <p className="text-slate-700">Interest: <span className="font-semibold">{formatPercent(detailRow.interest_rate)} ({detailRow.interest_type || '-'})</span></p>
                           <p className="text-slate-700">Tenure: <span className="font-semibold">{detailRow.tenure_months || '-'} months</span></p>
+                          <p className="text-slate-700">Start Date: <span className="font-semibold">{formatDate(detailRow.start_date)}</span></p>
                           <p className="text-slate-700">Due Date: <span className="font-semibold">{formatDate(detailRow.due_date)}</span></p>
                           <p className="text-slate-700">Processing Fee: <span className="font-semibold">{formatAmount(detailRow.processing_fee)}</span></p>
                           <p className="text-slate-700">Penalty Rate: <span className="font-semibold">{formatPercent(detailRow.penalty_rate)}</span></p>

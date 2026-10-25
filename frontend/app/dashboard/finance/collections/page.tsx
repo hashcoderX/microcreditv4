@@ -38,6 +38,12 @@ type FinanceRow = {
     first_installment_date?: string | null;
     collection_day_of_month?: number | string | null;
     grace_period_days?: number | string | null;
+    penalty_scheme?: string | null;
+    penalty_scheme_type?: 'fixed_daily' | 'daily_percentage' | 'one_time' | 'monthly_percentage' | string | null;
+    penalty_type?: 'fixed_daily' | 'daily_percentage' | 'one_time' | 'monthly_percentage' | string | null;
+    penalty_value_mode?: 'amount' | 'percentage' | string | null;
+    penalty_amount_or_rate?: number | string | null;
+    penalty_rate_percent?: number | string | null;
     installment_mode?: 'auto' | 'manual' | null;
     manual_installment_amount?: number | string | null;
     total_planned_amount?: number | string | null;
@@ -248,6 +254,65 @@ function getCollectionHealth(dueDate: unknown, graceDaysRaw: unknown): {
     tone: 'border-rose-300 bg-rose-100 text-rose-800',
     hint: 'Past due date and outside grace period; arrears may apply.',
   };
+}
+
+function calculatePenaltyPreview(row: FinanceRow): number {
+  const dueRaw = String(row.due_date || '').trim();
+  if (!dueRaw) return 0;
+
+  const dueDate = new Date(`${dueRaw}T00:00:00`);
+  if (Number.isNaN(dueDate.getTime())) return 0;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  dueDate.setHours(0, 0, 0, 0);
+
+  const graceDays = Math.max(0, Number(row.repayment_plan?.grace_period_days || 0));
+  const dayDiff = Math.floor((today.getTime() - dueDate.getTime()) / (24 * 60 * 60 * 1000));
+  if (dayDiff <= graceDays) return 0;
+
+  const lateDays = dayDiff - graceDays;
+  const lateMonths = lateDays / 30;
+  const installmentAmount = Number(row.installment_amount || 0);
+  if (!Number.isFinite(installmentAmount) || installmentAmount <= 0) return 0;
+
+  const schemeType = String(
+    row.repayment_plan?.penalty_scheme_type
+    || row.repayment_plan?.penalty_type
+    || 'daily_percentage'
+  ).trim().toLowerCase();
+
+  const valueModeRaw = String(row.repayment_plan?.penalty_value_mode || '').trim().toLowerCase();
+  const valueMode = valueModeRaw === 'amount' || valueModeRaw === 'percentage'
+    ? valueModeRaw
+    : (schemeType === 'daily_percentage' || schemeType === 'monthly_percentage' ? 'percentage' : 'amount');
+
+  const configuredRate = Number(row.repayment_plan?.penalty_amount_or_rate ?? NaN);
+  const fallbackLegacyRate = Number(row.repayment_plan?.penalty_rate_percent ?? NaN);
+  const amountOrRate = Number.isFinite(configuredRate)
+    ? Math.max(configuredRate, 0)
+    : Number.isFinite(fallbackLegacyRate)
+      ? Math.max(fallbackLegacyRate, 0)
+      : 0;
+
+  if (amountOrRate <= 0) return 0;
+
+  let penalty = 0;
+  if (schemeType === 'one_time') {
+    penalty = valueMode === 'percentage'
+      ? (installmentAmount * amountOrRate) / 100
+      : amountOrRate;
+  } else if (schemeType === 'monthly_percentage') {
+    penalty = valueMode === 'percentage'
+      ? (installmentAmount * amountOrRate * lateMonths) / 100
+      : (amountOrRate * lateMonths);
+  } else {
+    penalty = valueMode === 'percentage'
+      ? (installmentAmount * amountOrRate * lateDays) / 100
+      : (amountOrRate * lateDays);
+  }
+
+  return roundCurrency(Math.max(penalty, 0));
 }
 
 export default function FinanceCollectionsPage() {
@@ -629,6 +694,7 @@ export default function FinanceCollectionsPage() {
     { key: 'vehicle_no', label: 'Vehicle No' },
     { key: 'product', label: 'Product' },
     { key: 'financed', label: 'Financed' },
+    { key: 'penalty', label: 'Penalty' },
     { key: 'arrears', label: 'Arrears' },
     { key: 'installment', label: 'Installment' },
     { key: 'terms', label: 'Terms' },
@@ -668,6 +734,10 @@ export default function FinanceCollectionsPage() {
     const financed = toNumber(selectedRecord.financed_amount);
     return Number.isFinite(financed) ? roundCurrency(Math.max(financed, 0)) : 0;
   }, [selectedRecord]);
+  const selectedRecordPenalty = useMemo(
+    () => (selectedRecord ? calculatePenaltyPreview(selectedRecord) : 0),
+    [selectedRecord],
+  );
   const collectionOutstandingById = useMemo(() => {
     const outstandingById = new Map<number, number>();
     if (!selectedRecord || !Array.isArray(selectedRecord.collections)) {
@@ -1315,6 +1385,7 @@ export default function FinanceCollectionsPage() {
                 <tbody>
                   {pagedRows.map((row) => {
                     const customer = `${row.customer?.first_name || ''} ${row.customer?.last_name || ''}`.trim();
+                    const penaltyPreview = calculatePenaltyPreview(row);
                     return (
                       <tr key={row.id} className="border-b border-cyan-100 last:border-b-0 hover:bg-cyan-50/40 transition-colors">
                         {visibleTableColumns.map((column) => {
@@ -1325,6 +1396,7 @@ export default function FinanceCollectionsPage() {
                           if (column.key === 'vehicle_no') return <td key={column.key} className="px-3 py-2">{row.vehicle_details?.vehicle_no || '-'}</td>;
                           if (column.key === 'product') return <td key={column.key} className="px-3 py-2">{row.product_type || '-'}</td>;
                           if (column.key === 'financed') return <td key={column.key} className="px-3 py-2">{formatAmount(row.financed_amount)}</td>;
+                          if (column.key === 'penalty') return <td key={column.key} className="px-3 py-2">{formatAmount(penaltyPreview)}</td>;
                           if (column.key === 'arrears') return <td key={column.key} className="px-3 py-2">{formatAmount(row.arrears)}</td>;
                           if (column.key === 'installment') return <td key={column.key} className="px-3 py-2">{formatAmount(row.installment_amount)}</td>;
                           if (column.key === 'terms') return <td key={column.key} className="px-3 py-2">{Number.isFinite(toNumber(row.interest_rate)) ? `${toNumber(row.interest_rate).toFixed(2)}%` : '-'} / {row.tenure_months || '-'} mo</td>;
@@ -1474,6 +1546,7 @@ export default function FinanceCollectionsPage() {
                       <div><span className="text-slate-500">Balance: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.balance_amount)}</span></div>
                       <div><span className="text-slate-500">Refund: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.refund_amount)}</span></div>
                       <div><span className="text-slate-500">Arrears: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.arrears)}</span></div>
+                      <div><span className="text-slate-500">Penalty: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecordPenalty)}</span></div>
                     </div>
                   </div>
 

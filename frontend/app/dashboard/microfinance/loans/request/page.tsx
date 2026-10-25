@@ -36,8 +36,19 @@ type MFLoanProduct = {
   interest_calculation_scheme?: 'day' | 'week' | 'month' | 'year';
   terms_count: number;
   refund_option: 'day' | 'week' | 'month';
+  penalty_grace_days?: number | string | null;
   assumed_month_days?: number;
   is_active: boolean;
+};
+
+type PenaltySchemeType = 'fixed_daily' | 'daily_percentage' | 'one_time' | 'monthly_percentage';
+
+type PenaltySchemeOption = {
+  value: string;
+  label: string;
+  penalty_type?: PenaltySchemeType;
+  value_mode?: 'amount' | 'percentage' | null;
+  amount_or_rate?: number | null;
 };
 
 type Guarantor = {
@@ -128,6 +139,8 @@ type ExistingLoanRequest = {
   interest_type?: 'flat' | 'reducing' | string;
   interest_rate?: number | string;
   terms_count?: number | string;
+  penalty_scheme?: PenaltySchemeType | string | null;
+  penalty_grace_days?: number | string | null;
   status?: string;
   loan_scope?: 'route_loan' | 'center_loan' | 'direct_loan' | string;
   loan_request_date?: string;
@@ -173,6 +186,7 @@ type RequestedLoanEditForm = {
   loan_amount: string;
   interest_rate: string;
   terms_count: string;
+  penalty_scheme: string;
   refundable_amount: string;
   installment_amount: string;
   document_charges: string;
@@ -212,6 +226,11 @@ const DEFAULT_PROFILE_COMPLETION_MIN = 30;
 const EVALUATION_PAYLOAD_VERSION = 2;
 const LOAN_REQUEST_MASTER_CACHE_KEY = 'mf_loan_request_master_cache_v2';
 const LOAN_REQUEST_CACHE_NETWORK_COOLDOWN_MS = 30 * 1000;
+
+const DEFAULT_PENALTY_SCHEME_OPTIONS: PenaltySchemeOption[] = [];
+
+const isPenaltySchemeType = (value: string): value is PenaltySchemeType =>
+  value === 'fixed_daily' || value === 'daily_percentage' || value === 'one_time' || value === 'monthly_percentage';
 
 type LoanRequestMasterCache = {
   savedAt: number;
@@ -553,6 +572,7 @@ export default function RequestLoanPage() {
   const [routes, setRoutes] = useState<MFRoute[]>([]);
   const [centers, setCenters] = useState<MFCenter[]>([]);
   const [groups, setGroups] = useState<MFGroup[]>([]);
+  const [penaltySchemeOptions, setPenaltySchemeOptions] = useState<PenaltySchemeOption[]>(DEFAULT_PENALTY_SCHEME_OPTIONS);
   const [loanProducts, setLoanProducts] = useState<MFLoanProduct[]>([]);
   const [managers, setManagers] = useState<ManagerOption[]>([]);
   const [fieldOfficers, setFieldOfficers] = useState<ManagerOption[]>([]);
@@ -588,6 +608,7 @@ export default function RequestLoanPage() {
       loan_amount: '0',
       interest_rate: '0',
       terms_count: '1',
+      penalty_scheme: '',
       refundable_amount: '0',
       installment_amount: '0',
       document_charges: '0',
@@ -639,6 +660,8 @@ export default function RequestLoanPage() {
     interest_calculation_scheme: 'month' as 'day' | 'week' | 'month' | 'year',
     interest_rate: '',
     terms_count: '',
+    penalty_scheme: '',
+    penalty_grace_days: 2,
     refundable_amount: '',
     installment_amount: '',
     document_charges: '',
@@ -1295,6 +1318,7 @@ export default function RequestLoanPage() {
         interest_calculation_scheme: selected.interest_calculation_scheme || 'month',
         terms_count: String(selected.terms_count ?? ''),
         refund_option: selected.refund_option || 'month',
+        penalty_grace_days: Number(selected.penalty_grace_days ?? 2),
         assumed_month_days: Number(selected.assumed_month_days || 30),
         document_charges: calculateDocumentChargeFromProduct(
           resolvedLoanAmount,
@@ -1551,6 +1575,36 @@ export default function RequestLoanPage() {
         return [];
       };
 
+      const parsePenaltySchemeOptions = (payload: unknown): PenaltySchemeOption[] => {
+        if (!Array.isArray(payload)) return [];
+
+        const normalized = payload
+          .map((item) => {
+            const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : null;
+            if (!row) return null;
+
+            const valueRaw = String(row.value || '').trim();
+            if (!valueRaw) return null;
+
+            const penaltyTypeRaw = String(row.penalty_type || '').trim();
+            const penaltyType = isPenaltySchemeType(penaltyTypeRaw) ? penaltyTypeRaw : undefined;
+
+            const valueModeRaw = String(row.value_mode || '').trim();
+            const amountRaw = Number(row.amount_or_rate ?? NaN);
+
+            return {
+              value: valueRaw,
+              label: String(row.label || '').trim() || valueRaw,
+              penalty_type: penaltyType,
+              value_mode: valueModeRaw === 'amount' || valueModeRaw === 'percentage' ? valueModeRaw : null,
+              amount_or_rate: Number.isFinite(amountRaw) ? amountRaw : null,
+            } as PenaltySchemeOption;
+          })
+          .filter((item): item is PenaltySchemeOption => Boolean(item));
+
+        return normalized;
+      };
+
       try {
         const rawCache = localStorage.getItem(LOAN_REQUEST_MASTER_CACHE_KEY);
         if (rawCache) {
@@ -1579,17 +1633,33 @@ export default function RequestLoanPage() {
       }
 
       if (shouldSkipNetwork) {
+        try {
+          const penaltySchemeRes = await axios.get(`${API_BASE}/microfinance/loan-requests/penalty-schemes`, { headers });
+          const nextPenaltySchemeOptions = parsePenaltySchemeOptions((penaltySchemeRes as any)?.data?.schemes);
+          setPenaltySchemeOptions(nextPenaltySchemeOptions);
+          const allowedPenaltyValues = new Set(nextPenaltySchemeOptions.map((item) => item.value));
+          setForm((prev) => ({
+            ...prev,
+            penalty_scheme:
+              allowedPenaltyValues.has(prev.penalty_scheme)
+                ? prev.penalty_scheme
+                : (nextPenaltySchemeOptions[0]?.value ?? ''),
+          }));
+        } catch {
+          setPenaltySchemeOptions([]);
+        }
         setManagersLoading(false);
         return;
       }
 
       try {
-        const [routeRes, centerRes, groupRes, loanProductRes, employeeRes] = await Promise.all([
+        const [routeRes, centerRes, groupRes, loanProductRes, employeeRes, penaltySchemeRes] = await Promise.all([
           axios.get(`${API_BASE}/microfinance/settings/routes`, { headers }),
           axios.get(`${API_BASE}/microfinance/settings/centers`, { headers }),
           axios.get(`${API_BASE}/microfinance/settings/groups`, { headers }),
           axios.get(`${API_BASE}/microfinance/settings/loan-products`, { headers }),
           axios.get(`${API_BASE}/hr/employees`, { headers }),
+          axios.get(`${API_BASE}/microfinance/loan-requests/penalty-schemes`, { headers }).catch(() => null),
         ]);
 
         const routeRows = parseListResponse<MFRoute>(routeRes.data);
@@ -1602,6 +1672,17 @@ export default function RequestLoanPage() {
 
         const productRows = parseListResponse<MFLoanProduct>(loanProductRes.data);
         setLoanProducts(productRows);
+
+        const nextPenaltySchemeOptions = parsePenaltySchemeOptions((penaltySchemeRes as any)?.data?.schemes);
+        setPenaltySchemeOptions(nextPenaltySchemeOptions);
+        const allowedPenaltyValues = new Set(nextPenaltySchemeOptions.map((item) => item.value));
+        setForm((prev) => ({
+          ...prev,
+          penalty_scheme:
+            allowedPenaltyValues.has(prev.penalty_scheme)
+              ? prev.penalty_scheme
+              : (nextPenaltySchemeOptions[0]?.value ?? ''),
+        }));
 
         const employeeRows = Array.isArray(employeeRes.data?.data) ? employeeRes.data.data : [];
         const mappedEmployees: ManagerOption[] = employeeRows
@@ -1819,6 +1900,33 @@ export default function RequestLoanPage() {
   const selectedGroup = groups.find((g) => g.id === form.mf_group_id);
   const termUnitLabel = form.refund_option === 'day' ? 'Days' : form.refund_option === 'week' ? 'Weeks' : 'Months';
   const interestSchemeLabel = toTitleCase(form.interest_calculation_scheme);
+  const selectedPenaltySchemeOption = useMemo(
+    () => penaltySchemeOptions.find((item) => item.value === form.penalty_scheme) || null,
+    [penaltySchemeOptions, form.penalty_scheme]
+  );
+
+  const selectedPenaltySchemeHint = useMemo(() => {
+    if (!selectedPenaltySchemeOption) {
+      return 'Penalty will be calculated using the selected scheme.';
+    }
+
+    const mode = selectedPenaltySchemeOption.value_mode ||
+      (selectedPenaltySchemeOption.value === 'daily_percentage' || selectedPenaltySchemeOption.value === 'monthly_percentage'
+        ? 'percentage'
+        : 'amount');
+    const configured = Number(selectedPenaltySchemeOption.amount_or_rate ?? 0);
+    const configuredText = `${configured.toFixed(4)}${mode === 'percentage' ? '%' : ''}`;
+
+    if (selectedPenaltySchemeOption.value === 'one_time') {
+      return `Configured one-time penalty: ${configuredText} after grace period.`;
+    }
+
+    if (selectedPenaltySchemeOption.value === 'monthly_percentage') {
+      return `Configured monthly penalty: ${configuredText} (prorated by late months).`;
+    }
+
+    return `Configured daily penalty: ${configuredText} per late day after grace period.`;
+  }, [selectedPenaltySchemeOption]);
   const activeGuarantorCount = guarantors.filter((g) => g.name.trim() !== '').length;
   const totalCharges =
     Number(form.document_charges || 0) +
@@ -2973,6 +3081,10 @@ export default function RequestLoanPage() {
       if (!form.loan_request_date) {
         return 'Please select loan request date.';
       }
+
+      if (Number(form.penalty_grace_days ?? 0) < 0) {
+        return 'Please enter a valid grace period.';
+      }
     }
 
     return null;
@@ -3063,6 +3175,8 @@ export default function RequestLoanPage() {
           loan_amount: Number(form.loan_amount),
           interest_rate: Number(finalizeInterestRate(form.interest_rate)),
           terms_count: Number(form.terms_count),
+          penalty_scheme: form.penalty_scheme,
+          penalty_grace_days: Number(form.penalty_grace_days || 0),
           refundable_amount: Number(form.refundable_amount),
           installment_amount: Number(form.installment_amount),
           document_charges: Number(form.document_charges || 0),
@@ -3337,6 +3451,11 @@ export default function RequestLoanPage() {
       ? target.refund_option
       : 'month';
     const interestType = target.interest_type === 'reducing' ? 'reducing' : 'flat';
+    const targetPenaltySchemeRaw = String(target.penalty_scheme || '').trim();
+    const availablePenaltyValues = new Set(penaltySchemeOptions.map((item) => item.value));
+    const targetPenaltyScheme = availablePenaltyValues.has(targetPenaltySchemeRaw)
+      ? targetPenaltySchemeRaw
+      : (penaltySchemeOptions[0]?.value || '');
 
     setRequestedLoanEditModal({
       open: true,
@@ -3361,6 +3480,7 @@ export default function RequestLoanPage() {
         loan_amount: String(Number(target.loan_amount || 0)),
         interest_rate: String(Number(target.interest_rate || 0)),
         terms_count: String(Math.max(Number(target.terms_count || 1), 1)),
+        penalty_scheme: targetPenaltyScheme,
         refundable_amount: String(Number(target.refundable_amount || 0)),
         installment_amount: String(Number(target.installment_amount || 0)),
         document_charges: String(Number(target.document_charges || 0)),
@@ -3431,6 +3551,7 @@ export default function RequestLoanPage() {
           interest_type: formData.interest_type,
           interest_rate: Number(formData.interest_rate || 0),
           terms_count: Number(formData.terms_count || 1),
+          penalty_scheme: formData.penalty_scheme,
           refundable_amount: Number(formData.refundable_amount || 0),
           installment_amount: Number(formData.installment_amount || 0),
           document_charges: Number(formData.document_charges || 0),
@@ -4777,6 +4898,7 @@ export default function RequestLoanPage() {
                             <p><span className="font-semibold text-slate-900">Selected:</span> {selectedLoanProduct.name}</p>
                             <p><span className="font-semibold text-slate-900">Rate:</span> {finalizeInterestRate(String(selectedLoanProduct.interest_rate || 0))}% ({selectedLoanProduct.interest_type}, {selectedLoanProduct.interest_calculation_scheme || 'month'})</p>
                             <p><span className="font-semibold text-slate-900">Terms:</span> {selectedLoanProduct.terms_count} ({selectedLoanProduct.refund_option}{selectedLoanProduct.refund_option === 'month' ? `, ${Number(selectedLoanProduct.assumed_month_days || 30)} days` : ''})</p>
+                            <p><span className="font-semibold text-slate-900">Grace Period:</span> {Number(selectedLoanProduct.penalty_grace_days ?? 2)} day(s)</p>
                             <p>
                               <span className="font-semibold text-slate-900">Loan Range:</span>{' '}
                               {selectedLoanProduct.min_loan_amount !== null && selectedLoanProduct.min_loan_amount !== undefined && String(selectedLoanProduct.min_loan_amount) !== ''
@@ -4886,6 +5008,42 @@ export default function RequestLoanPage() {
                           <label className="fieldLabel">Terms Count ({termUnitLabel}) *</label>
                           <input className="input" type="number" min="1" step="1" placeholder={`Enter number of ${termUnitLabel.toLowerCase()}`} value={form.terms_count} onChange={(e) => setForm((p) => ({ ...p, terms_count: e.target.value }))} required />
                           <p className="text-[11px] text-slate-500 mt-1">Daily conversion: {Number(form.assumed_month_days || 30)} days = 1 month</p>
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Grace Period (Days) *</label>
+                          <input
+                            className="input"
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={form.penalty_grace_days}
+                            onChange={(e) => setForm((p) => ({ ...p, penalty_grace_days: Number(e.target.value || 0) }))}
+                            required
+                          />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Penalty Scheme *</label>
+                          <select
+                            className="input"
+                            value={form.penalty_scheme}
+                            onChange={(e) =>
+                              setForm((p) => ({
+                                ...p,
+                                penalty_scheme: e.target.value,
+                              }))
+                            }
+                            required
+                          >
+                            {penaltySchemeOptions.length === 0 && (
+                              <option value="">No active penalty schemes</option>
+                            )}
+                            {penaltySchemeOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-[11px] text-slate-500 mt-1">{selectedPenaltySchemeHint}</p>
                         </div>
                         <div>
                           <label className="fieldLabel">Refundable Amount</label>
@@ -5053,6 +5211,40 @@ export default function RequestLoanPage() {
                             onChange={(e) => setForm((p) => ({ ...p, terms_count: e.target.value }))}
                           />
                           <p className="text-[11px] text-slate-500 mt-1">Interest applies per {interestSchemeLabel.toLowerCase()} period.</p>
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Grace Period (Days)</label>
+                          <input
+                            className="input"
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={form.penalty_grace_days}
+                            onChange={(e) => setForm((p) => ({ ...p, penalty_grace_days: Number(e.target.value || 0) }))}
+                          />
+                        </div>
+                        <div>
+                          <label className="fieldLabel">Penalty Scheme</label>
+                          <select
+                            className="input"
+                            value={form.penalty_scheme}
+                            onChange={(e) =>
+                              setForm((p) => ({
+                                ...p,
+                                penalty_scheme: e.target.value,
+                              }))
+                            }
+                          >
+                            {penaltySchemeOptions.length === 0 && (
+                              <option value="">No active penalty schemes</option>
+                            )}
+                            {penaltySchemeOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-[11px] text-slate-500 mt-1">{selectedPenaltySchemeHint}</p>
                         </div>
                         <div>
                           <label className="fieldLabel">Refundable Amount</label>

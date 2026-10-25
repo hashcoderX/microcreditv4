@@ -9,6 +9,7 @@ use App\Models\CompanyAccount;
 use App\Models\CompanyLeadershipAssignment;
 use App\Models\Department;
 use App\Models\Designation;
+use App\Models\LoanPenaltyRule;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\SmsGatewayService;
@@ -29,6 +30,134 @@ use ZipArchive;
 
 class CompanyController extends Controller
 {
+        /**
+         * @return array<string, mixed>
+         */
+        private function defaultPenaltySettingsConfig(): array
+        {
+            return [
+                'rules' => [],
+            ];
+        }
+
+        /**
+         * @param array<int, mixed> $rules
+         * @return array<int, array<string, mixed>>
+         */
+        private function normalizePenaltyRules(array $rules): array
+        {
+            $normalized = [];
+            $allowedApplicableFor = ['microfinance', 'finance', 'mortgage'];
+            $allowedPenaltyTypes = ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'];
+            $allowedValueModes = ['amount', 'percentage'];
+
+            foreach ($rules as $index => $rule) {
+                if (!is_array($rule)) {
+                    continue;
+                }
+
+                $applicableFor = strtolower(trim((string) ($rule['applicable_for'] ?? '')));
+                $penaltyType = strtolower(trim((string) ($rule['penalty_type'] ?? '')));
+                if (!in_array($applicableFor, $allowedApplicableFor, true) || !in_array($penaltyType, $allowedPenaltyTypes, true)) {
+                    continue;
+                }
+
+                $defaultValueMode = in_array($penaltyType, ['daily_percentage', 'monthly_percentage'], true)
+                    ? 'percentage'
+                    : 'amount';
+                $valueMode = strtolower(trim((string) ($rule['value_mode'] ?? $defaultValueMode)));
+                if (!in_array($valueMode, $allowedValueModes, true)) {
+                    $valueMode = $defaultValueMode;
+                }
+
+                $identification = trim((string) ($rule['identification'] ?? ''));
+                if ($identification === '') {
+                    $identification = 'Rule ' . ($index + 1);
+                }
+
+                $idRaw = trim((string) ($rule['id'] ?? ''));
+                $id = $idRaw !== '' ? substr($idRaw, 0, 64) : ('rule_' . ($index + 1));
+                $amountOrRate = round(max((float) ($rule['amount_or_rate'] ?? 0), 0), 4);
+
+                $normalized[] = [
+                    'id' => $id,
+                    'identification' => substr($identification, 0, 120),
+                    'applicable_for' => $applicableFor,
+                    'penalty_type' => $penaltyType,
+                    'value_mode' => $valueMode,
+                    'amount_or_rate' => $amountOrRate,
+                    'is_active' => (bool) ($rule['is_active'] ?? true),
+                ];
+            }
+
+            return $normalized;
+        }
+
+        /**
+         * @return array<string, mixed>
+         */
+        private function readPenaltySettingsConfig(): array
+        {
+            $defaults = $this->defaultPenaltySettingsConfig();
+
+            if (!Schema::hasTable('loan_penalty_rules')) {
+                return $defaults;
+            }
+            $rules = LoanPenaltyRule::query()
+                ->orderBy('display_order')
+                ->orderBy('id')
+                ->get([
+                    'id',
+                    'identification',
+                    'applicable_for',
+                    'penalty_type',
+                    'value_mode',
+                    'amount_or_rate',
+                    'is_active',
+                ])
+                ->map(static function ($row): array {
+                    return [
+                        'id' => (string) $row->id,
+                        'identification' => (string) ($row->identification ?? ''),
+                        'applicable_for' => (string) ($row->applicable_for ?? ''),
+                        'penalty_type' => (string) ($row->penalty_type ?? ''),
+                        'value_mode' => (string) ($row->value_mode ?? ''),
+                        'amount_or_rate' => (float) ($row->amount_or_rate ?? 0),
+                        'is_active' => (bool) ($row->is_active ?? true),
+                    ];
+                })
+                ->values()
+                ->all();
+
+            return [
+                'rules' => $this->normalizePenaltyRules($rules),
+            ];
+        }
+
+        /**
+         * @param array<string, mixed> $config
+         */
+        private function writePenaltySettingsConfig(array $config): void
+        {
+            $rules = is_array($config['rules'] ?? null) ? $config['rules'] : [];
+            $normalized = $this->normalizePenaltyRules($rules);
+
+            DB::transaction(function () use ($normalized): void {
+                LoanPenaltyRule::query()->delete();
+
+                foreach ($normalized as $index => $rule) {
+                    LoanPenaltyRule::query()->create([
+                        'identification' => (string) ($rule['identification'] ?? ('Rule ' . ($index + 1))),
+                        'applicable_for' => (string) ($rule['applicable_for'] ?? 'microfinance'),
+                        'penalty_type' => (string) ($rule['penalty_type'] ?? 'fixed_daily'),
+                        'value_mode' => (string) ($rule['value_mode'] ?? 'amount'),
+                        'amount_or_rate' => (float) ($rule['amount_or_rate'] ?? 0),
+                        'is_active' => (bool) ($rule['is_active'] ?? true),
+                        'display_order' => $index,
+                    ]);
+                }
+            });
+        }
         /**
          * @return array<int, string>
          */
@@ -503,6 +632,148 @@ class CompanyController extends Controller
             $result = $service->send((string) $validated['phone'], $message);
 
             return response()->json($result, $result['ok'] ? 200 : 422);
+        }
+
+        public function getPenaltySettings(Request $request)
+        {
+            $user = $request->user();
+            if (!$user || !$user->isSystemAdmin()) {
+                return response()->json([
+                    'message' => 'Only admins can view penalty settings.',
+                ], 403);
+            }
+
+            return response()->json([
+                'config' => $this->readPenaltySettingsConfig(),
+            ]);
+        }
+
+        public function updatePenaltySettings(Request $request)
+        {
+            $user = $request->user();
+            if (!$user || !$user->isSystemAdmin()) {
+                return response()->json([
+                    'message' => 'Only admins can update penalty settings.',
+                ], 403);
+            }
+
+            if (!Schema::hasTable('loan_penalty_rules')) {
+                return response()->json([
+                    'message' => 'Loan penalty rules table is not available.',
+                ], 422);
+            }
+
+            $validated = $request->validate([
+                'rules' => ['required', 'array', 'max:200'],
+                'rules.*.id' => ['nullable', 'string', 'max:64'],
+                'rules.*.identification' => ['required', 'string', 'max:120'],
+                'rules.*.applicable_for' => ['required', Rule::in(['microfinance', 'finance', 'mortgage'])],
+                'rules.*.penalty_type' => ['required', Rule::in(['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'])],
+                'rules.*.value_mode' => ['nullable', Rule::in(['amount', 'percentage'])],
+                'rules.*.amount_or_rate' => ['required', 'numeric', 'min:0', 'max:999999999'],
+                'rules.*.is_active' => ['nullable', 'boolean'],
+            ]);
+
+            $this->writePenaltySettingsConfig($validated);
+
+            return response()->json([
+                'message' => 'Penalty settings saved successfully.',
+                'config' => $this->readPenaltySettingsConfig(),
+            ]);
+        }
+
+        public function bulkUpdatePenaltyScheme(Request $request)
+        {
+            $user = $request->user();
+            if (!$user || !$user->isSystemAdmin()) {
+                return response()->json([
+                    'message' => 'Only admins can update loan penalty schemes.',
+                ], 403);
+            }
+
+            if (!Schema::hasTable('loan_penalty_rules')) {
+                return response()->json([
+                    'message' => 'Loan penalty rules table is not available.',
+                ], 422);
+            }
+
+            $validated = $request->validate([
+                'product' => ['required', Rule::in(['microfinance', 'finance', 'mortgage'])],
+                'penalty_scheme' => ['required', 'string', 'max:64'],
+            ]);
+
+            $product = (string) ($validated['product'] ?? 'microfinance');
+            $scheme = trim((string) ($validated['penalty_scheme'] ?? ''));
+
+            if ($scheme === '') {
+                return response()->json([
+                    'message' => 'Penalty scheme is required.',
+                ], 422);
+            }
+
+            $ruleId = null;
+            if (preg_match('/^rule_(\d+)$/i', $scheme, $matches) === 1) {
+                $ruleId = (int) ($matches[1] ?? 0);
+            }
+
+            if (!$ruleId || $ruleId <= 0) {
+                return response()->json([
+                    'message' => 'Penalty scheme must be selected from saved rules.',
+                ], 422);
+            }
+
+            $rule = LoanPenaltyRule::query()
+                ->where('id', $ruleId)
+                ->where('applicable_for', $product)
+                ->where('is_active', true)
+                ->first();
+
+            if (!$rule) {
+                return response()->json([
+                    'message' => 'Selected rule is not active for the selected product.',
+                ], 422);
+            }
+
+            $tableMap = [
+                'microfinance' => 'mf_loan_requests',
+                'finance' => 'loan_requests',
+                'mortgage' => 'mortgages',
+            ];
+
+            $table = (string) ($tableMap[$product] ?? '');
+            if ($table === '' || !Schema::hasTable($table)) {
+                return response()->json([
+                    'message' => 'Loan table is not available for the selected product.',
+                ], 422);
+            }
+
+            if (!Schema::hasColumn($table, 'penalty_scheme')) {
+                return response()->json([
+                    'message' => 'Penalty scheme column is not available for the selected product.',
+                ], 422);
+            }
+
+            $payload = ['penalty_scheme' => $scheme];
+            if (Schema::hasColumn($table, 'updated_at')) {
+                $payload['updated_at'] = now();
+            }
+
+            $updatedCount = DB::table($table)->update($payload);
+
+            return response()->json([
+                'message' => 'Penalty scheme updated for existing loans successfully.',
+                'product' => $product,
+                'table' => $table,
+                'penalty_scheme' => $scheme,
+                'updated_count' => $updatedCount,
+                'rule' => [
+                    'id' => (int) $rule->id,
+                    'identification' => (string) ($rule->identification ?? ''),
+                    'penalty_type' => (string) ($rule->penalty_type ?? ''),
+                    'value_mode' => (string) ($rule->value_mode ?? ''),
+                    'amount_or_rate' => (float) ($rule->amount_or_rate ?? 0),
+                ],
+            ]);
         }
 
     private const DEFAULT_SUPER_ADMIN_EMAIL = 'superadmin@softcodelk.com';

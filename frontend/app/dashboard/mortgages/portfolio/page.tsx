@@ -48,6 +48,7 @@ type AuthUser = {
 
 interface Mortgage {
   id: number;
+  start_date?: string | null;
   due_date?: string | null;
   arrears_amount?: number | string | null;
   due_amount?: number | string | null;
@@ -557,6 +558,21 @@ export default function Mortgages() {
       ),
     },
     {
+      key: 'penalty',
+      label: 'Penalty',
+      tdClassName: 'text-sm font-semibold text-amber-800',
+      render: (m) => {
+        const penalty = toNumber(m.penalty_rate);
+        return Number.isFinite(penalty) ? `${penalty.toFixed(2)}%` : '—';
+      },
+    },
+    {
+      key: 'start_date',
+      label: 'Start Date',
+      tdClassName: 'text-sm text-slate-800',
+      render: (m) => formatDate(m.start_date),
+    },
+    {
       key: 'due_date',
       label: 'Due Date',
       tdClassName: 'text-sm',
@@ -1018,7 +1034,9 @@ export default function Mortgages() {
 
                       <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
                         <span className="rounded-full bg-slate-100 px-2.5 py-1">{m.interest_rate}% {m.interest_type}</span>
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1">Penalty {Number.isFinite(toNumber(m.penalty_rate)) ? `${toNumber(m.penalty_rate).toFixed(2)}%` : '—'}</span>
                         <span className="rounded-full bg-slate-100 px-2.5 py-1">{m.tenure_months} months</span>
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1">Start {formatDate(m.start_date)}</span>
                         <span className="rounded-full bg-slate-100 px-2.5 py-1">Interest {formatAmount(interestAmount)}</span>
                       </div>
 

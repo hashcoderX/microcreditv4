@@ -87,6 +87,16 @@ type Step =
   | "loanCollateral"
   | "documentsReview";
 
+type PenaltySchemeType = "fixed_daily" | "daily_percentage" | "one_time" | "monthly_percentage";
+
+type PenaltySchemeOption = {
+  value: string;
+  label: string;
+  penalty_type?: PenaltySchemeType;
+  value_mode?: "amount" | "percentage" | null;
+  amount_or_rate?: number | null;
+};
+
 type GuarantorForm = {
   full_name: string;
   nic: string;
@@ -290,7 +300,11 @@ export default function CreateMortgage() {
   >("monthly");
   const [processingFee, setProcessingFee] = useState("");
   const [insuranceFee, setInsuranceFee] = useState("");
-  const [penaltyRate, setPenaltyRate] = useState("");
+  const [penaltyScheme, setPenaltyScheme] = useState("");
+  const [penaltySchemeOptions, setPenaltySchemeOptions] = useState<PenaltySchemeOption[]>([]);
+  const [penaltySchemeLoading, setPenaltySchemeLoading] = useState(false);
+  const [startDate, setStartDate] = useState("");
+  const [previousMortgages, setPreviousMortgages] = useState("");
 
   // Collateral Details
   const [assetType, setAssetType] = useState<
@@ -320,6 +334,21 @@ export default function CreateMortgage() {
   const [vehicleEngineNo, setVehicleEngineNo] = useState("");
   const [vehicleChassisNo, setVehicleChassisNo] = useState("");
   const [vehicleManufactureYear, setVehicleManufactureYear] = useState("");
+
+  const isVehicleCollateral = assetType === "vehicle";
+  const isGoldCollateral = assetType === "gold";
+  const showLegalDetails = assetType !== "gold" && assetType !== "vehicle";
+  const physicalAreaLabel = isGoldCollateral
+    ? "Estimated Weight / Quantity"
+    : "Land Size / Building Area";
+  const physicalMarksLabel = isGoldCollateral
+    ? "Identification marks / Certificate details"
+    : "Boundaries / Identification marks";
+  const collateralGuidance = isGoldCollateral
+    ? "Gold collateral usually has no deed. Capture valuation, storage location, and item identification details."
+    : isVehicleCollateral
+      ? "Vehicle collateral uses registration/engine/chassis details instead of deed information."
+      : "Land, house, and similar collateral can include legal deed details.";
 
   // Documents
   const [customerDocuments, setCustomerDocuments] = useState<{ type: string; file: File }[]>([]);
@@ -643,6 +672,77 @@ export default function CreateMortgage() {
     return () => window.clearTimeout(timeout);
   }, [token, step, customerSearchBy, customerSearchValue, loadCustomerSuggestions]);
 
+  useEffect(() => {
+    if (!token) return;
+
+    const parsePenaltySchemeOptions = (payload: unknown): PenaltySchemeOption[] => {
+      if (!Array.isArray(payload)) return [];
+
+      const normalized = payload
+        .map((item) => {
+          const row = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
+          if (!row) return null;
+
+          const valueRaw = String(row.value || "").trim();
+          if (!valueRaw) return null;
+
+          const penaltyTypeRaw = String(row.penalty_type || "").trim();
+          const penaltyType =
+            penaltyTypeRaw === "fixed_daily" ||
+            penaltyTypeRaw === "daily_percentage" ||
+            penaltyTypeRaw === "one_time" ||
+            penaltyTypeRaw === "monthly_percentage"
+              ? (penaltyTypeRaw as PenaltySchemeType)
+              : undefined;
+
+          const valueModeRaw = String(row.value_mode || "").trim();
+          const amountRaw = Number(row.amount_or_rate ?? NaN);
+
+          return {
+            value: valueRaw,
+            label: String(row.label || "").trim() || valueRaw,
+            penalty_type: penaltyType,
+            value_mode: valueModeRaw === "amount" || valueModeRaw === "percentage" ? valueModeRaw : null,
+            amount_or_rate: Number.isFinite(amountRaw) ? amountRaw : null,
+          } as PenaltySchemeOption;
+        })
+        .filter((item): item is PenaltySchemeOption => Boolean(item));
+
+      return normalized;
+    };
+
+    const loadPenaltySchemes = async () => {
+      try {
+        setPenaltySchemeLoading(true);
+        const response = await axios.get(`${getApiBaseUrl()}/mortgages/penalty-schemes`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/json",
+          },
+        });
+
+        const options = parsePenaltySchemeOptions(response.data?.schemes);
+        setPenaltySchemeOptions(options);
+        setPenaltyScheme((prev) => {
+          if (options.some((option) => option.value === prev)) return prev;
+          return options[0]?.value || "";
+        });
+      } catch {
+        setPenaltySchemeOptions([]);
+        setPenaltyScheme("");
+      } finally {
+        setPenaltySchemeLoading(false);
+      }
+    };
+
+    void loadPenaltySchemes();
+  }, [token]);
+
+  const selectedPenaltyScheme = useMemo(
+    () => penaltySchemeOptions.find((option) => option.value === penaltyScheme) || null,
+    [penaltySchemeOptions, penaltyScheme]
+  );
+
   const stepTitle = useMemo(() => {
     switch (step) {
       case "profile":
@@ -767,7 +867,9 @@ export default function CreateMortgage() {
 
       // Create Mortgage
       // Conditionally include sub-sections only if provided
-      const hasLegal = deedNumber || deedDate || surveyPlanNumber || registrationOffice || lawyerName;
+      const hasLegal =
+        showLegalDetails &&
+        (deedNumber || deedDate || surveyPlanNumber || registrationOffice || lawyerName);
       const hasValuation = marketValue || forcedSaleValue || valuationDate || valuerName;
       const hasPhysical = assetAddress || landSizeOrBuildingArea || boundaries;
       const normalizedAssetDescription = assetDescription.trim() || `${assetType} collateral`;
@@ -788,7 +890,10 @@ export default function CreateMortgage() {
         interest_calculation_frequency: interestCalculationFrequency,
         processing_fee: parseFloat(processingFee || "0"),
         insurance_fee: parseFloat(insuranceFee || "0"),
-        penalty_rate: parseFloat(penaltyRate || "0"),
+        penalty_scheme: penaltyScheme || undefined,
+        penalty_rate: Number(selectedPenaltyScheme?.amount_or_rate ?? 0),
+        start_date: startDate || undefined,
+        previous_mortgages: previousMortgages.trim() || undefined,
         entry_officer_name: displayName || undefined,
         entry_officer_designation: roleName || undefined,
         responsible_manager_user_id: responsibleManagerUserId || undefined,
@@ -817,7 +922,7 @@ export default function CreateMortgage() {
       }
 
       // Attach optional legal/valuation/physical sections only if they have values
-      if (hasLegal) {
+      if (hasLegal && showLegalDetails) {
         mortgagePayload.asset.legal = {
           deed_number: deedNumber || undefined,
           deed_date: deedDate || undefined,
@@ -842,7 +947,7 @@ export default function CreateMortgage() {
         };
       }
       // Always include vehicle section only if assetType is vehicle and any value provided
-      if (assetType === "vehicle" && (vehicleRegNo || vehicleEngineNo || vehicleChassisNo || vehicleManufactureYear)) {
+      if (isVehicleCollateral && (vehicleRegNo || vehicleEngineNo || vehicleChassisNo || vehicleManufactureYear)) {
         mortgagePayload.asset.vehicle = {
           registration_number: vehicleRegNo || undefined,
           engine_number: vehicleEngineNo || undefined,
@@ -1041,6 +1146,8 @@ export default function CreateMortgage() {
     interestType,
     processingFee,
     insuranceFee,
+    startDate,
+    previousMortgages,
   ]);
 
   const statsCards = [
@@ -1825,12 +1932,49 @@ export default function CreateMortgage() {
               </div>
               <div>
                 <label className={labelClass}>
-                  Penalty Rate (%)
+                  Penalty Scheme
+                </label>
+                <select
+                  value={penaltyScheme}
+                  onChange={(e) => setPenaltyScheme(e.target.value)}
+                  className={inputClass}
+                  disabled={penaltySchemeLoading || penaltySchemeOptions.length === 0}
+                >
+                  {penaltySchemeOptions.length === 0 && <option value="">No active mortgage penalty schemes</option>}
+                  {penaltySchemeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                {selectedPenaltyScheme && (
+                  <p className="mt-2 text-xs text-cyan-700">
+                    Config: {Number(selectedPenaltyScheme.amount_or_rate ?? 0).toFixed(4)}
+                    {selectedPenaltyScheme.value_mode === "percentage" ? "%" : " amount"}
+                    {selectedPenaltyScheme.penalty_type ? ` • ${selectedPenaltyScheme.penalty_type.replaceAll("_", " ")}` : ""}
+                  </p>
+                )}
+              </div>
+              <div>
+                <label className={labelClass}>
+                  Start Date
                 </label>
                 <input
-                  value={penaltyRate}
-                  onChange={(e) => setPenaltyRate(e.target.value)}
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
                   className={inputClass}
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className={labelClass}>
+                  Previous Mortgages
+                </label>
+                <input
+                  value={previousMortgages}
+                  onChange={(e) => setPreviousMortgages(e.target.value)}
+                  className={inputClass}
+                  placeholder="Optional notes about borrower previous mortgages"
                 />
               </div>
             </div>
@@ -1954,62 +2098,67 @@ export default function CreateMortgage() {
                   onChange={(e) => setAssetDescription(e.target.value)}
                   className={inputClass}
                 />
+                <p className="mt-2 text-xs text-cyan-700">{collateralGuidance}</p>
               </div>
 
-              <p className={sectionTitleClass}>Legal Details</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className={labelClass}>
-                    Deed Number
-                  </label>
-                  <input
-                    value={deedNumber}
-                    onChange={(e) => setDeedNumber(e.target.value)}
-                    className={inputClass}
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>
-                    Deed Date
-                  </label>
-                  <input
-                    type="date"
-                    value={deedDate}
-                    onChange={(e) => setDeedDate(e.target.value)}
-                    className={inputClass}
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>
-                    Survey Plan Number
-                  </label>
-                  <input
-                    value={surveyPlanNumber}
-                    onChange={(e) => setSurveyPlanNumber(e.target.value)}
-                    className={inputClass}
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>
-                    Registration Office
-                  </label>
-                  <input
-                    value={registrationOffice}
-                    onChange={(e) => setRegistrationOffice(e.target.value)}
-                    className={inputClass}
-                  />
-                </div>
-                <div className="md:col-span-2">
-                  <label className={labelClass}>
-                    Lawyer Name
-                  </label>
-                  <input
-                    value={lawyerName}
-                    onChange={(e) => setLawyerName(e.target.value)}
-                    className={inputClass}
-                  />
-                </div>
-              </div>
+              {showLegalDetails && (
+                <>
+                  <p className={sectionTitleClass}>Legal Details</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelClass}>
+                        Deed Number
+                      </label>
+                      <input
+                        value={deedNumber}
+                        onChange={(e) => setDeedNumber(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>
+                        Deed Date
+                      </label>
+                      <input
+                        type="date"
+                        value={deedDate}
+                        onChange={(e) => setDeedDate(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>
+                        Survey Plan Number
+                      </label>
+                      <input
+                        value={surveyPlanNumber}
+                        onChange={(e) => setSurveyPlanNumber(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>
+                        Registration Office
+                      </label>
+                      <input
+                        value={registrationOffice}
+                        onChange={(e) => setRegistrationOffice(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className={labelClass}>
+                        Lawyer Name
+                      </label>
+                      <input
+                        value={lawyerName}
+                        onChange={(e) => setLawyerName(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
 
               <p className={sectionTitleClass}>Valuation Details</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2070,7 +2219,7 @@ export default function CreateMortgage() {
                 </div>
                 <div>
                   <label className={labelClass}>
-                    Land Size / Building Area
+                    {physicalAreaLabel}
                   </label>
                   <input
                     value={landSizeOrBuildingArea}
@@ -2080,7 +2229,7 @@ export default function CreateMortgage() {
                 </div>
                 <div className="md:col-span-2">
                   <label className={labelClass}>
-                    Boundaries / Identification marks
+                    {physicalMarksLabel}
                   </label>
                   <textarea
                     value={boundaries}
@@ -2090,7 +2239,7 @@ export default function CreateMortgage() {
                 </div>
               </div>
 
-              {assetType === "vehicle" && (
+              {isVehicleCollateral && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className={labelClass}>
@@ -2212,36 +2361,74 @@ export default function CreateMortgage() {
 
               <p className={sectionTitleClass}>Mortgage Asset Documents</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className={labelClass}>
-                    Deed copy
-                  </label>
-                  <input
-                    type="file"
-                    onChange={(e) =>
-                      e.target.files &&
-                      setAssetDocuments((prev) => [
-                        ...prev,
-                        { type: "deed_copy", file: e.target.files![0] },
-                      ])
-                    }
-                  />
-                </div>
-                <div>
-                  <label className={labelClass}>
-                    Survey plan
-                  </label>
-                  <input
-                    type="file"
-                    onChange={(e) =>
-                      e.target.files &&
-                      setAssetDocuments((prev) => [
-                        ...prev,
-                        { type: "survey_plan", file: e.target.files![0] },
-                      ])
-                    }
-                  />
-                </div>
+                {showLegalDetails && (
+                  <>
+                    <div>
+                      <label className={labelClass}>
+                        Deed copy
+                      </label>
+                      <input
+                        type="file"
+                        onChange={(e) =>
+                          e.target.files &&
+                          setAssetDocuments((prev) => [
+                            ...prev,
+                            { type: "deed_copy", file: e.target.files![0] },
+                          ])
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>
+                        Survey plan
+                      </label>
+                      <input
+                        type="file"
+                        onChange={(e) =>
+                          e.target.files &&
+                          setAssetDocuments((prev) => [
+                            ...prev,
+                            { type: "survey_plan", file: e.target.files![0] },
+                          ])
+                        }
+                      />
+                    </div>
+                  </>
+                )}
+                {isGoldCollateral && (
+                  <div>
+                    <label className={labelClass}>
+                      Gold ownership / authenticity certificate
+                    </label>
+                    <input
+                      type="file"
+                      onChange={(e) =>
+                        e.target.files &&
+                        setAssetDocuments((prev) => [
+                          ...prev,
+                          { type: "gold_certificate", file: e.target.files![0] },
+                        ])
+                      }
+                    />
+                  </div>
+                )}
+                {isVehicleCollateral && (
+                  <div>
+                    <label className={labelClass}>
+                      Vehicle registration book copy
+                    </label>
+                    <input
+                      type="file"
+                      onChange={(e) =>
+                        e.target.files &&
+                        setAssetDocuments((prev) => [
+                          ...prev,
+                          { type: "vehicle_registration", file: e.target.files![0] },
+                        ])
+                      }
+                    />
+                  </div>
+                )}
                 <div>
                   <label className={labelClass}>
                     Valuation report

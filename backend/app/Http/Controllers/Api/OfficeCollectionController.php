@@ -8,6 +8,7 @@ use App\Models\Customer;
 use App\Models\Finance;
 use App\Models\LoanRequest;
 use App\Models\LoanRequestCollection;
+use App\Models\LoanPenaltyRule;
 use App\Models\MicrofinanceLoanCollection;
 use App\Models\MicrofinanceLoanRequest;
 use App\Models\Mortgage;
@@ -21,6 +22,128 @@ use Illuminate\Support\Facades\Log;
 
 class OfficeCollectionController extends Controller
 {
+    /**
+     * @return array{scheme:string,value_mode:string,amount_or_rate:float}
+     */
+    private function resolveMicrofinancePenaltyRule(?string $scheme): array
+    {
+        $rawScheme = trim((string) $scheme);
+        $normalizedScheme = strtolower($rawScheme);
+
+        if (preg_match('/^rule_(\d+)$/i', $rawScheme, $matches) === 1) {
+            $ruleId = (int) ($matches[1] ?? 0);
+            if ($ruleId > 0) {
+                $rule = LoanPenaltyRule::query()
+                    ->where('id', $ruleId)
+                    ->where('applicable_for', 'microfinance')
+                    ->where('is_active', true)
+                    ->first();
+
+                if ($rule) {
+                    $type = strtolower(trim((string) ($rule->penalty_type ?? 'daily_percentage')));
+                    if (!in_array($type, ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'], true)) {
+                        $type = 'daily_percentage';
+                    }
+
+                    $defaultMode = in_array($type, ['daily_percentage', 'monthly_percentage'], true)
+                        ? 'percentage'
+                        : 'amount';
+                    $valueMode = strtolower(trim((string) ($rule->value_mode ?? $defaultMode)));
+                    if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+                        $valueMode = $defaultMode;
+                    }
+
+                    return [
+                        'scheme' => $type,
+                        'value_mode' => $valueMode,
+                        'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+                    ];
+                }
+            }
+        }
+
+        if (!in_array($normalizedScheme, ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'], true)) {
+            $normalizedScheme = 'daily_percentage';
+        }
+
+        $defaultValueMode = in_array($normalizedScheme, ['daily_percentage', 'monthly_percentage'], true)
+            ? 'percentage'
+            : 'amount';
+
+        $rule = LoanPenaltyRule::query()
+            ->where('applicable_for', 'microfinance')
+            ->where('penalty_type', $normalizedScheme)
+            ->where('is_active', true)
+            ->orderBy('display_order')
+            ->orderBy('id')
+            ->first();
+
+        if (!$rule) {
+            return [
+                'scheme' => $normalizedScheme,
+                'value_mode' => $defaultValueMode,
+                'amount_or_rate' => 0.0,
+            ];
+        }
+
+        $valueMode = strtolower(trim((string) ($rule->value_mode ?? $defaultValueMode)));
+        if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+            $valueMode = $defaultValueMode;
+        }
+
+        return [
+            'scheme' => $normalizedScheme,
+            'value_mode' => $valueMode,
+            'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+        ];
+    }
+
+    private function calculateMicrofinancePenaltyPreview(
+        ?string $dueDate,
+        int $graceDays,
+        float $installmentAmount,
+        ?string $penaltyScheme
+    ): float {
+        if (!$dueDate || $installmentAmount <= 0) {
+            return 0.0;
+        }
+
+        $lateDays = $this->calculateLapseDays($dueDate, $graceDays);
+        if ($lateDays <= 0) {
+            return 0.0;
+        }
+
+        $rule = $this->resolveMicrofinancePenaltyRule($penaltyScheme);
+        $rateOrAmount = max((float) ($rule['amount_or_rate'] ?? 0), 0);
+        if ($rateOrAmount <= 0) {
+            return 0.0;
+        }
+
+        $valueMode = (string) ($rule['value_mode'] ?? 'amount');
+        $scheme = (string) ($rule['scheme'] ?? 'daily_percentage');
+
+        if ($scheme === 'one_time') {
+            return round($valueMode === 'percentage'
+                ? ($installmentAmount * $rateOrAmount) / 100
+                : $rateOrAmount, 2);
+        }
+
+        if ($scheme === 'monthly_percentage') {
+            $lateMonths = $lateDays / 30;
+            if ($valueMode === 'percentage') {
+                return round(($installmentAmount * $rateOrAmount * $lateMonths) / 100, 2);
+            }
+
+            return round($rateOrAmount * $lateMonths, 2);
+        }
+
+        if ($valueMode === 'percentage') {
+            return round(($installmentAmount * $rateOrAmount * $lateDays) / 100, 2);
+        }
+
+        return round($rateOrAmount * $lateDays, 2);
+    }
+
     /**
      * @param array<string, mixed> $messageContext
      */
@@ -215,6 +338,26 @@ class OfficeCollectionController extends Controller
         return $code !== '' ? $code : null;
     }
 
+    private function calculateLapseDays(?string $dueDate, int $graceDays = 0): int
+    {
+        if (!$dueDate) {
+            return 0;
+        }
+
+        try {
+            $graceSafe = max($graceDays, 0);
+            $graceEnd = Carbon::parse($dueDate)->startOfDay()->addDays($graceSafe);
+            $today = Carbon::today();
+            if ($today->lessThanOrEqualTo($graceEnd)) {
+                return 0;
+            }
+
+            return (int) $graceEnd->diffInDays($today);
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
     /**
      * @return array<int, array<string, mixed>>
      */
@@ -241,13 +384,14 @@ class OfficeCollectionController extends Controller
             'customer_mobile',
         ]);
 
-        return $loanQuery->get()->map(function (LoanRequest $loan) {
+        return $loanQuery->get()->map(function ($loan) {
             $totalPayable = (float) $loan->total_payable;
             $collected = (float) $loan->total_collected;
             $balance = max($totalPayable - $collected, 0);
             $dueDate = $loan->due_date ? Carbon::parse((string) $loan->due_date)->toDateString() : null;
             $nextPaymentDate = $loan->next_due_date ? Carbon::parse((string) $loan->next_due_date)->toDateString() : $dueDate;
             $canCollect = strtolower((string) $loan->status) === 'approved' && $balance > 0;
+            $lapseDays = $this->calculateLapseDays($dueDate, 0);
 
             return [
                 'type' => 'loan',
@@ -259,8 +403,11 @@ class OfficeCollectionController extends Controller
                 'installment_amount' => (float) $loan->installment_amount,
                 'due_amount' => $balance,
                 'paid_amount' => $collected,
+                'arrears_amount' => 0.0,
+                'penalty_amount' => 0.0,
                 'due_date' => $dueDate,
                 'next_payment_date' => $nextPaymentDate,
+                'lapse_days' => $lapseDays,
                 'balance' => $balance,
                 'status' => $loan->status,
                 'can_collect' => $canCollect,
@@ -301,9 +448,13 @@ class OfficeCollectionController extends Controller
             });
         }
 
-        return $financeQuery->get()->map(function (Finance $finance) {
+        return $financeQuery->get()->map(function ($finance) {
             $customer = $finance->customer;
             $customerName = trim(((string) ($customer->first_name ?? '')) . ' ' . ((string) ($customer->last_name ?? '')));
+            $dueDate = $finance->due_date ? Carbon::parse((string) $finance->due_date)->toDateString() : null;
+            $repaymentPlan = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
+            $graceDays = max((int) ($repaymentPlan['grace_period_days'] ?? 0), 0);
+            $lapseDays = $this->calculateLapseDays($dueDate, $graceDays);
 
             return [
                 'type' => 'finance',
@@ -315,8 +466,11 @@ class OfficeCollectionController extends Controller
                 'installment_amount' => (float) ($finance->installment_amount ?? 0),
                 'due_amount' => (float) ($finance->due_amount ?? $finance->installment_amount ?? 0),
                 'paid_amount' => (float) ($finance->total_paid_amount ?? 0),
-                'due_date' => $finance->due_date ? Carbon::parse((string) $finance->due_date)->toDateString() : null,
-                'next_payment_date' => $finance->due_date ? Carbon::parse((string) $finance->due_date)->toDateString() : null,
+                'arrears_amount' => (float) ($finance->arrears ?? 0),
+                'penalty_amount' => (float) ($finance->penalty ?? 0),
+                'due_date' => $dueDate,
+                'next_payment_date' => $dueDate,
+                'lapse_days' => $lapseDays,
                 'balance' => (float) ($finance->balance_amount ?? 0),
                 'status' => $finance->status,
                 'label' => 'Finance',
@@ -351,13 +505,23 @@ class OfficeCollectionController extends Controller
             'loan_product',
         ]);
 
-        return $mfQuery->get()->map(function (MicrofinanceLoanRequest $loan) {
+        return $mfQuery->get()->map(function ($loan) {
             $refundable = (float) ($loan->refundable_amount ?? 0);
             $collected = (float) ($loan->total_collected_sum ?? 0);
             $balance = max($refundable - $collected, 0);
             $arrearsOutstanding = max((float) ($loan->arrears_balance ?? 0), 0);
             $dueAmount = round($arrearsOutstanding, 2);
             $canCollect = strtolower((string) $loan->status) === 'approved' && $dueAmount > 0;
+            $dueDate = $loan->due_date ? Carbon::parse((string) $loan->due_date)->toDateString() : null;
+            $graceDays = max((int) ($loan->penalty_grace_days ?? 2), 0);
+            $lapseDays = $this->calculateLapseDays($dueDate, $graceDays);
+            $installmentAmount = (float) ($loan->installment_amount ?? 0);
+            $penaltyPreview = $this->calculateMicrofinancePenaltyPreview(
+                $dueDate,
+                $graceDays,
+                $installmentAmount,
+                (string) ($loan->penalty_scheme ?? 'daily_percentage')
+            );
 
             return [
                 'type' => 'microfinance',
@@ -366,11 +530,14 @@ class OfficeCollectionController extends Controller
                 'customer_name' => $loan->customer_name,
                 'customer_no' => $loan->customer_no,
                 'product' => (string) ($loan->loan_product ?: 'Micro Loan'),
-                'installment_amount' => (float) ($loan->installment_amount ?? 0),
+                'installment_amount' => $installmentAmount,
                 'due_amount' => $dueAmount,
                 'paid_amount' => $collected,
-                'due_date' => $loan->due_date ? Carbon::parse((string) $loan->due_date)->toDateString() : null,
+                'arrears_amount' => $arrearsOutstanding,
+                'penalty_amount' => $penaltyPreview,
+                'due_date' => $dueDate,
                 'next_payment_date' => $loan->next_payment_date ? Carbon::parse((string) $loan->next_payment_date)->toDateString() : null,
+                'lapse_days' => $lapseDays,
                 'balance' => $balance,
                 'status' => $loan->status,
                 'can_collect' => $canCollect,
@@ -415,7 +582,7 @@ class OfficeCollectionController extends Controller
             });
         }
 
-        return $mortgageQuery->get()->map(function (Mortgage $mortgage) {
+        return $mortgageQuery->get()->map(function ($mortgage) {
             $customer = $mortgage->customer;
             $customerName = trim(((string) ($customer->first_name ?? '')) . ' ' . ((string) ($customer->last_name ?? '')));
             $duePrincipal = (float) ($mortgage->due_amount ?? 0);
@@ -423,6 +590,8 @@ class OfficeCollectionController extends Controller
             $dueTotal = round($duePrincipal + $dueInterest, 2);
             $canCollect = in_array(strtolower((string) $mortgage->status), ['approved', 'active', 'arrears'], true)
                 && $dueTotal > 0;
+            $dueDate = $mortgage->due_date ? Carbon::parse((string) $mortgage->due_date)->toDateString() : null;
+            $lapseDays = $this->calculateLapseDays($dueDate, 0);
 
             return [
                 'type' => 'mortgage',
@@ -434,8 +603,11 @@ class OfficeCollectionController extends Controller
                 'installment_amount' => (float) ($mortgage->installment_amount ?? 0),
                 'due_amount' => $dueTotal,
                 'paid_amount' => (float) ($mortgage->total_paid_amount ?? 0),
-                'due_date' => $mortgage->due_date ? Carbon::parse((string) $mortgage->due_date)->toDateString() : null,
-                'next_payment_date' => $mortgage->due_date ? Carbon::parse((string) $mortgage->due_date)->toDateString() : null,
+                'arrears_amount' => (float) ($mortgage->arrears_amount ?? 0),
+                'penalty_amount' => 0.0,
+                'due_date' => $dueDate,
+                'next_payment_date' => $dueDate,
+                'lapse_days' => $lapseDays,
                 'balance' => $dueTotal,
                 'status' => $mortgage->status,
                 'can_collect' => $canCollect,

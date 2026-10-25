@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Microfinance;
 use App\Http\Controllers\Controller;
 use App\Models\Customer;
 use App\Models\EmployeeWallet;
+use App\Models\LoanPenaltyRule;
 use App\Models\MicrofinanceHoliday;
 use App\Models\MicrofinanceLoanCollection;
 use App\Models\MicrofinanceLoanRequest;
@@ -24,6 +25,142 @@ class LoanCollectionController extends Controller
     private const INDEX_CACHE_MAX_LIMIT = 500;
     /** @var array<string, true>|null */
     private ?array $activeHolidayLookup = null;
+
+    /**
+     * @return array{scheme:string,value_mode:string,amount_or_rate:float}
+     */
+    private function resolveMicrofinancePenaltyRule(?string $scheme): array
+    {
+        $rawScheme = trim((string) $scheme);
+        $normalizedScheme = strtolower($rawScheme);
+
+        if (preg_match('/^rule_(\d+)$/i', $rawScheme, $matches) === 1) {
+            $ruleId = (int) ($matches[1] ?? 0);
+            if ($ruleId > 0) {
+                $rule = LoanPenaltyRule::query()
+                    ->where('id', $ruleId)
+                    ->where('applicable_for', 'microfinance')
+                    ->where('is_active', true)
+                    ->first();
+
+                if ($rule) {
+                    $type = strtolower(trim((string) ($rule->penalty_type ?? 'daily_percentage')));
+                    if (!in_array($type, ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'], true)) {
+                        $type = 'daily_percentage';
+                    }
+
+                    $defaultMode = in_array($type, ['daily_percentage', 'monthly_percentage'], true)
+                        ? 'percentage'
+                        : 'amount';
+                    $valueMode = strtolower(trim((string) ($rule->value_mode ?? $defaultMode)));
+                    if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+                        $valueMode = $defaultMode;
+                    }
+
+                    return [
+                        'scheme' => $type,
+                        'value_mode' => $valueMode,
+                        'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+                    ];
+                }
+            }
+        }
+
+        if (!in_array($normalizedScheme, ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'], true)) {
+            $normalizedScheme = 'daily_percentage';
+        }
+
+        $defaultValueMode = in_array($normalizedScheme, ['daily_percentage', 'monthly_percentage'], true)
+            ? 'percentage'
+            : 'amount';
+
+        $rule = LoanPenaltyRule::query()
+            ->where('applicable_for', 'microfinance')
+            ->where('penalty_type', $normalizedScheme)
+            ->where('is_active', true)
+            ->orderBy('display_order')
+            ->orderBy('id')
+            ->first();
+
+        if (!$rule) {
+            return [
+                'scheme' => $normalizedScheme,
+                'value_mode' => $defaultValueMode,
+                'amount_or_rate' => 0.0,
+            ];
+        }
+
+        $valueMode = strtolower(trim((string) ($rule->value_mode ?? $defaultValueMode)));
+        if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+            $valueMode = $defaultValueMode;
+        }
+
+        return [
+            'scheme' => $normalizedScheme,
+            'value_mode' => $valueMode,
+            'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+        ];
+    }
+
+    /**
+     * @return array{penalty_amount:float,late_days:int,rate_or_amount:float,value_mode:string,scheme:string}
+     */
+    private function calculatePenaltyByScheme(
+        ?string $dueDate,
+        string $collectionDate,
+        int $graceDays,
+        float $installmentAmount,
+        ?string $penaltyScheme
+    ): array {
+        $lateDays = 0;
+        if (!empty($dueDate)) {
+            $due = new \DateTimeImmutable((string) $dueDate);
+            $paid = new \DateTimeImmutable($collectionDate);
+            $dayDiff = (int) $due->diff($paid)->format('%r%a');
+            if ($dayDiff > $graceDays) {
+                $lateDays = $dayDiff - $graceDays;
+            }
+        }
+
+        $rule = $this->resolveMicrofinancePenaltyRule($penaltyScheme);
+        $rateOrAmount = max((float) ($rule['amount_or_rate'] ?? 0), 0);
+        $valueMode = (string) ($rule['value_mode'] ?? 'amount');
+        $scheme = (string) ($rule['scheme'] ?? 'daily_percentage');
+
+        if ($lateDays <= 0 || $rateOrAmount <= 0 || $installmentAmount <= 0) {
+            return [
+                'penalty_amount' => 0.0,
+                'late_days' => max($lateDays, 0),
+                'rate_or_amount' => $rateOrAmount,
+                'value_mode' => $valueMode,
+                'scheme' => $scheme,
+            ];
+        }
+
+        $penaltyAmount = 0.0;
+        if ($scheme === 'one_time') {
+            $penaltyAmount = $valueMode === 'percentage'
+                ? ($installmentAmount * $rateOrAmount) / 100
+                : $rateOrAmount;
+        } elseif ($scheme === 'monthly_percentage') {
+            $lateMonths = $lateDays / 30;
+            $penaltyAmount = $valueMode === 'percentage'
+                ? ($installmentAmount * $rateOrAmount * $lateMonths) / 100
+                : ($rateOrAmount * $lateMonths);
+        } else {
+            $penaltyAmount = $valueMode === 'percentage'
+                ? ($installmentAmount * $rateOrAmount * $lateDays) / 100
+                : ($rateOrAmount * $lateDays);
+        }
+
+        return [
+            'penalty_amount' => round(max($penaltyAmount, 0), 2),
+            'late_days' => $lateDays,
+            'rate_or_amount' => $rateOrAmount,
+            'value_mode' => $valueMode,
+            'scheme' => $scheme,
+        ];
+    }
 
     private function cacheScopeKey(Request $request, bool $includeDeleted, bool $compact, int $limit, int $loanRequestId, string $dateFrom, string $dateTo, bool $todayOnly, bool $selfOnly): string
     {
@@ -337,8 +474,14 @@ class LoanCollectionController extends Controller
         ?string $meetingDay = null
     ): \DateTimeImmutable
     {
+        $shouldAlignToMeetingDay = $refundOption !== 'day';
+
         if ($steps === 0) {
-            return $this->adjustDateForHoliday($this->alignDateToMeetingDay($date, $meetingDay));
+            $baseDate = $shouldAlignToMeetingDay
+                ? $this->alignDateToMeetingDay($date, $meetingDay)
+                : $date;
+
+            return $this->adjustDateForHoliday($baseDate);
         }
 
         $interval = '+1 month';
@@ -358,7 +501,11 @@ class LoanCollectionController extends Controller
                 $cursor = $cursor->modify(str_replace('+', '-', $interval));
             }
 
-            $cursor = $this->adjustDateForHoliday($this->alignDateToMeetingDay($cursor, $meetingDay));
+            if ($shouldAlignToMeetingDay) {
+                $cursor = $this->alignDateToMeetingDay($cursor, $meetingDay);
+            }
+
+            $cursor = $this->adjustDateForHoliday($cursor);
         }
 
         return $cursor;
@@ -799,12 +946,14 @@ class LoanCollectionController extends Controller
         }
 
         $collectionDate = new \DateTimeImmutable((string)$validated['collection_date']);
+        $refundOption = (string)($loanRequest->refund_option ?: 'month');
         $dueCursor = !empty($loanRequest->due_date)
             ? new \DateTimeImmutable((string)$loanRequest->due_date)
             : $collectionDate;
-        $dueCursor = $this->alignDateToMeetingDay($dueCursor, $meetingDay);
+        if ($refundOption !== 'day') {
+            $dueCursor = $this->alignDateToMeetingDay($dueCursor, $meetingDay);
+        }
         $dueCursor = $this->adjustDateForHoliday($dueCursor);
-        $refundOption = (string)($loanRequest->refund_option ?: 'month');
 
         $accrualCapDate = $collectionDate;
         if (!empty($loanRequest->loan_end_date)) {
@@ -836,20 +985,16 @@ class LoanCollectionController extends Controller
 
         $penaltyRate = (float)($loanRequest->penalty_rate ?? 0);
         $graceDays = max((int)($loanRequest->penalty_grace_days ?? 2), 0);
-        $lateDays = 0;
-        $penaltyAmount = 0.0;
-
-        if (!empty($loanRequest->due_date) && $penaltyRate > 0) {
-            $dueDate = new \DateTimeImmutable((string)$loanRequest->due_date);
-            $payDate = new \DateTimeImmutable((string)$validated['collection_date']);
-            $dayDiff = (int)$dueDate->diff($payDate)->format('%r%a');
-
-            if ($dayDiff > $graceDays) {
-                $lateDays = $dayDiff - $graceDays;
-                // Daily penalty based on installment amount and penalty rate.
-                $penaltyAmount = ($installmentAmount * $penaltyRate * $lateDays) / 100;
-            }
-        }
+        $penaltyBreakdown = $this->calculatePenaltyByScheme(
+            !empty($loanRequest->due_date) ? (string) $loanRequest->due_date : null,
+            (string) $validated['collection_date'],
+            $graceDays,
+            $installmentAmount,
+            (string) ($loanRequest->penalty_scheme ?? 'daily_percentage')
+        );
+        $lateDays = (int) ($penaltyBreakdown['late_days'] ?? 0);
+        $penaltyAmount = (float) ($penaltyBreakdown['penalty_amount'] ?? 0);
+        $penaltyRate = (float) ($penaltyBreakdown['rate_or_amount'] ?? $penaltyRate);
 
         $totalCapitalCollected = (float)MicrofinanceLoanCollection::query()
             ->where('mf_loan_request_id', $loanRequest->id)
@@ -874,7 +1019,9 @@ class LoanCollectionController extends Controller
         $nextPaymentBaseDate = !empty($loanRequest->next_payment_date)
             ? new \DateTimeImmutable((string)$loanRequest->next_payment_date)
             : $collectionDate;
-        $nextPaymentBaseDate = $this->alignDateToMeetingDay($nextPaymentBaseDate, $meetingDay);
+        if ($refundOption !== 'day') {
+            $nextPaymentBaseDate = $this->alignDateToMeetingDay($nextPaymentBaseDate, $meetingDay);
+        }
         $nextPaymentBaseDate = $this->adjustDateForHoliday($nextPaymentBaseDate);
 
         if ($collectionDate > $nextPaymentBaseDate) {
@@ -884,7 +1031,9 @@ class LoanCollectionController extends Controller
         $dueBaseDate = !empty($loanRequest->due_date)
             ? new \DateTimeImmutable((string)$loanRequest->due_date)
             : $collectionDate;
-        $dueBaseDate = $this->alignDateToMeetingDay($dueBaseDate, $meetingDay);
+        if ($refundOption !== 'day') {
+            $dueBaseDate = $this->alignDateToMeetingDay($dueBaseDate, $meetingDay);
+        }
         $dueBaseDate = $this->adjustDateForHoliday($dueBaseDate);
 
         if ($collectionDate > $dueBaseDate) {
@@ -965,6 +1114,8 @@ class LoanCollectionController extends Controller
             'interest_amount' => round($interestAmount, 2),
             'penalty_amount' => round($penaltyAmount, 2),
             'penalty_rate' => round($penaltyRate, 4),
+            'penalty_scheme' => (string) ($penaltyBreakdown['scheme'] ?? ($loanRequest->penalty_scheme ?? 'daily_percentage')),
+            'penalty_value_mode' => (string) ($penaltyBreakdown['value_mode'] ?? 'amount'),
             'grace_days' => $graceDays,
             'late_days' => $lateDays,
             'profit_amount' => round($interestAmount + $penaltyAmount, 2),
@@ -1327,30 +1478,44 @@ class LoanCollectionController extends Controller
     private function resolveFirstDueDate(MicrofinanceLoanRequest $loanRequest, string $refundOption, int $termCount): \DateTimeImmutable
     {
         $meetingDay = (string) optional($loanRequest->center)->meeting_day;
+        $shouldAlignToMeetingDay = $refundOption !== 'day';
 
         if (!empty($loanRequest->loan_end_date)) {
             $loanEndDate = new \DateTimeImmutable((string) $loanRequest->loan_end_date);
             if ($termCount <= 1) {
-                return $this->adjustDateForHoliday($this->alignDateToMeetingDay($loanEndDate, $meetingDay));
+                $baseDate = $shouldAlignToMeetingDay
+                    ? $this->alignDateToMeetingDay($loanEndDate, $meetingDay)
+                    : $loanEndDate;
+
+                return $this->adjustDateForHoliday($baseDate);
             }
 
             return $this->shiftDateByRefundOption($loanEndDate, $refundOption, 0 - ($termCount - 1), $meetingDay);
         }
 
         if (!empty($loanRequest->next_payment_date)) {
-            return $this->adjustDateForHoliday(
-                $this->alignDateToMeetingDay(new \DateTimeImmutable((string) $loanRequest->next_payment_date), $meetingDay)
-            );
+            $baseDate = new \DateTimeImmutable((string) $loanRequest->next_payment_date);
+            if ($shouldAlignToMeetingDay) {
+                $baseDate = $this->alignDateToMeetingDay($baseDate, $meetingDay);
+            }
+
+            return $this->adjustDateForHoliday($baseDate);
         }
 
         if (!empty($loanRequest->due_date)) {
-            return $this->adjustDateForHoliday(
-                $this->alignDateToMeetingDay(new \DateTimeImmutable((string) $loanRequest->due_date), $meetingDay)
-            );
+            $baseDate = new \DateTimeImmutable((string) $loanRequest->due_date);
+            if ($shouldAlignToMeetingDay) {
+                $baseDate = $this->alignDateToMeetingDay($baseDate, $meetingDay);
+            }
+
+            return $this->adjustDateForHoliday($baseDate);
         }
 
-        return $this->adjustDateForHoliday(
-            $this->alignDateToMeetingDay(new \DateTimeImmutable(date('Y-m-d')), $meetingDay)
-        );
+        $baseDate = new \DateTimeImmutable(date('Y-m-d'));
+        if ($shouldAlignToMeetingDay) {
+            $baseDate = $this->alignDateToMeetingDay($baseDate, $meetingDay);
+        }
+
+        return $this->adjustDateForHoliday($baseDate);
     }
 }

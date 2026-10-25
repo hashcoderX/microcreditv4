@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 
 type IssuedLoanRow = {
   id: number;
+  branchId: number;
   loanCode: string;
   customerNo: string;
   customerName: string;
@@ -36,8 +37,19 @@ type CollectionRow = {
   payment_reference?: string | null;
 };
 
+type ExtraChargeApiRow = {
+  id?: number | string | null;
+  charge_date?: string | null;
+  charge_type?: string | null;
+  title?: string | null;
+  reference_no?: string | null;
+  extra_charges?: number | string | null;
+  amount?: number | string | null;
+};
+
 type LoanApiRow = {
   id?: number | string | null;
+  branch_id?: number | string | null;
   loan_code?: string | null;
   customer_no?: string | null;
   customer_name?: string | null;
@@ -58,7 +70,7 @@ type LoanApiRow = {
 };
 
 type HistoryRow = {
-  id: number;
+  id: string;
   date: string;
   loanId: number;
   loanCode: string;
@@ -69,6 +81,7 @@ type HistoryRow = {
   capital: number;
   interest: number;
   penalty: number;
+  extraCharges: number;
   paymentType: string;
   reference: string;
 };
@@ -129,7 +142,7 @@ const mapCollectionToHistory = (collection: CollectionRow, loan: IssuedLoanRow):
   const loanId = Number(collection.mf_loan_request_id || loan.id);
 
   return {
-    id: Number(collection.id || 0),
+    id: `collection-${String(collection.id || loanId)}`,
     date: String(collection.collection_date || collection.created_at || ''),
     loanId,
     loanCode: loan.loanCode,
@@ -140,8 +153,30 @@ const mapCollectionToHistory = (collection: CollectionRow, loan: IssuedLoanRow):
     capital: Number(collection.capital_amount || 0),
     interest: Number(collection.interest_amount || 0),
     penalty: Number(collection.penalty_amount || 0),
+    extraCharges: 0,
     paymentType: String(collection.payment_type || '-').replace('_', ' '),
     reference: String(collection.payment_reference || '-'),
+  };
+};
+
+const mapExtraChargeToHistory = (charge: ExtraChargeApiRow, loan: IssuedLoanRow): HistoryRow => {
+  const extra = Number(charge.extra_charges ?? charge.amount ?? 0);
+
+  return {
+    id: `charge-${String(charge.id || `${loan.id}-${charge.charge_date || ''}`)}`,
+    date: String(charge.charge_date || ''),
+    loanId: loan.id,
+    loanCode: loan.loanCode,
+    customerNo: loan.customerNo,
+    customerName: loan.customerName,
+    fieldOfficer: loan.fieldOfficer,
+    collected: 0,
+    capital: 0,
+    interest: 0,
+    penalty: 0,
+    extraCharges: extra,
+    paymentType: 'extra charge',
+    reference: String(charge.reference_no || charge.title || charge.charge_type || '-'),
   };
 };
 
@@ -206,6 +241,7 @@ export default function CustomerPaymentHistoryReportPage() {
 
             return {
               id,
+              branchId: Number(loan.branch_id || 0),
               loanCode,
               customerNo: String(loan.customer_no || '-'),
               customerName: String(loan.customer_name || '-'),
@@ -275,10 +311,26 @@ export default function CustomerPaymentHistoryReportPage() {
       setPaymentHistory([]);
 
       try {
-        const collectionRes = await axios.get(`${API_BASE}/microfinance/collections`, {
-          headers,
-          params: { loan_request_id: loan.id },
-        });
+        const requests = [
+          axios.get(`${API_BASE}/microfinance/collections`, {
+            headers,
+            params: { loan_request_id: loan.id },
+          }),
+        ];
+
+        if (loan.branchId > 0) {
+          requests.push(
+            axios.get(`${API_BASE}/companies/${loan.branchId}/loan-extra-charges`, {
+              headers,
+              params: {
+                mf_loan_request_id: loan.id,
+                product_type: 'microfinance',
+              },
+            })
+          );
+        }
+
+        const [collectionRes, extraChargeRes] = await Promise.all(requests);
 
         const collections: CollectionRow[] = Array.isArray(collectionRes.data)
           ? collectionRes.data
@@ -286,8 +338,21 @@ export default function CustomerPaymentHistoryReportPage() {
             ? collectionRes.data.data
             : [];
 
-        const mapped = collections
+        const extraCharges: ExtraChargeApiRow[] = Array.isArray(extraChargeRes?.data?.charges)
+          ? extraChargeRes.data.charges
+          : [];
+
+        const mappedCollections = collections
           .map((collection) => mapCollectionToHistory(collection, loan))
+          .sort((a, b) => {
+            const aTime = new Date(a.date).getTime();
+            const bTime = new Date(b.date).getTime();
+            return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
+          });
+
+        const mappedCharges = extraCharges.map((charge) => mapExtraChargeToHistory(charge, loan));
+
+        const mapped = [...mappedCollections, ...mappedCharges]
           .sort((a, b) => {
             const aTime = new Date(a.date).getTime();
             const bTime = new Date(b.date).getTime();
@@ -364,9 +429,10 @@ export default function CustomerPaymentHistoryReportPage() {
         acc.capital += row.capital;
         acc.interest += row.interest;
         acc.penalty += row.penalty;
+        acc.extraCharges += row.extraCharges;
         return acc;
       },
-      { transactions: 0, collected: 0, capital: 0, interest: 0, penalty: 0 }
+      { transactions: 0, collected: 0, capital: 0, interest: 0, penalty: 0, extraCharges: 0 }
     );
   }, [filteredHistory]);
 
@@ -398,6 +464,7 @@ export default function CustomerPaymentHistoryReportPage() {
         'Capital',
         'Interest',
         'Penalty',
+        'Extra Charges',
       ];
 
       const rows = filteredHistory.map((row) => [
@@ -415,6 +482,7 @@ export default function CustomerPaymentHistoryReportPage() {
         formatMoney(row.capital),
         formatMoney(row.interest),
         formatMoney(row.penalty),
+        formatMoney(row.extraCharges),
       ]);
 
       const summaryRow = [
@@ -432,6 +500,7 @@ export default function CustomerPaymentHistoryReportPage() {
         formatMoney(historySummary.capital),
         formatMoney(historySummary.interest),
         formatMoney(historySummary.penalty),
+        formatMoney(historySummary.extraCharges),
       ];
 
       const csv = [header, ...rows, summaryRow].map((line) => line.map(escapeCsv).join(',')).join('\n');
@@ -484,6 +553,7 @@ export default function CustomerPaymentHistoryReportPage() {
           'Capital',
           'Interest',
           'Penalty',
+          'Extra Charges',
         ]],
         body: filteredHistory.map((row) => [
           formatDateTime(row.date),
@@ -493,6 +563,7 @@ export default function CustomerPaymentHistoryReportPage() {
           formatMoney(row.capital),
           formatMoney(row.interest),
           formatMoney(row.penalty),
+          formatMoney(row.extraCharges),
         ]),
         styles: { fontSize: 8, cellPadding: 4 },
         headStyles: { fillColor: [139, 92, 246] },
@@ -504,6 +575,7 @@ export default function CustomerPaymentHistoryReportPage() {
           4: { halign: 'right' },
           5: { halign: 'right' },
           6: { halign: 'right' },
+          7: { halign: 'right' },
         },
       });
 
@@ -514,6 +586,7 @@ export default function CustomerPaymentHistoryReportPage() {
       doc.text(`Capital: ${formatMoney(historySummary.capital)}`, 300, tableEndY + 18);
       doc.text(`Interest: ${formatMoney(historySummary.interest)}`, 410, tableEndY + 18);
       doc.text(`Penalty: ${formatMoney(historySummary.penalty)}`, 520, tableEndY + 18);
+      doc.text(`Extra: ${formatMoney(historySummary.extraCharges)}`, 620, tableEndY + 18);
 
       const fileDate = new Date().toISOString().slice(0, 10);
       doc.save(`payment-history-${selectedLoan.loanCode || selectedLoan.id}-${fileDate}.pdf`);
@@ -528,6 +601,7 @@ export default function CustomerPaymentHistoryReportPage() {
       { key: 'capital', label: 'Capital', value: historySummary.capital, color: 'from-emerald-600 to-emerald-400' },
       { key: 'interest', label: 'Interest', value: historySummary.interest, color: 'from-indigo-600 to-indigo-400' },
       { key: 'penalty', label: 'Penalty', value: historySummary.penalty, color: 'from-rose-600 to-rose-400' },
+      { key: 'extraCharges', label: 'Extra Charges', value: historySummary.extraCharges, color: 'from-violet-600 to-violet-400' },
     ];
 
     const maxComponent = componentRows.reduce((max, row) => Math.max(max, row.value), 0) || 1;
@@ -824,7 +898,7 @@ export default function CustomerPaymentHistoryReportPage() {
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
                 <div className="rounded-xl border border-fuchsia-100 bg-fuchsia-50/70 p-3">
                   <p className="text-xs text-fuchsia-700 uppercase tracking-wide">Transactions</p>
                   <p className="mt-1 text-xl font-extrabold text-fuchsia-700">{historySummary.transactions}</p>
@@ -844,6 +918,10 @@ export default function CustomerPaymentHistoryReportPage() {
                 <div className="rounded-xl border border-rose-100 bg-rose-50/70 p-3">
                   <p className="text-xs text-rose-700 uppercase tracking-wide">Penalty</p>
                   <p className="mt-1 text-xl font-extrabold text-rose-700">{formatMoney(historySummary.penalty)}</p>
+                </div>
+                <div className="rounded-xl border border-violet-100 bg-violet-50/70 p-3">
+                  <p className="text-xs text-violet-700 uppercase tracking-wide">Extra Charges</p>
+                  <p className="mt-1 text-xl font-extrabold text-violet-700">{formatMoney(historySummary.extraCharges)}</p>
                 </div>
               </div>
 
@@ -932,6 +1010,7 @@ export default function CustomerPaymentHistoryReportPage() {
                     <th className="px-3 py-2 font-semibold">Capital</th>
                     <th className="px-3 py-2 font-semibold">Interest</th>
                     <th className="px-3 py-2 font-semibold">Penalty</th>
+                    <th className="px-3 py-2 font-semibold">Extra Charges</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -944,6 +1023,7 @@ export default function CustomerPaymentHistoryReportPage() {
                       <td className="px-3 py-2 text-emerald-700 font-semibold">{formatMoney(row.capital)}</td>
                       <td className="px-3 py-2">{formatMoney(row.interest)}</td>
                       <td className="px-3 py-2">{formatMoney(row.penalty)}</td>
+                      <td className="px-3 py-2 text-violet-700 font-semibold">{formatMoney(row.extraCharges)}</td>
                     </tr>
                   ))}
                 </tbody>

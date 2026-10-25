@@ -8,6 +8,7 @@ import { ArrowLeft, Eye, Pencil, Phone, Search, ShieldCheck, UserCog } from 'luc
 
 type FinanceRow = {
   id: number;
+  branch_id?: number | string | null;
   finance_type?: string | null;
   product_type?: string | null;
   asset_reference?: string | null;
@@ -113,6 +114,16 @@ type FinanceRow = {
   } | null;
 };
 
+type FinanceExtraChargeRow = {
+  id: number;
+  charge_date?: string | null;
+  charge_type?: string | null;
+  title?: string | null;
+  reference_no?: string | null;
+  extra_charges?: number | string | null;
+  amount?: number | string | null;
+};
+
 type FinanceCustomerGroup = {
   customerId: number;
   customerCode: string;
@@ -131,6 +142,7 @@ type AuthUser = {
   id?: number;
   name?: string;
   email?: string;
+  branch_id?: number | string | null;
   designation?: { id?: number; name?: string | null } | null;
   roles?: Array<{ id?: number; name?: string }>;
 };
@@ -166,6 +178,17 @@ function formatWorkflowActionLabel(action: unknown): string {
     .replace(/[_\-]+/g, ' ')
     .trim();
   if (!normalized) return 'Workflow Update';
+
+  return normalized
+    .split(' ')
+    .filter(Boolean)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function formatChargeTypeLabel(value: unknown): string {
+  const normalized = String(value || '').replace(/[_\-]+/g, ' ').trim();
+  if (!normalized) return '-';
 
   return normalized
     .split(' ')
@@ -240,6 +263,9 @@ export default function FinanceCustomersPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [selectedRecord, setSelectedRecord] = useState<FinanceRow | null>(null);
+  const [detailExtraChargesLoading, setDetailExtraChargesLoading] = useState(false);
+  const [detailExtraChargesError, setDetailExtraChargesError] = useState('');
+  const [detailExtraCharges, setDetailExtraCharges] = useState<FinanceExtraChargeRow[]>([]);
 
   const fetchNotificationPreview = async (authToken: string) => {
     try {
@@ -394,6 +420,9 @@ export default function FinanceCustomersPage() {
     setDetailLoading(true);
     setDetailError('');
     setSelectedRecord(null);
+    setDetailExtraChargesLoading(true);
+    setDetailExtraChargesError('');
+    setDetailExtraCharges([]);
 
     try {
       const response = await fetch(`/api/finances/${id}`, {
@@ -405,9 +434,49 @@ export default function FinanceCustomersPage() {
 
       if (!response.ok) throw new Error('Failed to load finance details');
       const payload = await response.json();
-      setSelectedRecord(payload as FinanceRow);
+      const finance = payload as FinanceRow;
+      setSelectedRecord(finance);
+
+      const branchId = Number(finance.branch_id || authUser?.branch_id || 0);
+      if (!Number.isFinite(branchId) || branchId <= 0) {
+        setDetailExtraChargesLoading(false);
+        setDetailExtraChargesError('Branch is not available to load extra charges.');
+        return;
+      }
+
+      try {
+        const extraChargeRes = await fetch(
+          `/api/companies/${branchId}/loan-extra-charges?product_type=finance&mf_loan_request_id=${finance.id}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/json',
+            },
+          }
+        );
+
+        if (!extraChargeRes.ok) {
+          throw new Error('Failed to load finance extra charges');
+        }
+
+        const extraChargePayload = await extraChargeRes.json();
+        const charges = Array.isArray(extraChargePayload?.charges)
+          ? (extraChargePayload.charges as FinanceExtraChargeRow[])
+          : [];
+
+        setDetailExtraCharges(charges);
+        setDetailExtraChargesError('');
+      } catch {
+        setDetailExtraCharges([]);
+        setDetailExtraChargesError('Failed to load extra charges preview.');
+      } finally {
+        setDetailExtraChargesLoading(false);
+      }
     } catch {
       setDetailError('Failed to load full finance record details.');
+      setDetailExtraChargesLoading(false);
+      setDetailExtraChargesError('');
+      setDetailExtraCharges([]);
     } finally {
       setDetailLoading(false);
     }
@@ -712,6 +781,9 @@ export default function FinanceCustomersPage() {
                     setDetailOpen(false);
                     setSelectedRecord(null);
                     setDetailError('');
+                    setDetailExtraChargesLoading(false);
+                    setDetailExtraChargesError('');
+                    setDetailExtraCharges([]);
                   }}
                   className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-700 text-sm font-semibold"
                 >
@@ -919,6 +991,62 @@ export default function FinanceCustomersPage() {
                       <div><span className="text-slate-500">Frequency: </span><span className="font-semibold text-slate-900 capitalize">{selectedRecord.installment_frequency || '-'}</span></div>
                       <div><span className="text-slate-500">Installment: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.installment_amount)}</span></div>
                     </div>
+                  </div>
+
+                  <div className="rounded-xl border border-violet-100 bg-violet-50/35 p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-violet-700 mb-3">Extra Charges Preview</p>
+
+                    {detailExtraChargesLoading ? (
+                      <p className="text-sm text-slate-500">Loading extra charges...</p>
+                    ) : detailExtraChargesError ? (
+                      <p className="text-sm text-rose-700">{detailExtraChargesError}</p>
+                    ) : detailExtraCharges.length === 0 ? (
+                      <p className="text-sm text-slate-500">No extra charges found for this finance record.</p>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm mb-3">
+                          <div className="rounded-lg border border-violet-100 bg-white px-3 py-2">
+                            <span className="text-slate-500">Charge Count: </span>
+                            <span className="font-semibold text-slate-900">{detailExtraCharges.length}</span>
+                          </div>
+                          <div className="rounded-lg border border-violet-100 bg-white px-3 py-2">
+                            <span className="text-slate-500">Total Extra Charges: </span>
+                            <span className="font-semibold text-slate-900">
+                              {formatAmount(
+                                detailExtraCharges.reduce((sum, charge) => {
+                                  return sum + Number(charge.extra_charges ?? charge.amount ?? 0);
+                                }, 0)
+                              )}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="overflow-x-auto rounded-lg border border-violet-100 bg-white">
+                          <table className="min-w-full text-sm text-left text-slate-700">
+                            <thead className="bg-violet-50 text-slate-700">
+                              <tr>
+                                <th className="px-3 py-2 font-semibold">Date</th>
+                                <th className="px-3 py-2 font-semibold">Type</th>
+                                <th className="px-3 py-2 font-semibold">Title</th>
+                                <th className="px-3 py-2 font-semibold">Reference</th>
+                                <th className="px-3 py-2 font-semibold text-right">Amount</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {detailExtraCharges.slice(0, 10).map((charge) => (
+                                <tr key={`finance-extra-charge-${charge.id}`} className="border-t border-violet-100">
+                                  <td className="px-3 py-2">{formatDate(charge.charge_date)}</td>
+                                  <td className="px-3 py-2">{formatChargeTypeLabel(charge.charge_type)}</td>
+                                  <td className="px-3 py-2">{String(charge.title || '-')}</td>
+                                  <td className="px-3 py-2">{String(charge.reference_no || '-')}</td>
+                                  <td className="px-3 py-2 text-right font-semibold">{formatAmount(charge.extra_charges ?? charge.amount)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

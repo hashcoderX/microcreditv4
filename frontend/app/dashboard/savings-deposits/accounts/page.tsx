@@ -71,6 +71,11 @@ type AuthUser = {
   is_system_admin?: boolean | null;
 };
 
+type SavingsOpeningValidationSettings = {
+  minimum_opening_deposit: number;
+  fixed_deposit_lock_months: number;
+};
+
 const STEPS = [
   { id: 1, label: 'Customer', short: '1' },
   { id: 2, label: 'Account setup', short: '2' },
@@ -154,10 +159,11 @@ export default function SavingsOpenAccountPage() {
   const [interestCalcMonths, setInterestCalcMonths] = useState('12');
   const [openedAt, setOpenedAt] = useState('');
   const [resolvedCustomer, setResolvedCustomer] = useState<CustomerSummary | null>(null);
+  const [openingValidationSettings, setOpeningValidationSettings] = useState<SavingsOpeningValidationSettings | null>(null);
   const widgetPrefix = 'savings_accounts_widget_';
 
   const availableAccountTypes = useMemo(
-    () => SAVINGS_ACCOUNT_TYPES.filter((item) => item.value !== 'fixed_deposit'),
+    () => SAVINGS_ACCOUNT_TYPES,
     []
   );
 
@@ -483,10 +489,35 @@ export default function SavingsOpenAccountPage() {
     }
   };
 
+  const loadOpeningValidationSettings = async (authToken: string) => {
+    try {
+      const response = await axios.get('/api/system/savings-deposits-settings', {
+        headers: { Authorization: `Bearer ${authToken}`, Accept: 'application/json' },
+      });
+
+      const config = response.data?.config;
+      if (!config || typeof config !== 'object') {
+        setOpeningValidationSettings({ minimum_opening_deposit: 0, fixed_deposit_lock_months: 0 });
+        return;
+      }
+
+      const minimumOpeningDepositRaw = Number((config as { minimum_opening_deposit?: unknown }).minimum_opening_deposit ?? 0);
+      const fixedDepositLockMonthsRaw = Number((config as { fixed_deposit_lock_months?: unknown }).fixed_deposit_lock_months ?? 0);
+
+      setOpeningValidationSettings({
+        minimum_opening_deposit: Number.isFinite(minimumOpeningDepositRaw) ? Math.max(minimumOpeningDepositRaw, 0) : 0,
+        fixed_deposit_lock_months: Number.isFinite(fixedDepositLockMonthsRaw) ? Math.max(Math.round(fixedDepositLockMonthsRaw), 0) : 0,
+      });
+    } catch {
+      setOpeningValidationSettings(null);
+    }
+  };
+
   useEffect(() => {
     if (!token) return;
     loadAccounts(token);
     void loadBranches(token);
+    void loadOpeningValidationSettings(token);
   }, [token]);
 
   const resolvedCustomerBranch = useMemo(() => {
@@ -503,6 +534,16 @@ export default function SavingsOpenAccountPage() {
     setAccountType(nextType);
     setInterestType(DEFAULT_INTEREST_BY_ACCOUNT[nextType]);
   };
+
+  const minimumOpeningDepositRule = useMemo(
+    () => Math.max(Number(openingValidationSettings?.minimum_opening_deposit || 0), 0),
+    [openingValidationSettings],
+  );
+
+  const fixedDepositLockMonthsRule = useMemo(
+    () => Math.max(Number(openingValidationSettings?.fixed_deposit_lock_months || 0), 0),
+    [openingValidationSettings],
+  );
 
   const resolveByCustomerNo = async () => {
     const code = accountCustomerNo.trim() || customerSearchText.trim();
@@ -655,9 +696,34 @@ export default function SavingsOpenAccountPage() {
       setErrorMessage('Opening deposit must be zero or greater.');
       return;
     }
+    if (depositValue < minimumOpeningDepositRule) {
+      setErrorMessage(`Opening deposit must be at least ${minimumOpeningDepositRule.toFixed(2)}.`);
+      return;
+    }
     if (!Number.isFinite(rateValue) || rateValue < 0) {
       setErrorMessage('Interest rate must be zero or greater.');
       return;
+    }
+
+    if (accountType === 'fixed_deposit' && fixedDepositLockMonthsRule > 0) {
+      const openDateText = String(openedAt || '').trim();
+      if (!openDateText) {
+        setErrorMessage('Opened date is required for fixed deposit accounts.');
+        return;
+      }
+
+      const openedDate = new Date(`${openDateText}T00:00:00`);
+      if (Number.isNaN(openedDate.getTime())) {
+        setErrorMessage('Opened date is invalid for fixed deposit account.');
+        return;
+      }
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (openedDate < today) {
+        setErrorMessage(`For fixed deposits, opened date cannot be in the past when lock period is ${fixedDepositLockMonthsRule} month(s).`);
+        return;
+      }
     }
 
     try {
@@ -1152,12 +1218,16 @@ export default function SavingsOpenAccountPage() {
                         className={inputClass}
                         placeholder="0.00"
                       />
+                      <p className="mt-1 text-[11px] text-slate-500">Minimum opening deposit: LKR {amount(minimumOpeningDepositRule)}</p>
                     </div>
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-wide text-slate-600 mb-2">
                         Opened date
                       </label>
                       <input type="date" value={openedAt} onChange={(e) => setOpenedAt(e.target.value)} className={inputClass} />
+                      {accountType === 'fixed_deposit' && fixedDepositLockMonthsRule > 0 ? (
+                        <p className="mt-1 text-[11px] text-violet-700">Lock period: {fixedDepositLockMonthsRule} month(s). Early withdrawal is blocked until maturity.</p>
+                      ) : null}
                     </div>
                   </div>
 

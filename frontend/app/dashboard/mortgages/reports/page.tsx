@@ -35,6 +35,7 @@ type ReportTab = 'running' | 'rejected' | 'analytics' | 'settled';
 type MortgageRow = {
   id: number;
   created_at?: string | null;
+  start_date?: string | null;
   due_date?: string | null;
   mortgage_type?: string | null;
   requested_amount?: number | string | null;
@@ -397,7 +398,7 @@ export default function MortgageReportsPage() {
   };
 
   const exportRunningCsv = () => {
-    const headers = ['ID', 'Type', 'Approved Amount', 'Installment Amount', 'Interest', 'Tenure (Months)', 'Due Date', 'Refund Frequency', 'Interest Calc Frequency', 'Status', 'Created At'];
+    const headers = ['ID', 'Type', 'Approved Amount', 'Installment Amount', 'Interest', 'Tenure (Months)', 'Start Date', 'Due Date', 'Refund Frequency', 'Interest Calc Frequency', 'Status', 'Created At'];
     const data = runningRows.map((row) => [
       String(row.id),
       String(row.mortgage_type || '—'),
@@ -405,6 +406,7 @@ export default function MortgageReportsPage() {
       formatAmount(calculateInstallmentAmount(row)),
       Number.isFinite(toNumber(row.interest_rate)) ? `${toNumber(row.interest_rate).toFixed(2)}% (${row.interest_type || '—'})` : '—',
       String(row.tenure_months || '—'),
+      formatDate(row.start_date),
       formatDate(row.due_date),
       String(row.installment_frequency || '—'),
       String(row.interest_calculation_frequency || '—'),
@@ -415,7 +417,7 @@ export default function MortgageReportsPage() {
   };
 
   const exportRunningPdf = () => {
-    const headers = ['ID', 'Type', 'Approved Amount', 'Installment Amount', 'Interest', 'Tenure', 'Due Date', 'Refund Freq', 'Interest Calc Freq', 'Status', 'Created At'];
+    const headers = ['ID', 'Type', 'Approved Amount', 'Installment Amount', 'Interest', 'Tenure', 'Start Date', 'Due Date', 'Refund Freq', 'Interest Calc Freq', 'Status', 'Created At'];
     const data = runningRows.map((row) => [
       String(row.id),
       String(row.mortgage_type || '—'),
@@ -423,6 +425,7 @@ export default function MortgageReportsPage() {
       formatAmount(calculateInstallmentAmount(row)),
       Number.isFinite(toNumber(row.interest_rate)) ? `${toNumber(row.interest_rate).toFixed(2)}%` : '—',
       String(row.tenure_months || '—'),
+      formatDate(row.start_date),
       formatDate(row.due_date),
       String(row.installment_frequency || '—'),
       String(row.interest_calculation_frequency || '—'),
@@ -433,12 +436,13 @@ export default function MortgageReportsPage() {
   };
 
   const exportRejectedCsv = () => {
-    const headers = ['ID', 'Type', 'Requested Amount', 'Interest Rate', 'Due Date', 'Status', 'Created At'];
+    const headers = ['ID', 'Type', 'Requested Amount', 'Interest Rate', 'Start Date', 'Due Date', 'Status', 'Created At'];
     const data = rejectedRows.map((row) => [
       String(row.id),
       String(row.mortgage_type || '—'),
       formatAmount(row.requested_amount),
       Number.isFinite(toNumber(row.interest_rate)) ? `${toNumber(row.interest_rate).toFixed(2)}%` : '—',
+      formatDate(row.start_date),
       formatDate(row.due_date),
       String(row.status || '—'),
       formatDate(row.created_at),
@@ -447,12 +451,13 @@ export default function MortgageReportsPage() {
   };
 
   const exportRejectedPdf = () => {
-    const headers = ['ID', 'Type', 'Requested Amount', 'Interest Rate', 'Due Date', 'Status', 'Created At'];
+    const headers = ['ID', 'Type', 'Requested Amount', 'Interest Rate', 'Start Date', 'Due Date', 'Status', 'Created At'];
     const data = rejectedRows.map((row) => [
       String(row.id),
       String(row.mortgage_type || '—'),
       formatAmount(row.requested_amount),
       Number.isFinite(toNumber(row.interest_rate)) ? `${toNumber(row.interest_rate).toFixed(2)}%` : '—',
+      formatDate(row.start_date),
       formatDate(row.due_date),
       String(row.status || '—'),
       formatDate(row.created_at),
@@ -601,6 +606,7 @@ export default function MortgageReportsPage() {
     { key: 'approved', label: 'Approved', render: (row: MortgageRow) => <span className="font-semibold text-teal-700">{formatAmount(row.approved_amount ?? row.requested_amount)}</span> },
     { key: 'installment', label: 'Installment', render: (row: MortgageRow) => <span className="font-semibold text-cyan-700">{formatAmount(calculateInstallmentAmount(row))}</span> },
     { key: 'interest', label: 'Interest', render: (row: MortgageRow) => Number.isFinite(toNumber(row.interest_rate)) ? `${toNumber(row.interest_rate).toFixed(2)}%` : '—' },
+    { key: 'start_date', label: 'Start Date', render: (row: MortgageRow) => formatDate(row.start_date) },
     { key: 'due_date', label: 'Due Date', render: (row: MortgageRow) => formatDate(row.due_date) },
     { key: 'status', label: 'Status', render: (row: MortgageRow) => <Badge label={String(row.status || '—')} variant={statusVariant(String(row.status || ''))} /> },
   ];
@@ -611,6 +617,7 @@ export default function MortgageReportsPage() {
     { key: 'type', label: 'Type', render: (row: MortgageRow) => <span className="capitalize text-black">{row.mortgage_type || '—'}</span> },
     { key: 'requested', label: 'Requested', render: (row: MortgageRow) => <span className="text-black">{formatAmount(row.requested_amount)}</span> },
     { key: 'interest', label: 'Interest', render: (row: MortgageRow) => Number.isFinite(toNumber(row.interest_rate)) ? `${toNumber(row.interest_rate).toFixed(2)}%` : '—' },
+    { key: 'start_date', label: 'Start Date', render: (row: MortgageRow) => formatDate(row.start_date) },
     { key: 'due_date', label: 'Due Date', render: (row: MortgageRow) => formatDate(row.due_date) },
     { key: 'created', label: 'Created', render: (row: MortgageRow) => formatDate(row.created_at) },
   ];
@@ -621,6 +628,7 @@ export default function MortgageReportsPage() {
     { key: 'type', label: 'Type', render: (row: MortgageRow) => <span className="capitalize text-black">{row.mortgage_type || '—'}</span> },
     { key: 'customer', label: 'Customer', render: (row: MortgageRow) => `${row.customer?.first_name || ''} ${row.customer?.last_name || ''}`.trim() || '—' },
     { key: 'approved', label: 'Approved', render: (row: MortgageRow) => formatAmount(row.approved_amount ?? row.requested_amount) },
+    { key: 'start_date', label: 'Start Date', render: (row: MortgageRow) => formatDate(row.start_date) },
     { key: 'installment', label: 'Installment', render: (row: MortgageRow) => <span className="font-semibold text-emerald-700">{formatAmount(calculateInstallmentAmount(row))}</span> },
     { key: 'created', label: 'Created', render: (row: MortgageRow) => formatDate(row.created_at) },
     {

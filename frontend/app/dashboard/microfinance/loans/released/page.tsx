@@ -26,6 +26,7 @@ type LoanGuarantor = {
 
 type LoanRequest = {
   id: number;
+  branch_id?: number | null;
   customer_no: string;
   reference_no?: string | null;
   loan_code?: string | null;
@@ -81,6 +82,7 @@ type LoanRequest = {
   next_payment_date?: string | null;
   due_date?: string | null;
   loan_end_date?: string | null;
+  penalty_grace_days?: number | string | null;
   documents?: {
     id: number;
     document_type: string;
@@ -174,6 +176,16 @@ type DetailsDocumentItem = {
   original_name: string;
   file_path?: string;
   access_url?: string;
+};
+
+type LoanExtraChargePreview = {
+  id: number;
+  charge_date?: string | null;
+  charge_type?: string | null;
+  title?: string | null;
+  extra_charges?: number | string | null;
+  amount?: number | string | null;
+  reference_no?: string | null;
 };
 
 const ACTIVE_LOAN_STATUSES = new Set(['approved', 'released']);
@@ -345,6 +357,9 @@ export default function ReleasedLoansPage() {
     customerProfile: CustomerProfileRecord | null;
     customerDocuments: CustomerProfileDocument[];
     selectedCustomerDocumentId: number | null;
+    extraChargesLoading: boolean;
+    extraChargesError: string;
+    extraCharges: LoanExtraChargePreview[];
   }>({
     open: false,
     loan: null,
@@ -355,6 +370,9 @@ export default function ReleasedLoansPage() {
     customerProfile: null,
     customerDocuments: [],
     selectedCustomerDocumentId: null,
+    extraChargesLoading: false,
+    extraChargesError: '',
+    extraCharges: [],
   });
   const [customerDocPreview, setCustomerDocPreview] = useState<{
     docId: number | null;
@@ -568,17 +586,35 @@ export default function ReleasedLoansPage() {
       customerProfile: null,
       customerDocuments: [],
       selectedCustomerDocumentId: null,
+      extraChargesLoading: true,
+      extraChargesError: '',
+      extraCharges: [],
     });
 
     void (async () => {
       try {
-        const response = await axios.get(`${getApiBaseUrl()}/microfinance/loan-requests/${loan.id}/customer-profile`, {
-          headers,
-        });
+        const branchId = Number(loan.branch_id || authUser?.branch_id || 0);
+        const [customerRes, extraChargeRes] = await Promise.all([
+          axios.get(`${getApiBaseUrl()}/microfinance/loan-requests/${loan.id}/customer-profile`, {
+            headers,
+          }),
+          branchId > 0
+            ? axios.get(`${getApiBaseUrl()}/companies/${branchId}/loan-extra-charges`, {
+                headers,
+                params: {
+                  mf_loan_request_id: loan.id,
+                  product_type: 'microfinance',
+                },
+              })
+            : Promise.resolve({ data: { charges: [] } }),
+        ]);
 
-        const customer = response.data?.customer as CustomerProfileRecord | null;
-        const customerDocuments = Array.isArray(response.data?.customer_documents)
-          ? (response.data.customer_documents as CustomerProfileDocument[])
+        const customer = customerRes.data?.customer as CustomerProfileRecord | null;
+        const customerDocuments = Array.isArray(customerRes.data?.customer_documents)
+          ? (customerRes.data.customer_documents as CustomerProfileDocument[])
+          : [];
+        const extraCharges = Array.isArray(extraChargeRes.data?.charges)
+          ? (extraChargeRes.data.charges as LoanExtraChargePreview[])
           : [];
 
         setDetailsModal((prev) => {
@@ -589,10 +625,13 @@ export default function ReleasedLoansPage() {
           return {
             ...prev,
             customerLoading: false,
-            customerError: customer ? '' : String(response.data?.message || 'Customer details not found.'),
+            customerError: customer ? '' : String(customerRes.data?.message || 'Customer details not found.'),
             customerProfile: customer,
             customerDocuments,
             selectedCustomerDocumentId: customerDocuments.length > 0 ? customerDocuments[0].id : null,
+            extraChargesLoading: false,
+            extraChargesError: '',
+            extraCharges,
           };
         });
       } catch (error: unknown) {
@@ -613,6 +652,9 @@ export default function ReleasedLoansPage() {
             customerProfile: null,
             customerDocuments: [],
             selectedCustomerDocumentId: null,
+            extraChargesLoading: false,
+            extraChargesError: 'Failed to load extra charge preview.',
+            extraCharges: [],
           };
         });
       }
@@ -634,6 +676,9 @@ export default function ReleasedLoansPage() {
       customerProfile: null,
       customerDocuments: [],
       selectedCustomerDocumentId: null,
+      extraChargesLoading: false,
+      extraChargesError: '',
+      extraCharges: [],
     });
     setCustomerDocPreview({ docId: null, objectUrl: '', loading: false, error: '' });
   };
@@ -3483,10 +3528,50 @@ export default function ReleasedLoansPage() {
                       <p><span className="font-semibold">Request Date:</span> {formatDisplayDate(detailsModal.loan.loan_request_date)}</p>
                       <p><span className="font-semibold">Next Payment:</span> {formatDisplayDate(detailsModal.loan.next_payment_date)}</p>
                       <p><span className="font-semibold">Due Date:</span> {formatDisplayDate(detailsModal.loan.due_date)}</p>
+                      <p><span className="font-semibold">Grace Period:</span> {Number.isFinite(Number(detailsModal.loan.penalty_grace_days)) ? `${Number(detailsModal.loan.penalty_grace_days)} day(s)` : '-'}</p>
                       <p><span className="font-semibold">Loan End Date:</span> {formatDisplayDate(detailsModal.loan.loan_end_date)}</p>
+                      <p><span className="font-semibold">Extra Charges Count:</span> {detailsModal.extraCharges.length}</p>
+                      <p><span className="font-semibold">Extra Charges Total:</span> {detailsModal.extraCharges.reduce((sum, charge) => sum + Number(charge.extra_charges ?? charge.amount ?? 0), 0).toFixed(2)}</p>
                       <p><span className="font-semibold">Bank:</span> {detailsModal.loan.bank_name || '-'} / {detailsModal.loan.bank_branch || '-'}</p>
                       <p><span className="font-semibold">Account No:</span> {detailsModal.loan.bank_account_no || '-'}</p>
                     </div>
+                  </div>
+
+                  <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wide text-violet-700">Extra Charges Preview</p>
+
+                    {detailsModal.extraChargesLoading ? (
+                      <p className="mt-3 text-sm text-slate-600">Loading extra charges...</p>
+                    ) : detailsModal.extraChargesError ? (
+                      <p className="mt-3 text-sm text-rose-700">{detailsModal.extraChargesError}</p>
+                    ) : detailsModal.extraCharges.length === 0 ? (
+                      <p className="mt-3 text-sm text-slate-600">No extra charges found for this loan.</p>
+                    ) : (
+                      <div className="mt-3 overflow-x-auto rounded-lg border border-violet-100 bg-white">
+                        <table className="min-w-full text-sm text-left text-slate-700">
+                          <thead className="bg-violet-50 text-slate-700">
+                            <tr>
+                              <th className="px-3 py-2 font-semibold">Date</th>
+                              <th className="px-3 py-2 font-semibold">Type</th>
+                              <th className="px-3 py-2 font-semibold">Title</th>
+                              <th className="px-3 py-2 font-semibold">Reference</th>
+                              <th className="px-3 py-2 font-semibold text-right">Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {detailsModal.extraCharges.slice(0, 8).map((charge) => (
+                              <tr key={`extra-charge-${charge.id}`} className="border-t border-violet-100">
+                                <td className="px-3 py-2">{formatDisplayDate(charge.charge_date)}</td>
+                                <td className="px-3 py-2">{String(charge.charge_type || '-').replaceAll('_', ' ')}</td>
+                                <td className="px-3 py-2">{charge.title || '-'}</td>
+                                <td className="px-3 py-2">{charge.reference_no || '-'}</td>
+                                <td className="px-3 py-2 text-right font-semibold">{Number(charge.extra_charges ?? charge.amount ?? 0).toFixed(2)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
 
                   <div className="rounded-xl border border-violet-100 bg-violet-50/40 p-4">

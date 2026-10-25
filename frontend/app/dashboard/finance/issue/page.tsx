@@ -16,6 +16,7 @@ type ProductTypeRow = {
   tenure_months?: number | null;
   installment_frequency?: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' | null;
 };
+
 function isRemovedProductTypeName(name: string): boolean {
   const normalized = name.toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -58,6 +59,16 @@ type AuthUser = {
 };
 
 type InterestRatePeriod = 'yearly' | 'monthly';
+type PenaltySchemeType = 'fixed_daily' | 'daily_percentage' | 'one_time' | 'monthly_percentage';
+
+type PenaltySchemeOption = {
+  value: string;
+  label: string;
+  identification?: string;
+  penalty_type?: PenaltySchemeType;
+  value_mode: 'amount' | 'percentage' | null;
+  amount_or_rate: number | null;
+};
 
 function toAnnualRatePercent(ratePercent: number, period: InterestRatePeriod): number {
   if (!Number.isFinite(ratePercent)) return NaN;
@@ -203,6 +214,9 @@ type FinanceIssueDraftSnapshot = {
   regFirstInstallmentDate: string;
   regCollectionDayOfMonth: string;
   regGraceDays: string;
+  regArrearsAmount: string;
+  regPenaltyScheme: string;
+  regPenaltyRate: string;
   regInstallmentMode: 'auto' | 'manual';
   regManualInstallmentAmount: string;
   regInstallmentPlan: RepaymentInstallmentRow[];
@@ -220,6 +234,7 @@ type FinanceIssueDraftSnapshot = {
   regValuationAmount: string;
   regValuationDate: string;
   regValuerName: string;
+  regGuarantorNotRequired: boolean;
   regGuarantors: GuarantorInput[];
   regFamilyMembersCount: string;
   regDependentsCount: string;
@@ -327,6 +342,8 @@ type EditableFinanceRecord = {
   tenure_months?: number | string | null;
   installment_frequency?: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' | null;
   installment_amount?: number | string | null;
+  arrears?: number | string | null;
+  penalty?: number | string | null;
   start_date?: string | null;
   responsible_officer_employee_id?: number | string | null;
   vehicle_details?: Record<string, unknown> | null;
@@ -409,6 +426,13 @@ function hasText(value: unknown): boolean {
   return String(value ?? '').trim().length > 0;
 }
 
+function isPenaltySchemeType(value: string): value is PenaltySchemeType {
+  return value === 'fixed_daily'
+    || value === 'daily_percentage'
+    || value === 'one_time'
+    || value === 'monthly_percentage';
+}
+
 export default function IssueFinancePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -438,6 +462,11 @@ export default function IssueFinancePage() {
   const [regFirstInstallmentDate, setRegFirstInstallmentDate] = useState('');
   const [regCollectionDayOfMonth, setRegCollectionDayOfMonth] = useState('1');
   const [regGraceDays, setRegGraceDays] = useState('0');
+  const [regArrearsAmount, setRegArrearsAmount] = useState('0');
+  const [regPenaltyScheme, setRegPenaltyScheme] = useState('');
+  const [regPenaltyRate, setRegPenaltyRate] = useState('0');
+  const [penaltySchemeOptions, setPenaltySchemeOptions] = useState<PenaltySchemeOption[]>([]);
+  const [loadingPenaltySchemes, setLoadingPenaltySchemes] = useState(false);
   const [regInstallmentMode, setRegInstallmentMode] = useState<'auto' | 'manual'>('auto');
   const [regManualInstallmentAmount, setRegManualInstallmentAmount] = useState('');
   const [regInstallmentPlan, setRegInstallmentPlan] = useState<RepaymentInstallmentRow[]>([]);
@@ -465,6 +494,7 @@ export default function IssueFinancePage() {
   const [regGuarantors, setRegGuarantors] = useState<GuarantorInput[]>([
     { name: '', nic: '', phone: '', address: '' },
   ]);
+  const [regGuarantorNotRequired, setRegGuarantorNotRequired] = useState(false);
   const [guarantorFinderQueryByIndex, setGuarantorFinderQueryByIndex] = useState<Record<number, string>>({});
   const [guarantorFinderMatchesByIndex, setGuarantorFinderMatchesByIndex] = useState<Record<number, GuarantorLookupOption[]>>({});
   const [activeGuarantorFinderIndex, setActiveGuarantorFinderIndex] = useState<number | null>(null);
@@ -729,6 +759,15 @@ export default function IssueFinancePage() {
     setRegFirstInstallmentDate(asDateInput(repaymentPlan.first_installment_date));
     setRegCollectionDayOfMonth(asText(repaymentPlan.collection_day_of_month || '1') || '1');
     setRegGraceDays(asText(repaymentPlan.grace_period_days || '0') || '0');
+    setRegArrearsAmount(asMoneyText(repaymentPlan.arrears_base_amount ?? finance.arrears ?? '0'));
+    setRegPenaltyScheme(asText(repaymentPlan.penalty_scheme));
+    setRegPenaltyRate(
+      asText(
+        repaymentPlan.penalty_amount_or_rate
+        ?? repaymentPlan.penalty_rate_percent
+        ?? '0'
+      ) || '0'
+    );
     setRegInstallmentMode((asText(repaymentPlan.installment_mode || 'auto') as 'auto' | 'manual') || 'auto');
     setRegManualInstallmentAmount(asMoneyText(repaymentPlan.manual_installment_amount || finance.installment_amount));
     setRegInstallmentPlan(repaymentInstallments);
@@ -760,7 +799,9 @@ export default function IssueFinancePage() {
         };
       })
       .filter((g) => g.name || g.nic || g.phone || g.address);
-    setRegGuarantors(guarantorRows.length > 0 ? guarantorRows : [{ name: '', nic: '', phone: '', address: '' }]);
+    const hasGuarantorRows = guarantorRows.length > 0;
+    setRegGuarantorNotRequired(!hasGuarantorRows);
+    setRegGuarantors(hasGuarantorRows ? guarantorRows : [{ name: '', nic: '', phone: '', address: '' }]);
 
     setRegFamilyMembersCount(asText(familyFinancial.family_members_count));
     setRegDependentsCount(asText(familyFinancial.dependents_count));
@@ -1116,6 +1157,9 @@ export default function IssueFinancePage() {
     regFirstInstallmentDate,
     regCollectionDayOfMonth,
     regGraceDays,
+    regArrearsAmount,
+    regPenaltyScheme,
+    regPenaltyRate,
     regInstallmentMode,
     regManualInstallmentAmount,
     regInstallmentPlan,
@@ -1133,6 +1177,7 @@ export default function IssueFinancePage() {
     regValuationAmount,
     regValuationDate,
     regValuerName,
+    regGuarantorNotRequired,
     regGuarantors,
     regFamilyMembersCount,
     regDependentsCount,
@@ -1237,6 +1282,9 @@ export default function IssueFinancePage() {
     setRegFirstInstallmentDate(d.regFirstInstallmentDate || '');
     setRegCollectionDayOfMonth(d.regCollectionDayOfMonth || '1');
     setRegGraceDays(d.regGraceDays || '0');
+    setRegArrearsAmount(d.regArrearsAmount || '0');
+    setRegPenaltyScheme(d.regPenaltyScheme || '');
+    setRegPenaltyRate(d.regPenaltyRate || '0');
     setRegInstallmentMode(d.regInstallmentMode || 'auto');
     setRegManualInstallmentAmount(d.regManualInstallmentAmount || '');
     setRegInstallmentPlan(Array.isArray(d.regInstallmentPlan) ? d.regInstallmentPlan : []);
@@ -1254,6 +1302,7 @@ export default function IssueFinancePage() {
     setRegValuationAmount(d.regValuationAmount || '');
     setRegValuationDate(d.regValuationDate || '');
     setRegValuerName(d.regValuerName || '');
+    setRegGuarantorNotRequired(Boolean(d.regGuarantorNotRequired));
     setRegGuarantors(Array.isArray(d.regGuarantors) && d.regGuarantors.length > 0 ? d.regGuarantors : [{ name: '', nic: '', phone: '', address: '' }]);
     setRegFamilyMembersCount(d.regFamilyMembersCount || '');
     setRegDependentsCount(d.regDependentsCount || '');
@@ -1439,6 +1488,74 @@ export default function IssueFinancePage() {
     run();
   }, [token, authUser]);
 
+  useEffect(() => {
+    if (!token) return;
+
+    const parsePenaltySchemeOptions = (payload: unknown): PenaltySchemeOption[] => {
+      if (!Array.isArray(payload)) return [];
+
+      return payload
+        .map((item) => {
+          const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : null;
+          if (!row) return null;
+
+          const applicableFor = String(row.applicable_for || '').trim();
+          if (applicableFor !== 'finance') return null;
+          if (!Boolean(row.is_active ?? true)) return null;
+
+          const penaltyTypeRaw = String(row.penalty_type || '').trim();
+          const valueModeRaw = String(row.value_mode || '').trim();
+          const amountRaw = Number(row.amount_or_rate ?? NaN);
+          const idRaw = String(row.id || '').trim();
+          const identification = String(row.identification || '').trim();
+          const optionValue = idRaw ? `rule_${idRaw}` : '';
+          if (!optionValue) return null;
+
+          return {
+            value: optionValue,
+            label: identification || `Penalty Rule ${idRaw}`,
+            identification: identification || undefined,
+            penalty_type: isPenaltySchemeType(penaltyTypeRaw) ? penaltyTypeRaw : undefined,
+            value_mode: valueModeRaw === 'amount' || valueModeRaw === 'percentage'
+              ? valueModeRaw
+              : null,
+            amount_or_rate: Number.isFinite(amountRaw) ? Math.max(amountRaw, 0) : null,
+          } as PenaltySchemeOption;
+        })
+        .filter((item): item is PenaltySchemeOption => Boolean(item));
+    };
+
+    const loadPenaltySchemes = async () => {
+      try {
+        setLoadingPenaltySchemes(true);
+        const response = await axios.get('/api/system/penalty-settings', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+        });
+
+        const options = parsePenaltySchemeOptions(response.data?.config?.rules);
+        setPenaltySchemeOptions(options);
+        setRegPenaltyScheme((prev) => {
+          if (options.some((option) => option.value === prev)) return prev;
+          return options[0]?.value || '';
+        });
+      } catch {
+        setPenaltySchemeOptions([]);
+      } finally {
+        setLoadingPenaltySchemes(false);
+      }
+    };
+
+    void loadPenaltySchemes();
+  }, [token]);
+
+  const selectedPenaltyScheme = useMemo(
+    () => penaltySchemeOptions.find((item) => item.value === regPenaltyScheme) || null,
+    [penaltySchemeOptions, regPenaltyScheme],
+  );
+
   const fetchAssignmentOptions = async (authToken: string, customerReference?: string) => {
     try {
       const branchId = resolveAuthBranchId(authUser);
@@ -1481,12 +1598,13 @@ export default function IssueFinancePage() {
           ? response.data
           : [];
 
-      const allowedProductTypes = (data as ProductTypeRow[])
-        .filter((item) => !isRemovedProductTypeName(String(item.name || '')))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      setProductTypes(allowedProductTypes);
-      if (allowedProductTypes.length > 0 && (!regProductType || isRemovedProductTypeName(regProductType))) {
-        const first = allowedProductTypes[0];
+      const loadedProductTypes = (data as ProductTypeRow[])
+        .filter((item) => String(item?.name || '').trim() !== '')
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+
+      setProductTypes(loadedProductTypes);
+      if (loadedProductTypes.length > 0 && !regProductType) {
+        const first = loadedProductTypes[0];
         if (first?.name) {
           setRegProductType(first.name);
           applyProductTypeDefaults(first);
@@ -1864,6 +1982,135 @@ export default function IssueFinancePage() {
       return sum + (Number.isFinite(amount) ? amount : 0);
     }, 0);
   }, [regInstallmentPlan]);
+
+  const penaltyComputation = useMemo(() => {
+    const arrearsBase = Number(regArrearsAmount);
+    const fallbackPenaltyRate = Number(regPenaltyRate);
+    const graceDays = Math.max(0, Number(regGraceDays) || 0);
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
+    const sortedPlanDates = regInstallmentPlan
+      .map((row) => String(row.payment_date || '').trim())
+      .filter((dateText) => dateText !== '')
+      .sort();
+
+    let overdueInstallments = 0;
+    let lateDays = 0;
+
+    const lateDaysForDueDate = (dateText: string): number => {
+      const dueDate = new Date(`${dateText}T00:00:00`);
+      if (Number.isNaN(dueDate.getTime())) return 0;
+      const dayDiff = Math.floor((now.getTime() - dueDate.getTime()) / oneDayMs);
+      if (dayDiff <= graceDays) return 0;
+      return dayDiff - graceDays;
+    };
+
+    if (sortedPlanDates.length > 0) {
+      for (const dateText of sortedPlanDates) {
+        const days = lateDaysForDueDate(dateText);
+        if (days > 0) {
+          overdueInstallments += 1;
+          lateDays += days;
+        }
+      }
+    } else {
+      const seedText = String(regFirstInstallmentDate || regStartDate || '').trim();
+      if (seedText !== '') {
+        let due = new Date(`${seedText}T00:00:00`);
+        const tenureMonths = Math.max(0, Number(regTenureMonths) || 0);
+        const fallbackMax = Math.max(24, Math.min(1200, Math.ceil((tenureMonths / 12) * getInstallmentsPerYear(regFrequency))));
+        let guard = 0;
+
+        while (!Number.isNaN(due.getTime()) && guard < fallbackMax) {
+          const dueText = due.toISOString().slice(0, 10);
+          const days = lateDaysForDueDate(dueText);
+          if (days > 0) {
+            overdueInstallments += 1;
+            lateDays += days;
+          } else {
+            break;
+          }
+
+          const next = incrementByFrequency(dueText);
+          due = new Date(`${next}T00:00:00`);
+          guard += 1;
+        }
+      }
+    }
+
+    const configuredPenaltyValue = Number(selectedPenaltyScheme?.amount_or_rate ?? fallbackPenaltyRate);
+    const penaltyValueMode = selectedPenaltyScheme?.value_mode === 'amount' || selectedPenaltyScheme?.value_mode === 'percentage'
+      ? selectedPenaltyScheme.value_mode
+      : 'percentage';
+    const penaltyType = selectedPenaltyScheme?.penalty_type || 'daily_percentage';
+
+    const firstInstallmentAmount = regInstallmentPlan.reduce((found, row) => {
+      if (found > 0) return found;
+      const amount = Number(row.amount);
+      return Number.isFinite(amount) && amount > 0 ? amount : 0;
+    }, 0);
+    const manualInstallmentAmount = Number(regManualInstallmentAmount);
+    const baseInstallmentAmount = Number.isFinite(firstInstallmentAmount) && firstInstallmentAmount > 0
+      ? firstInstallmentAmount
+      : Number.isFinite(manualInstallmentAmount) && manualInstallmentAmount > 0
+        ? manualInstallmentAmount
+        : Number.isFinite(calculatedBaseInstallment || NaN) && (calculatedBaseInstallment || 0) > 0
+          ? Number(calculatedBaseInstallment)
+          : 0;
+
+    const lateMonths = lateDays / 30;
+    const chargeCount = penaltyType === 'one_time'
+      ? (overdueInstallments > 0 ? 1 : 0)
+      : penaltyType === 'monthly_percentage'
+        ? lateMonths
+        : lateDays;
+
+    if (!Number.isFinite(baseInstallmentAmount) || baseInstallmentAmount <= 0 || !Number.isFinite(configuredPenaltyValue) || configuredPenaltyValue <= 0 || chargeCount <= 0) {
+      return {
+        arrearsBase: Number.isFinite(arrearsBase) ? Math.max(arrearsBase, 0) : 0,
+        penaltyBaseAmount: Number.isFinite(baseInstallmentAmount) ? Math.max(baseInstallmentAmount, 0) : 0,
+        penaltyRate: Number.isFinite(configuredPenaltyValue) ? Math.max(configuredPenaltyValue, 0) : 0,
+        penaltyType,
+        penaltyValueMode,
+        chargeCount,
+        lapsedCount: overdueInstallments,
+        lateDays,
+        lateMonths,
+        penaltyAmount: 0,
+      };
+    }
+
+    let penaltyAmount = 0;
+    if (penaltyType === 'one_time') {
+      penaltyAmount = penaltyValueMode === 'percentage'
+        ? (baseInstallmentAmount * configuredPenaltyValue) / 100
+        : configuredPenaltyValue;
+    } else if (penaltyType === 'monthly_percentage') {
+      penaltyAmount = penaltyValueMode === 'percentage'
+        ? (baseInstallmentAmount * configuredPenaltyValue * lateMonths) / 100
+        : (configuredPenaltyValue * lateMonths);
+    } else {
+      penaltyAmount = penaltyValueMode === 'percentage'
+        ? (baseInstallmentAmount * configuredPenaltyValue * lateDays) / 100
+        : (configuredPenaltyValue * lateDays);
+    }
+    penaltyAmount = Math.round(Math.max(penaltyAmount, 0) * 100) / 100;
+
+    return {
+      arrearsBase,
+      penaltyBaseAmount: baseInstallmentAmount,
+      penaltyRate: configuredPenaltyValue,
+      penaltyType,
+      penaltyValueMode,
+      chargeCount,
+      lapsedCount: overdueInstallments,
+      lateDays,
+      lateMonths,
+      penaltyAmount,
+    };
+  }, [regArrearsAmount, regPenaltyRate, regGraceDays, regInstallmentPlan, regFirstInstallmentDate, regStartDate, regTenureMonths, regFrequency, selectedPenaltyScheme, regManualInstallmentAmount, calculatedBaseInstallment]);
 
   const applyCustomerDetailToForm = (customer: CustomerDetail, canonicalCustomerNo?: string | null) => {
     setRegCustomerDetail(customer);
@@ -2313,9 +2560,19 @@ export default function IssueFinancePage() {
             return false;
           }
         }
+
+        if (penaltySchemeOptions.length > 0 && !hasText(regPenaltyScheme)) {
+          setErrorMessage('Select a penalty scheme before proceeding.');
+          setRegisterStep(3);
+          return false;
+        }
       }
 
       if (stepId === 4) {
+        if (regGuarantorNotRequired) {
+          return true;
+        }
+
         const validGuarantors = regGuarantors.filter((g) => hasText(g.name) || hasText(g.nic) || hasText(g.phone) || hasText(g.address));
         if (validGuarantors.length === 0) {
           setErrorMessage('At least one guarantor is required.');
@@ -2549,6 +2806,10 @@ export default function IssueFinancePage() {
         ? Number(normalizedManualRows[0]?.amount || manualInstallment)
         : undefined,
       start_date: regStartDate || undefined,
+      arrears: isEditMode
+        ? (Number.isFinite(Number(regArrearsAmount)) ? Math.max(Number(regArrearsAmount), 0) : 0)
+        : 0,
+      penalty: penaltyComputation.penaltyAmount,
       status: 'pending_approval',
       responsible_officer_employee_id: Number(regResponsibleOfficerId || 0) || undefined,
       vehicle_details: isVehicleFinanceSelected
@@ -2579,14 +2840,16 @@ export default function IssueFinancePage() {
           valuation_date: regValuationDate || null,
           valuer_name: regValuerName || null,
         },
-      guarantor_details: regGuarantors
-        .filter((g) => g.name.trim() !== '' || g.nic.trim() !== '' || g.phone.trim() !== '' || g.address.trim() !== '')
-        .map((g) => ({
-          name: g.name || null,
-          nic: g.nic || null,
-          phone: g.phone || null,
-          address: g.address || null,
-        })),
+      guarantor_details: regGuarantorNotRequired
+        ? []
+        : regGuarantors
+          .filter((g) => g.name.trim() !== '' || g.nic.trim() !== '' || g.phone.trim() !== '' || g.address.trim() !== '')
+          .map((g) => ({
+            name: g.name || null,
+            nic: g.nic || null,
+            phone: g.phone || null,
+            address: g.address || null,
+          })),
       family_financial_details: {
         family_members_count: Number(regFamilyMembersCount || 0) || null,
         dependents_count: Number(regDependentsCount || 0) || null,
@@ -2649,6 +2912,16 @@ export default function IssueFinancePage() {
         first_installment_date: regFirstInstallmentDate || null,
         collection_day_of_month: regScheduleMode === 'fixed_day' ? Number(regCollectionDayOfMonth || 1) : null,
         grace_period_days: Number(regGraceDays || 0),
+        arrears_base_amount: isEditMode
+          ? (Number.isFinite(Number(regArrearsAmount)) ? Math.max(Number(regArrearsAmount), 0) : 0)
+          : 0,
+        penalty_scheme: regPenaltyScheme || null,
+        penalty_type: penaltyComputation.penaltyType,
+        penalty_value_mode: penaltyComputation.penaltyValueMode,
+        penalty_amount_or_rate: Number.isFinite(penaltyComputation.penaltyRate) ? Math.max(penaltyComputation.penaltyRate, 0) : 0,
+        penalty_rate_percent: Number.isFinite(Number(regPenaltyRate)) ? Math.max(Number(regPenaltyRate), 0) : 0,
+        lapsed_installments: penaltyComputation.lapsedCount,
+        calculated_penalty: penaltyComputation.penaltyAmount,
         installment_frequency: regFrequency,
         installment_mode: regInstallmentMode,
         manual_installment_amount: regInstallmentMode === 'manual' ? Number(normalizedManualRows[0]?.amount || manualInstallment) : null,
@@ -3675,6 +3948,72 @@ export default function IssueFinancePage() {
                     </div>
                   </>
                 )}
+
+                <div className="rounded-xl border border-cyan-100 bg-white p-4 space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Penalty Scheme</label>
+                      <select
+                        value={regPenaltyScheme}
+                        onChange={(e) => {
+                          const nextValue = e.target.value;
+                          setRegPenaltyScheme(nextValue);
+                          const matched = penaltySchemeOptions.find((item) => item.value === nextValue) || null;
+                          if (matched && Number.isFinite(Number(matched.amount_or_rate ?? NaN))) {
+                            setRegPenaltyRate(String(Number(matched.amount_or_rate).toFixed(4)));
+                          }
+                        }}
+                        className={inputClass}
+                        disabled={loadingPenaltySchemes || penaltySchemeOptions.length === 0}
+                      >
+                        {penaltySchemeOptions.length === 0 && <option value="">No active finance penalty schemes</option>}
+                        {penaltySchemeOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Grace Period (Days)</label>
+                      <input
+                        value={regGraceDays}
+                        onChange={(e) => setRegGraceDays(e.target.value)}
+                        className={inputClass}
+                        placeholder="e.g. 0"
+                      />
+                    </div>
+                    {isEditMode && (
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Arrears Amount</label>
+                        <input
+                          value={regArrearsAmount}
+                          onChange={(e) => setRegArrearsAmount(e.target.value)}
+                          className={inputClass}
+                          placeholder="e.g. 5000"
+                        />
+                      </div>
+                    )}
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">
+                        {selectedPenaltyScheme?.value_mode === 'amount' ? 'Penalty Amount' : 'Penalty Rate (%)'}
+                      </label>
+                      <input
+                        value={regPenaltyRate}
+                        onChange={(e) => setRegPenaltyRate(e.target.value)}
+                        className={inputClass}
+                        placeholder={selectedPenaltyScheme?.value_mode === 'amount' ? 'e.g. 500' : 'e.g. 2.5'}
+                      />
+                    </div>
+                  </div>
+                  {selectedPenaltyScheme ? (
+                    <p className="text-[11px] text-slate-600">
+                      Rule type: <span className="font-semibold text-cyan-800">{String(selectedPenaltyScheme.penalty_type || '-').replaceAll('_', ' ')}</span>
+                      {' · '}
+                      Mode: <span className="font-semibold text-cyan-800">{selectedPenaltyScheme.value_mode === 'amount' ? 'Amount' : 'Percentage (%)'}</span>
+                      {' · '}
+                      Config: <span className="font-semibold text-cyan-800">{selectedPenaltyScheme.amount_or_rate ?? 0}</span>
+                    </p>
+                  ) : null}
+                </div>
               </div>
             )}
 
@@ -3685,6 +4024,21 @@ export default function IssueFinancePage() {
                   title="Guarantor profile"
                   description="Capture one or more guarantors for risk mitigation and security."
                 />
+                <div className="rounded-xl border border-cyan-100 bg-white p-4">
+                  <label className="inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={regGuarantorNotRequired}
+                      onChange={(e) => setRegGuarantorNotRequired(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-300 text-cyan-600 focus:ring-cyan-400"
+                    />
+                    Guarantor not required
+                  </label>
+                  <p className="mt-1 text-xs text-slate-500">
+                    If checked, guarantor details are optional and will not be submitted.
+                  </p>
+                </div>
+                {!regGuarantorNotRequired && (
                 <div className="space-y-3">
                   {regGuarantors.map((guarantor, index) => (
                     <div key={`guarantor-${index}`} className="rounded-xl border border-cyan-100 bg-white p-4 space-y-3">
@@ -3761,6 +4115,7 @@ export default function IssueFinancePage() {
                     + Add Another Guarantor
                   </button>
                 </div>
+                )}
               </div>
             )}
 
@@ -3853,6 +4208,28 @@ export default function IssueFinancePage() {
                     />
                   </div>
 
+                  {isEditMode && (
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Arrears Amount</label>
+                      <input
+                        value={regArrearsAmount}
+                        onChange={(e) => setRegArrearsAmount(e.target.value)}
+                        className={inputClass}
+                        placeholder="e.g. 5000"
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Penalty Rate (%)</label>
+                    <input
+                      value={regPenaltyRate}
+                      onChange={(e) => setRegPenaltyRate(e.target.value)}
+                      className={inputClass}
+                      placeholder="e.g. 2"
+                    />
+                  </div>
+
                   <div>
                     <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">First Installment Date</label>
                     <input
@@ -3878,17 +4255,38 @@ export default function IssueFinancePage() {
                     </select>
                   </div>
 
-                  {regScheduleMode === 'fixed_day' && (
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Collection Day of Month</label>
-                      <input
-                        value={regCollectionDayOfMonth}
-                        onChange={(e) => setRegCollectionDayOfMonth(e.target.value)}
-                        className={inputClass}
-                        placeholder="1-31"
-                      />
-                    </div>
+                </div>
+
+                <div className="rounded-xl border border-amber-100 bg-amber-50/40 p-4 text-xs text-amber-900">
+                  <p className="font-semibold">Penalty logic preview</p>
+                  <p className="mt-1">Grace period is penalty-free. After grace, calculation follows the selected penalty scheme from rules.</p>
+                  {penaltyComputation.penaltyType === 'one_time' ? (
+                    <p className="mt-1">
+                      Formula: <span className="font-semibold">Penalty = {penaltyComputation.penaltyValueMode === 'percentage' ? 'Base Installment × (Penalty Rate / 100)' : 'Penalty Amount'} (one-time after grace)</span>
+                    </p>
+                  ) : penaltyComputation.penaltyType === 'monthly_percentage' ? (
+                    <p className="mt-1">
+                      Formula: <span className="font-semibold">Penalty = {penaltyComputation.penaltyValueMode === 'percentage' ? 'Base Installment × (Penalty Rate / 100) × (Late Days / 30)' : 'Penalty Amount × (Late Days / 30)'}</span>
+                    </p>
+                  ) : (
+                    <p className="mt-1">
+                      Formula: <span className="font-semibold">Penalty = {penaltyComputation.penaltyValueMode === 'percentage' ? 'Base Installment × (Penalty Rate / 100) × Late Days' : 'Penalty Amount × Late Days'}</span>
+                    </p>
                   )}
+                  <p className="mt-2">
+                    Base Installment: <span className="font-semibold">{formatAmount(penaltyComputation.penaltyBaseAmount)}</span>
+                    {' · '}
+                    {penaltyComputation.penaltyValueMode === 'amount' ? 'Amount' : 'Rate'}: <span className="font-semibold">{penaltyComputation.penaltyRate.toFixed(2)}{penaltyComputation.penaltyValueMode === 'amount' ? '' : '%'}</span>
+                    {' · '}
+                    Late Days: <span className="font-semibold">{penaltyComputation.lateDays}</span>
+                    {' · '}
+                    Late Months: <span className="font-semibold">{penaltyComputation.lateMonths.toFixed(2)}</span>
+                    {' · '}
+                    Overdue Installments: <span className="font-semibold">{penaltyComputation.lapsedCount}</span>
+                  </p>
+                  <p className="mt-1 text-sm font-bold text-amber-800">
+                    Calculated Penalty: {formatAmount(penaltyComputation.penaltyAmount)}
+                  </p>
                 </div>
 
                 {regInstallmentMode === 'manual' && (

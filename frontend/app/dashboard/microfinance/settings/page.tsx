@@ -33,12 +33,6 @@ type MFCenter = {
   route?: { id: number; name: string; code: string };
 };
 
-type MFPenaltySetting = {
-  id: number;
-  penalty_rate: number;
-  is_active: boolean;
-};
-
 type LoanLifecycleRow = {
   id: number;
   loan_code?: string | null;
@@ -69,11 +63,12 @@ type MFLoanProduct = {
   interest_calculation_scheme?: 'day' | 'week' | 'month' | 'year';
   terms_count: number;
   refund_option: 'day' | 'week' | 'month';
+  penalty_grace_days?: number | string | null;
   assumed_month_days?: number;
   is_active: boolean;
 };
 
-type TabType = 'routes' | 'groups' | 'centers' | 'loan_products' | 'penalty' | 'loan_lifecycle';
+type TabType = 'routes' | 'groups' | 'centers' | 'loan_products' | 'loan_lifecycle';
 type DeleteType = 'routes' | 'groups' | 'centers' | 'loan-products';
 
 const API_BASE = '/api/microfinance/settings';
@@ -89,7 +84,6 @@ const tabs: Array<{ key: TabType; label: string; icon: string; desc: string }> =
   { key: 'centers', label: 'Centers', icon: '🏢', desc: 'Configure centers' },
   { key: 'groups', label: 'Groups', icon: '👥', desc: 'Build borrower groups' },
   { key: 'loan_products', label: 'Loan Products', icon: '💳', desc: 'Product setup' },
-  { key: 'penalty', label: 'Penalty Rate', icon: '📈', desc: 'Late fee settings' },
   { key: 'loan_lifecycle', label: 'Loan Hold/Close', icon: '⏸️', desc: 'Lifecycle actions' },
 ];
 
@@ -119,7 +113,6 @@ export default function MicrofinanceSettingsPage() {
   const [groups, setGroups] = useState<MFGroup[]>([]);
   const [centers, setCenters] = useState<MFCenter[]>([]);
   const [loanProducts, setLoanProducts] = useState<MFLoanProduct[]>([]);
-  const [penaltySetting, setPenaltySetting] = useState<MFPenaltySetting | null>(null);
   const [loanLifecycleRows, setLoanLifecycleRows] = useState<LoanLifecycleRow[]>([]);
 
   const [routeForm, setRouteForm] = useState({ id: 0, name: '', code: '', is_active: true });
@@ -140,15 +133,14 @@ export default function MicrofinanceSettingsPage() {
     interest_calculation_scheme: 'month' as 'day' | 'week' | 'month' | 'year',
     terms_count: '',
     refund_option: 'month' as 'day' | 'week' | 'month',
+    penalty_grace_days: '2',
     assumed_month_days: '30',
     is_active: true,
   });
-  const [penaltyForm, setPenaltyForm] = useState({ id: 0, penalty_rate: '', is_active: true });
   const [routeLoading, setRouteLoading] = useState(false);
   const [groupLoading, setGroupLoading] = useState(false);
   const [centerLoading, setCenterLoading] = useState(false);
   const [loanProductLoading, setLoanProductLoading] = useState(false);
-  const [penaltyLoading, setPenaltyLoading] = useState(false);
   const [lifecycleLoading, setLifecycleLoading] = useState(false);
   const [lifecycleActionLoading, setLifecycleActionLoading] = useState(false);
   const [lifecycleSearch, setLifecycleSearch] = useState('');
@@ -256,12 +248,11 @@ export default function MicrofinanceSettingsPage() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [routeRes, groupRes, centerRes, loanProductRes, penaltyRes, loanRes] = await Promise.all([
+      const [routeRes, groupRes, centerRes, loanProductRes, loanRes] = await Promise.all([
         axios.get(`${API_BASE}/routes`, { headers }),
         axios.get(`${API_BASE}/groups`, { headers }),
         axios.get(`${API_BASE}/centers`, { headers }),
         axios.get(`${API_BASE}/loan-products`, { headers }),
-        axios.get(`${API_BASE}/penalty-rate`, { headers }),
         axios.get('/api/microfinance/loan-requests', { headers }),
       ]);
 
@@ -269,7 +260,6 @@ export default function MicrofinanceSettingsPage() {
       setGroups(groupRes.data);
       setCenters(centerRes.data);
       setLoanProducts(Array.isArray(loanProductRes.data) ? loanProductRes.data : []);
-      setPenaltySetting(penaltyRes.data);
       const loanRows = Array.isArray(loanRes.data) ? loanRes.data : [];
       setLoanLifecycleRows(
         loanRows
@@ -279,15 +269,6 @@ export default function MicrofinanceSettingsPage() {
           })
           .sort((a: LoanLifecycleRow, b: LoanLifecycleRow) => Number(b.id || 0) - Number(a.id || 0))
       );
-      if (penaltyRes.data) {
-        setPenaltyForm({
-          id: penaltyRes.data.id,
-          penalty_rate: String(penaltyRes.data.penalty_rate ?? ''),
-          is_active: penaltyRes.data.is_active ?? true,
-        });
-      } else {
-        setPenaltyForm({ id: 0, penalty_rate: '', is_active: true });
-      }
     } catch {
       openModal('Failed to load microfinance settings.', 'Error');
     }
@@ -317,16 +298,10 @@ export default function MicrofinanceSettingsPage() {
       interest_calculation_scheme: 'month',
       terms_count: '',
       refund_option: 'month',
+      penalty_grace_days: '2',
       assumed_month_days: '30',
       is_active: true,
     });
-  const resetPenaltyForm = () =>
-    setPenaltyForm({
-      id: penaltySetting?.id ?? 0,
-      penalty_rate: penaltySetting ? String(penaltySetting.penalty_rate ?? '') : '',
-      is_active: penaltySetting?.is_active ?? true,
-    });
-
   const submitRoute = async (e: React.FormEvent) => {
     e.preventDefault();
     setRouteLoading(true);
@@ -381,29 +356,6 @@ export default function MicrofinanceSettingsPage() {
     }
   };
 
-  const submitPenalty = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPenaltyLoading(true);
-    try {
-      const payload = {
-        penalty_rate: Number(penaltyForm.penalty_rate || 0),
-        is_active: penaltyForm.is_active,
-      };
-
-      if (penaltyForm.id) {
-        await axios.put(`${API_BASE}/penalty-rate/${penaltyForm.id}`, payload, { headers });
-      } else {
-        await axios.post(`${API_BASE}/penalty-rate`, payload, { headers });
-      }
-
-      await loadAll();
-    } catch {
-      openModal('Failed to save penalty rate setting.', 'Error');
-    } finally {
-      setPenaltyLoading(false);
-    }
-  };
-
   const submitLoanProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoanProductLoading(true);
@@ -432,6 +384,7 @@ export default function MicrofinanceSettingsPage() {
         interest_calculation_scheme: loanProductForm.interest_calculation_scheme,
         terms_count: Number(loanProductForm.terms_count || 0),
         refund_option: loanProductForm.refund_option,
+        penalty_grace_days: Number(loanProductForm.penalty_grace_days || 0),
         assumed_month_days: Number(loanProductForm.assumed_month_days || 30),
         is_active: loanProductForm.is_active,
       };
@@ -599,14 +552,8 @@ export default function MicrofinanceSettingsPage() {
       { label: 'Centers', value: centers.length, accent: 'text-sky-700', bg: 'from-sky-500/20 to-indigo-500/20' },
       { label: 'Groups', value: groups.length, accent: 'text-indigo-700', bg: 'from-indigo-500/20 to-violet-500/20' },
       { label: 'Loan Products', value: loanProducts.length, accent: 'text-violet-700', bg: 'from-violet-500/20 to-fuchsia-500/20' },
-      {
-        label: 'Penalty %',
-        value: Number(penaltySetting?.penalty_rate || 0).toFixed(2),
-        accent: 'text-emerald-700',
-        bg: 'from-emerald-500/20 to-teal-500/20',
-      },
     ],
-    [routes.length, centers.length, groups.length, loanProducts.length, penaltySetting?.penalty_rate]
+    [routes.length, centers.length, groups.length, loanProducts.length]
   );
   const visibleDashboardStats = dashboardStats.filter(
     (stat) => !hiddenWidgetKeys.has(`${widgetPrefix}stat_${String(stat.label).toLowerCase().replace(/[^a-z0-9]+/g, '_')}`)
@@ -681,7 +628,7 @@ export default function MicrofinanceSettingsPage() {
               Microfinance Admin
               </span>
               <h1 className="mt-3 text-2xl font-black tracking-tight text-slate-900 md:text-3xl">Settings Workspace</h1>
-              <p className="mt-1 text-sm text-slate-600">Create, organize, and maintain routes, centers, groups, penalty rules, and lifecycle controls.</p>
+              <p className="mt-1 text-sm text-slate-600">Create, organize, and maintain routes, centers, groups, loan products, and lifecycle controls.</p>
             </div>
             <button
               onClick={() => router.push('/dashboard/microfinance')}
@@ -691,7 +638,7 @@ export default function MicrofinanceSettingsPage() {
             </button>
           </div>
 
-          <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+          <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
             {visibleDashboardStats.map((stat) => (
               <div key={stat.label} className={`relative rounded-2xl border border-white/80 bg-gradient-to-r ${stat.bg} p-4`}>
                 <WidgetCloseGate>
@@ -1283,6 +1230,20 @@ export default function MicrofinanceSettingsPage() {
                   <option value="month">Month</option>
                 </select>
               </div>
+              <div className="space-y-1.5">
+                <label htmlFor="loan_product_penalty_grace_days" className={fieldLabelClass}>Grace Period (Days) *</label>
+                <input
+                  id="loan_product_penalty_grace_days"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={loanProductForm.penalty_grace_days}
+                  onChange={(e) => setLoanProductForm({ ...loanProductForm, penalty_grace_days: e.target.value })}
+                  placeholder="Enter grace period in days"
+                  className={inputClass}
+                  required
+                />
+              </div>
               {loanProductForm.refund_option === 'day' && (
                 <div className="space-y-1.5">
                   <label htmlFor="loan_product_assumed_month_days" className={fieldLabelClass}>Assumed Month Days *</label>
@@ -1331,6 +1292,7 @@ export default function MicrofinanceSettingsPage() {
                       <p className="text-xs text-slate-500 mt-1">
                         Interest: {formatRate(item.interest_rate)}% ({item.interest_type}, {item.interest_calculation_scheme || 'month'}) • Terms: {item.terms_count} • Refund: {item.refund_option}
                         {item.refund_option === 'month' ? ` (${Number(item.assumed_month_days || 30)} days)` : ''}
+                        {' '}• Grace: {Number(item.penalty_grace_days ?? 2)} day(s)
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         Loan Range: {item.min_loan_amount !== null && item.min_loan_amount !== undefined && String(item.min_loan_amount) !== '' ? Number(item.min_loan_amount).toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}
@@ -1381,6 +1343,10 @@ export default function MicrofinanceSettingsPage() {
                             interest_calculation_scheme: item.interest_calculation_scheme || 'month',
                             terms_count: String(item.terms_count ?? ''),
                             refund_option: item.refund_option,
+                            penalty_grace_days:
+                              item.penalty_grace_days === null || item.penalty_grace_days === undefined
+                                ? '2'
+                                : String(item.penalty_grace_days),
                             assumed_month_days: String(item.assumed_month_days ?? 30),
                             is_active: item.is_active,
                           })
@@ -1400,73 +1366,6 @@ export default function MicrofinanceSettingsPage() {
                 ))}
                 {!loanProducts.length && <p className="text-sm text-slate-500">No loan products yet.</p>}
               </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'penalty' && !hiddenWidgetKeys.has(`${widgetPrefix}tab_penalty`) && (
-          <div className="relative grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <WidgetCloseGate>
-              <button
-                type="button"
-                onClick={() => void hideWidget(`${widgetPrefix}tab_penalty`)}
-                className="absolute right-2 -top-2 z-10 inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-sm font-bold text-slate-600 shadow-sm transition hover:bg-rose-50 hover:text-rose-700"
-                aria-label="Hide penalty widget"
-              >
-                ×
-              </button>
-            </WidgetCloseGate>
-            <form onSubmit={submitPenalty} className={`${shellCardClass} p-6 md:p-7 space-y-4`}>
-              <h2 className="text-lg font-bold text-slate-900">{penaltyForm.id ? 'Update Penalty Rate' : 'Add Initial Penalty Rate'}</h2>
-              <p className="text-sm text-slate-600">
-                Create the initial late-payment penalty record first, then update it later when needed.
-              </p>
-              <div className="space-y-1.5">
-                <label htmlFor="penalty_rate" className={fieldLabelClass}>Penalty Rate (%) *</label>
-                <input
-                  id="penalty_rate"
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.01"
-                  value={penaltyForm.penalty_rate}
-                  onChange={(e) => setPenaltyForm({ ...penaltyForm, penalty_rate: e.target.value })}
-                  placeholder="Enter penalty rate"
-                  className={inputClass}
-                  required
-                />
-              </div>
-              <label htmlFor="penalty_is_active" className="flex items-center gap-2 text-sm text-slate-700">
-                <input
-                  id="penalty_is_active"
-                  type="checkbox"
-                  checked={penaltyForm.is_active}
-                  onChange={(e) => setPenaltyForm({ ...penaltyForm, is_active: e.target.checked })}
-                />
-                Active
-              </label>
-              <div className="flex gap-2">
-                <button disabled={penaltyLoading} className="rounded-xl bg-gradient-to-r from-cyan-600 to-sky-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition hover:from-cyan-700 hover:to-sky-700 disabled:opacity-70 disabled:cursor-not-allowed inline-flex items-center gap-2">
-                  {penaltyLoading && <span className="h-4 w-4 rounded-full border-2 border-white/40 border-t-white animate-spin"></span>}
-                  {penaltyLoading ? 'Saving...' : penaltyForm.id ? 'Update' : 'Add Initial Record'}
-                </button>
-                <button type="button" onClick={resetPenaltyForm} className="rounded-xl bg-slate-100 px-5 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-200">Reset</button>
-              </div>
-            </form>
-
-            <div className={`${shellCardClass} p-6 md:p-7`}>
-              <h2 className="text-lg font-bold text-slate-900 mb-4">Current Penalty Setting</h2>
-              {penaltySetting ? (
-                <div className="rounded-2xl border border-cyan-100/80 bg-white/90 p-4 shadow-sm">
-                  <p className="font-semibold text-slate-900">Late Payment Penalty</p>
-                  <p className="text-sm text-slate-600 mt-1">Rate: {Number(penaltySetting.penalty_rate || 0).toFixed(2)}%</p>
-                  <span className={`mt-2 inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${getStatusBadgeClass(penaltySetting.is_active ? 'active' : 'inactive')}`}>
-                    {penaltySetting.is_active ? 'Active' : 'Inactive'}
-                  </span>
-                </div>
-              ) : (
-                <p className="text-sm text-slate-500">No penalty setting found. Add the initial record from the form.</p>
-              )}
             </div>
           </div>
         )}

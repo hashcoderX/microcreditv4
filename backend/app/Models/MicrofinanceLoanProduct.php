@@ -25,6 +25,7 @@ class MicrofinanceLoanProduct extends Model
         'interest_calculation_scheme',
         'terms_count',
         'refund_option',
+        'penalty_grace_days',
         'assumed_month_days',
         'is_active',
     ];
@@ -39,6 +40,7 @@ class MicrofinanceLoanProduct extends Model
         'insurance_charge_percentage' => 'decimal:4',
         'interest_rate' => 'decimal:7',
         'terms_count' => 'integer',
+        'penalty_grace_days' => 'integer',
         'assumed_month_days' => 'integer',
         'is_active' => 'boolean',
     ];

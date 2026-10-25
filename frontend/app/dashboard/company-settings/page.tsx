@@ -34,7 +34,7 @@ import CompanyAccountingPanel from '@/app/components/accounting/CompanyAccountin
 import { resolveStorageAssetUrl } from '@/lib/api';
 import { useWidgetsFixed } from '@/lib/useWidgetsFixed';
 
-type SettingsSection = 'profile' | 'accounting' | 'templates' | 'holidays' | 'system' | 'sms' | 'whatsapp';
+type SettingsSection = 'profile' | 'accounting' | 'templates' | 'holidays' | 'penalty' | 'system' | 'sms' | 'whatsapp';
 
 const inputClass =
   'w-full rounded-xl border border-cyan-200/80 bg-white px-3.5 py-2.5 text-sm text-black shadow-sm transition focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-200/80 placeholder:text-slate-400 [color-scheme:light]';
@@ -409,9 +409,40 @@ const SECTION_TABS: { key: SettingsSection; label: string; icon: typeof Building
   { key: 'accounting', label: 'Company accounting', icon: Wallet },
   { key: 'templates', label: 'Document templates', icon: FileText },
   { key: 'holidays', label: 'Global holidays', icon: CalendarDays },
+  { key: 'penalty', label: 'Panelty settings', icon: AlertTriangle },
   { key: 'system', label: 'System admin', icon: Settings },
   { key: 'sms', label: 'SMS gateway', icon: MessageSquare },
   { key: 'whatsapp', label: 'WhatsApp gateway', icon: MessageCircle },
+];
+
+type PenaltyApplicableFor = 'microfinance' | 'finance' | 'mortgage';
+type PenaltyType = 'fixed_daily' | 'daily_percentage' | 'one_time' | 'monthly_percentage';
+
+type PenaltyRule = {
+  id: string;
+  identification: string;
+  applicable_for: PenaltyApplicableFor;
+  penalty_type: PenaltyType;
+  value_mode: 'amount' | 'percentage';
+  amount_or_rate: number;
+  is_active: boolean;
+};
+
+type PenaltyForm = {
+  id: string;
+  identification: string;
+  applicable_for: PenaltyApplicableFor;
+  penalty_type: PenaltyType;
+  value_mode: 'amount' | 'percentage';
+  amount_or_rate: string;
+  is_active: boolean;
+};
+
+const PENALTY_TYPE_OPTIONS: Array<{ value: PenaltyType; label: string; mode: 'amount' | 'rate' }> = [
+  { value: 'fixed_daily', label: 'Fixed Daily Penalty', mode: 'amount' },
+  { value: 'daily_percentage', label: 'Daily Percentage', mode: 'rate' },
+  { value: 'one_time', label: 'One-time Penalty', mode: 'amount' },
+  { value: 'monthly_percentage', label: 'Monthly Percentage Penalty', mode: 'rate' },
 ];
 
 type Company = {
@@ -567,6 +598,25 @@ export default function CompanySettingsPage() {
   const [holidays, setHolidays] = useState<MFHoliday[]>([]);
   const [holidayForm, setHolidayForm] = useState({ id: 0, holiday_date: '', name: '', note: '', is_active: true });
   const [holidaySaving, setHolidaySaving] = useState(false);
+  const [penaltyLoading, setPenaltyLoading] = useState(false);
+  const [penaltySaving, setPenaltySaving] = useState(false);
+  const [penaltyRules, setPenaltyRules] = useState<PenaltyRule[]>([]);
+  const [editingPenaltyId, setEditingPenaltyId] = useState<string | null>(null);
+  const [penaltyForm, setPenaltyForm] = useState<PenaltyForm>({
+    id: '',
+    identification: '',
+    applicable_for: 'microfinance',
+    penalty_type: 'fixed_daily',
+    value_mode: 'amount',
+    amount_or_rate: '',
+    is_active: true,
+  });
+  const [bulkPenaltyProduct, setBulkPenaltyProduct] = useState<PenaltyApplicableFor>('microfinance');
+  const [bulkPenaltyScheme, setBulkPenaltyScheme] = useState('');
+  const [bulkPenaltyApplying, setBulkPenaltyApplying] = useState(false);
+  const [bulkPenaltyProgressVisible, setBulkPenaltyProgressVisible] = useState(false);
+  const [bulkPenaltyProgress, setBulkPenaltyProgress] = useState(0);
+  const [bulkPenaltyProgressState, setBulkPenaltyProgressState] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
   const [activeSection, setActiveSection] = useState<SettingsSection>('profile');
   const [restoreWidgetsModal, setRestoreWidgetsModal] = useState<{
     open: boolean;
@@ -616,6 +666,40 @@ export default function CompanySettingsPage() {
     () => holidays.filter((item) => item.is_active).length,
     [holidays]
   );
+
+  const bulkPenaltySchemeOptions = useMemo(() => {
+    return penaltyRules
+      .filter((rule) => rule.is_active && rule.applicable_for === bulkPenaltyProduct)
+      .map((rule) => {
+        const rawId = String(rule.id || '').trim();
+        let value = '';
+        if (/^\d+$/.test(rawId)) {
+          value = `rule_${rawId}`;
+        } else if (/^rule_\d+$/i.test(rawId)) {
+          value = rawId.toLowerCase();
+        }
+
+        if (!value) return null;
+
+        const penaltyTypeLabelText =
+          PENALTY_TYPE_OPTIONS.find((item) => item.value === rule.penalty_type)?.label || rule.penalty_type;
+        const unit = rule.value_mode === 'percentage' ? '%' : '';
+        const valueText = `${rule.amount_or_rate.toLocaleString(undefined, { maximumFractionDigits: 4 })}${unit}`;
+        return {
+          value,
+          label: `${rule.identification} (${penaltyTypeLabelText} - ${valueText})`,
+        };
+      })
+      .filter((item): item is { value: string; label: string } => Boolean(item));
+  }, [penaltyRules, bulkPenaltyProduct]);
+
+  useEffect(() => {
+    setBulkPenaltyScheme((prev) =>
+      bulkPenaltySchemeOptions.some((option) => option.value === prev)
+        ? prev
+        : (bulkPenaltySchemeOptions[0]?.value ?? '')
+    );
+  }, [bulkPenaltySchemeOptions]);
 
   const countrySelectOptions = useMemo(() => {
     const trimmed = country.trim();
@@ -686,6 +770,35 @@ export default function CompanySettingsPage() {
 
   const resetHolidayForm = () => setHolidayForm({ id: 0, holiday_date: '', name: '', note: '', is_active: true });
 
+  const resetPenaltyForm = () => {
+    setEditingPenaltyId(null);
+    setPenaltyForm({
+      id: '',
+      identification: '',
+      applicable_for: 'microfinance',
+      penalty_type: 'fixed_daily',
+      value_mode: 'amount',
+      amount_or_rate: '',
+      is_active: true,
+    });
+  };
+
+  const defaultValueModeForPenaltyType = (type: PenaltyType): 'amount' | 'percentage' => {
+    if (type === 'daily_percentage' || type === 'monthly_percentage') return 'percentage';
+    return 'amount';
+  };
+
+  const penaltyTypeLabel = (value: PenaltyType): string => {
+    const found = PENALTY_TYPE_OPTIONS.find((item) => item.value === value);
+    return found ? found.label : value;
+  };
+
+  const penaltyScopeLabel = (value: PenaltyApplicableFor): string => {
+    if (value === 'microfinance') return 'Micro credit';
+    if (value === 'finance') return 'Finance';
+    return 'Mortgage';
+  };
+
   const fetchTemplates = async (authToken: string, companyId: number) => {
     try {
       const response = await axios.get(`/api/companies/${companyId}/document-templates`, {
@@ -709,6 +822,50 @@ export default function CompanySettingsPage() {
       setHolidays(rows);
     } catch {
       setHolidays([]);
+    }
+  };
+
+  const fetchPenaltySettings = async (authToken: string) => {
+    setPenaltyLoading(true);
+    try {
+      const response = await axios.get(`/api/system/penalty-settings`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+
+      const incoming = Array.isArray(response.data?.config?.rules) ? response.data.config.rules : [];
+      const normalized: PenaltyRule[] = incoming
+        .filter((row: any) => row && typeof row === 'object')
+        .map((row: any, index: number) => {
+          const penaltyType = String(row.penalty_type || '').trim() as PenaltyType;
+          const applicableFor = String(row.applicable_for || '').trim() as PenaltyApplicableFor;
+          const amount = Number(row.amount_or_rate ?? 0);
+          const idRaw = String(row.id || '').trim();
+          const identification = String(row.identification || '').trim();
+
+          return {
+            id: idRaw || `rule_${Date.now()}_${index}`,
+            identification: identification || `Rule ${index + 1}`,
+            applicable_for: ['microfinance', 'finance', 'mortgage'].includes(applicableFor) ? applicableFor : 'microfinance',
+            penalty_type: ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'].includes(penaltyType)
+              ? penaltyType
+              : 'fixed_daily',
+            value_mode: ['amount', 'percentage'].includes(String(row.value_mode || '').trim())
+              ? (String(row.value_mode || '').trim() as 'amount' | 'percentage')
+              : defaultValueModeForPenaltyType(
+                  ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'].includes(penaltyType)
+                    ? (penaltyType as PenaltyType)
+                    : 'fixed_daily'
+                ),
+            amount_or_rate: Number.isFinite(amount) ? Math.max(amount, 0) : 0,
+            is_active: Boolean(row.is_active ?? true),
+          };
+        });
+
+      setPenaltyRules(normalized);
+    } catch {
+      setPenaltyRules([]);
+    } finally {
+      setPenaltyLoading(false);
     }
   };
 
@@ -753,6 +910,7 @@ export default function CompanySettingsPage() {
     if (!token) return;
     fetchCompanies(token);
     fetchHolidays(token);
+    fetchPenaltySettings(token);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -1853,6 +2011,157 @@ export default function CompanySettingsPage() {
     }
   };
 
+  const handlePenaltyRuleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const identification = penaltyForm.identification.trim();
+    if (!identification) {
+      setNotice({ type: 'error', text: 'Identification is required.' });
+      return;
+    }
+
+    const amount = Number(penaltyForm.amount_or_rate || 0);
+    if (!Number.isFinite(amount) || amount < 0) {
+      setNotice({ type: 'error', text: 'Penalty amount/rate must be zero or higher.' });
+      return;
+    }
+
+    const nextRule: PenaltyRule = {
+      id: penaltyForm.id || `rule_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      identification,
+      applicable_for: penaltyForm.applicable_for,
+      penalty_type: penaltyForm.penalty_type,
+      value_mode: penaltyForm.value_mode,
+      amount_or_rate: Number(amount.toFixed(4)),
+      is_active: penaltyForm.is_active,
+    };
+
+    if (editingPenaltyId) {
+      setPenaltyRules((prev) => prev.map((item) => (item.id === editingPenaltyId ? nextRule : item)));
+      setNotice({ type: 'success', text: 'Penalty rule updated in draft. Click Save Panelty Settings.' });
+    } else {
+      setPenaltyRules((prev) => [...prev, nextRule]);
+      setNotice({ type: 'success', text: 'Penalty rule added in draft. Click Save Panelty Settings.' });
+    }
+
+    resetPenaltyForm();
+  };
+
+  const handlePenaltyEdit = (rule: PenaltyRule) => {
+    setEditingPenaltyId(rule.id);
+    setPenaltyForm({
+      id: rule.id,
+      identification: rule.identification,
+      applicable_for: rule.applicable_for,
+      penalty_type: rule.penalty_type,
+      value_mode: rule.value_mode,
+      amount_or_rate: String(rule.amount_or_rate),
+      is_active: rule.is_active,
+    });
+  };
+
+  const handlePenaltyDelete = (id: string) => {
+    setPenaltyRules((prev) => prev.filter((item) => item.id !== id));
+    if (editingPenaltyId === id) {
+      resetPenaltyForm();
+    }
+  };
+
+  const handleSavePenaltySettings = async () => {
+    if (!token) return;
+    setPenaltySaving(true);
+    setNotice(null);
+
+    try {
+      const response = await axios.post(
+        `/api/system/penalty-settings`,
+        {
+          rules: penaltyRules.map((rule) => ({
+            id: rule.id,
+            identification: rule.identification,
+            applicable_for: rule.applicable_for,
+            penalty_type: rule.penalty_type,
+            value_mode: rule.value_mode,
+            amount_or_rate: rule.amount_or_rate,
+            is_active: rule.is_active,
+          })),
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const savedRules = Array.isArray(response.data?.config?.rules) ? response.data.config.rules : [];
+      setPenaltyRules(savedRules as PenaltyRule[]);
+      setNotice({ type: 'success', text: response.data?.message || 'Penalty settings saved.' });
+    } catch (error: any) {
+      const validationErrors = error?.response?.data?.errors;
+      if (validationErrors) {
+        const message = Object.values(validationErrors).flat().join(' ');
+        setNotice({ type: 'error', text: message || 'Failed to save penalty settings.' });
+      } else {
+        setNotice({ type: 'error', text: error?.response?.data?.message || 'Failed to save penalty settings.' });
+      }
+    } finally {
+      setPenaltySaving(false);
+    }
+  };
+
+  const handleBulkPenaltySchemeUpdate = async () => {
+    if (!token) return;
+    if (!bulkPenaltyScheme) {
+      setNotice({ type: 'error', text: 'Select an active penalty rule first.' });
+      return;
+    }
+
+    setBulkPenaltyApplying(true);
+    setBulkPenaltyProgressVisible(true);
+    setBulkPenaltyProgressState('running');
+    setBulkPenaltyProgress(8);
+    setNotice(null);
+
+    const progressTimer = window.setInterval(() => {
+      setBulkPenaltyProgress((prev) => {
+        if (prev >= 90) return prev;
+        const delta = Math.max(2, Math.ceil((90 - prev) / 7));
+        return Math.min(90, prev + delta);
+      });
+    }, 180);
+
+    try {
+      const response = await axios.post(
+        `/api/system/penalty-settings/bulk-update`,
+        {
+          product: bulkPenaltyProduct,
+          penalty_scheme: bulkPenaltyScheme,
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const updatedCount = Number(response.data?.updated_count ?? 0);
+      const message = response.data?.message || 'Penalty scheme updated for existing loans.';
+      setBulkPenaltyProgress(100);
+      setBulkPenaltyProgressState('success');
+      setNotice({ type: 'success', text: `${message} Updated loans: ${updatedCount}.` });
+    } catch (error: any) {
+      const validationErrors = error?.response?.data?.errors;
+      setBulkPenaltyProgress(100);
+      setBulkPenaltyProgressState('error');
+      if (validationErrors) {
+        const message = Object.values(validationErrors).flat().join(' ');
+        setNotice({ type: 'error', text: message || 'Failed to update existing loan penalty scheme.' });
+      } else {
+        setNotice({ type: 'error', text: error?.response?.data?.message || 'Failed to update existing loan penalty scheme.' });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
+      setBulkPenaltyApplying(false);
+      window.setTimeout(() => {
+        setBulkPenaltyProgressVisible(false);
+        setBulkPenaltyProgress(0);
+        setBulkPenaltyProgressState('idle');
+      }, 900);
+    }
+  };
+
   if (!token) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50 flex items-center justify-center">
@@ -1893,6 +2202,7 @@ export default function CompanySettingsPage() {
                     if (token) {
                       fetchCompanies(token);
                       fetchHolidays(token);
+                      fetchPenaltySettings(token);
                       fetchSystemStatus(token);
                       fetchSmsGatewayConfig(token);
                       fetchWhatsappGatewayConfig(token);
@@ -2311,6 +2621,7 @@ export default function CompanySettingsPage() {
                         </tbody>
                       </table>
                     </div>
+
                   </div>
                 )}
 
@@ -2430,6 +2741,300 @@ export default function CompanySettingsPage() {
                           )}
                         </div>
                       </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeSection === 'penalty' && (
+                  <div className="space-y-5">
+                    <div className="rounded-2xl border border-amber-100 bg-gradient-to-r from-amber-50/80 to-orange-50/50 px-4 py-3">
+                      <p className="text-sm font-bold text-slate-900">Panelty settings</p>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Configure penalty rules by product type. Values are stored in the database and used by system calculations.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+                      <form onSubmit={handlePenaltyRuleSubmit} className="rounded-2xl border border-amber-100 bg-white p-5 space-y-4 shadow-sm">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="h-5 w-5 text-amber-700" />
+                          <h3 className="text-base font-bold text-slate-900">{editingPenaltyId ? 'Edit panelty rule' : 'Add panelty rule'}</h3>
+                        </div>
+
+                        <div>
+                          <label className={labelClass}>Identification</label>
+                          <input
+                            type="text"
+                            value={penaltyForm.identification}
+                            onChange={(e) => setPenaltyForm({ ...penaltyForm, identification: e.target.value })}
+                            placeholder="e.g. MF Daily 2%"
+                            className={inputClass}
+                            required
+                          />
+                        </div>
+
+                        <div>
+                          <label className={labelClass}>Applicable for</label>
+                          <select
+                            value={penaltyForm.applicable_for}
+                            onChange={(e) => setPenaltyForm({ ...penaltyForm, applicable_for: e.target.value as PenaltyApplicableFor })}
+                            className={inputClass}
+                          >
+                            <option value="microfinance">Micro credit</option>
+                            <option value="finance">Finance</option>
+                            <option value="mortgage">Mortgage</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className={labelClass}>Panelty type</label>
+                          <select
+                            value={penaltyForm.penalty_type}
+                            onChange={(e) => {
+                              const nextType = e.target.value as PenaltyType;
+                              setPenaltyForm({
+                                ...penaltyForm,
+                                penalty_type: nextType,
+                                value_mode: defaultValueModeForPenaltyType(nextType),
+                              });
+                            }}
+                            className={inputClass}
+                          >
+                            {PENALTY_TYPE_OPTIONS.map((item) => (
+                              <option key={item.value} value={item.value}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className={labelClass}>Value unit</label>
+                          <select
+                            value={penaltyForm.value_mode}
+                            onChange={(e) => setPenaltyForm({ ...penaltyForm, value_mode: e.target.value as 'amount' | 'percentage' })}
+                            className={inputClass}
+                          >
+                            <option value="amount">Amount</option>
+                            <option value="percentage">Percentage (%)</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className={labelClass}>Amount or rate</label>
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.0001"
+                            value={penaltyForm.amount_or_rate}
+                            onChange={(e) => setPenaltyForm({ ...penaltyForm, amount_or_rate: e.target.value })}
+                            placeholder="Enter value"
+                            className={inputClass}
+                            required
+                          />
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            Current unit: {penaltyForm.value_mode === 'percentage' ? 'Percentage (%)' : 'Amount'}.
+                          </p>
+                        </div>
+
+                        <label className="flex items-center gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={penaltyForm.is_active}
+                            onChange={(e) => setPenaltyForm({ ...penaltyForm, is_active: e.target.checked })}
+                            className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+                          />
+                          <span className="text-sm font-medium text-slate-700">Active rule</span>
+                        </label>
+
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            type="submit"
+                            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 px-4 py-2.5 text-sm font-bold text-white"
+                          >
+                            <Save className="h-4 w-4" />
+                            {editingPenaltyId ? 'Update rule' : 'Add rule'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={resetPenaltyForm}
+                            className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </form>
+
+                      <div className="rounded-2xl border border-amber-100 bg-white p-5 shadow-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <h3 className="text-base font-bold text-slate-900">Saved panelty rules (draft)</h3>
+                          <button
+                            type="button"
+                            onClick={handleSavePenaltySettings}
+                            disabled={penaltySaving || penaltyLoading}
+                            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-slate-700 to-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-60"
+                          >
+                            <Save className="h-3.5 w-3.5" />
+                            {penaltySaving ? 'Saving…' : 'Save Panelty Settings'}
+                          </button>
+                        </div>
+
+                        {penaltyLoading ? (
+                          <p className="mt-4 text-sm text-slate-500">Loading penalty rules…</p>
+                        ) : penaltyRules.length === 0 ? (
+                          <div className="mt-6 rounded-xl border border-dashed border-amber-200 bg-amber-50/40 p-4 text-center">
+                            <p className="text-sm font-semibold text-slate-700">No panelty rules yet</p>
+                            <p className="mt-1 text-xs text-slate-500">Add at least one rule and click Save Panelty Settings.</p>
+                          </div>
+                        ) : (
+                          <div className="mt-4 overflow-x-auto rounded-xl border border-slate-100">
+                            <table className="min-w-full text-sm text-left text-slate-700 bg-white">
+                              <thead className="bg-amber-50 text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                                <tr>
+                                  <th className="px-3 py-2">Identification</th>
+                                  <th className="px-3 py-2">Applicable</th>
+                                  <th className="px-3 py-2">Panelty type</th>
+                                  <th className="px-3 py-2">Unit</th>
+                                  <th className="px-3 py-2 text-right">Amount/Rate</th>
+                                  <th className="px-3 py-2">Status</th>
+                                  <th className="px-3 py-2 text-right">Action</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-amber-50">
+                                {penaltyRules.map((rule) => (
+                                  <tr key={rule.id} className="hover:bg-amber-50/40">
+                                    <td className="px-3 py-2 font-semibold text-slate-900">{rule.identification}</td>
+                                    <td className="px-3 py-2 font-semibold text-slate-900">{penaltyScopeLabel(rule.applicable_for)}</td>
+                                    <td className="px-3 py-2">{penaltyTypeLabel(rule.penalty_type)}</td>
+                                    <td className="px-3 py-2">{rule.value_mode === 'percentage' ? 'Percentage (%)' : 'Amount'}</td>
+                                    <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                                      {rule.amount_or_rate.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                      {rule.value_mode === 'percentage' ? '%' : ''}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <span
+                                        className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${
+                                          rule.is_active
+                                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                            : 'bg-slate-50 text-slate-600 border-slate-200'
+                                        }`}
+                                      >
+                                        {rule.is_active ? 'Active' : 'Inactive'}
+                                      </span>
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <div className="flex items-center justify-end gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => handlePenaltyEdit(rule)}
+                                          className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100"
+                                        >
+                                          <Pencil className="h-3.5 w-3.5" />
+                                          Edit
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handlePenaltyDelete(rule.id)}
+                                          className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                          Delete
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-cyan-100 bg-white p-5 shadow-sm">
+                      <div className="flex items-center gap-2">
+                        <RefreshCw className="h-5 w-5 text-cyan-700" />
+                        <h3 className="text-base font-bold text-slate-900">Update existing loans penalty scheme</h3>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-600">
+                        Select product and active rule, then apply in one click to update penalty_scheme for all existing loans of that product.
+                      </p>
+
+                      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                        <div>
+                          <label className={labelClass}>Product</label>
+                          <select
+                            value={bulkPenaltyProduct}
+                            onChange={(e) => setBulkPenaltyProduct(e.target.value as PenaltyApplicableFor)}
+                            className={inputClass}
+                          >
+                            <option value="microfinance">Micro credit</option>
+                            <option value="finance">Finance</option>
+                            <option value="mortgage">Mortgage</option>
+                          </select>
+                        </div>
+
+                        <div className="md:col-span-2">
+                          <label className={labelClass}>Penalty rule</label>
+                          <select
+                            value={bulkPenaltyScheme}
+                            onChange={(e) => setBulkPenaltyScheme(e.target.value)}
+                            className={inputClass}
+                            disabled={bulkPenaltySchemeOptions.length === 0}
+                          >
+                            {bulkPenaltySchemeOptions.length === 0 && <option value="">No active saved rules for selected product</option>}
+                            {bulkPenaltySchemeOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={handleBulkPenaltySchemeUpdate}
+                          disabled={bulkPenaltyApplying || !bulkPenaltyScheme}
+                          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-600 to-sky-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
+                        >
+                          <Save className="h-4 w-4" />
+                          {bulkPenaltyApplying ? 'Updating…' : 'Update all existing loans'}
+                        </button>
+                        <p className="text-xs text-slate-500">
+                          This updates all rows in selected product loan table.
+                        </p>
+                      </div>
+
+                      {bulkPenaltyProgressVisible && (
+                        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+                          <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold text-slate-700">
+                            <span>
+                              {bulkPenaltyProgressState === 'running'
+                                ? 'Updating loan penalty scheme...'
+                                : bulkPenaltyProgressState === 'success'
+                                  ? 'Update completed'
+                                  : bulkPenaltyProgressState === 'error'
+                                    ? 'Update failed'
+                                    : 'Preparing update...'}
+                            </span>
+                            <span>{Math.round(bulkPenaltyProgress)}%</span>
+                          </div>
+                          <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
+                            <div
+                              className={`h-full rounded-full transition-all duration-200 ${
+                                bulkPenaltyProgressState === 'error'
+                                  ? 'bg-gradient-to-r from-rose-500 to-red-600'
+                                  : bulkPenaltyProgressState === 'success'
+                                    ? 'bg-gradient-to-r from-emerald-500 to-green-600'
+                                    : 'bg-gradient-to-r from-cyan-500 to-sky-600'
+                              }`}
+                              style={{ width: `${Math.max(0, Math.min(100, bulkPenaltyProgress))}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

@@ -13,6 +13,7 @@ use App\Models\Finance;
 use App\Models\FinanceCollection;
 use App\Models\FinanceDocument;
 use App\Models\FinanceWorkflowEvent;
+use App\Models\LoanPenaltyRule;
 use App\Models\MicrofinanceActionCenterStepRole;
 use App\Models\Role;
 use App\Models\UserNotification;
@@ -58,6 +59,121 @@ class FinanceController extends Controller
 
     public function __construct(private readonly SpeedDraftCalculator $speedDraftCalculator)
     {
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function supportedFinancePenaltySchemeTypes(): array
+    {
+        return ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'];
+    }
+
+    /**
+     * @return array{scheme:string,value_mode:string,amount_or_rate:float}|null
+     */
+    private function resolveActiveFinancePenaltyRule(?string $scheme): ?array
+    {
+        $rawScheme = trim((string) $scheme);
+        $normalizedScheme = strtolower($rawScheme);
+
+        if (preg_match('/^rule_(\d+)$/i', $rawScheme, $matches) === 1) {
+            $ruleId = (int) ($matches[1] ?? 0);
+            if ($ruleId > 0) {
+                $rule = LoanPenaltyRule::query()
+                    ->where('id', $ruleId)
+                    ->where('applicable_for', 'finance')
+                    ->where('is_active', true)
+                    ->first();
+
+                if ($rule) {
+                    $type = strtolower(trim((string) ($rule->penalty_type ?? 'daily_percentage')));
+                    if (!in_array($type, $this->supportedFinancePenaltySchemeTypes(), true)) {
+                        $type = 'daily_percentage';
+                    }
+
+                    $defaultMode = in_array($type, ['daily_percentage', 'monthly_percentage'], true)
+                        ? 'percentage'
+                        : 'amount';
+                    $valueMode = strtolower(trim((string) ($rule->value_mode ?? $defaultMode)));
+                    if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+                        $valueMode = $defaultMode;
+                    }
+
+                    return [
+                        'scheme' => $type,
+                        'value_mode' => $valueMode,
+                        'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+                    ];
+                }
+            }
+        }
+
+        if (!in_array($normalizedScheme, $this->supportedFinancePenaltySchemeTypes(), true)) {
+            $normalizedScheme = 'daily_percentage';
+        }
+
+        $defaultValueMode = in_array($normalizedScheme, ['daily_percentage', 'monthly_percentage'], true)
+            ? 'percentage'
+            : 'amount';
+
+        $rule = LoanPenaltyRule::query()
+            ->where('applicable_for', 'finance')
+            ->where('penalty_type', $normalizedScheme)
+            ->where('is_active', true)
+            ->orderBy('display_order')
+            ->orderBy('id')
+            ->first();
+
+        if (!$rule) {
+            return null;
+        }
+
+        $valueMode = strtolower(trim((string) ($rule->value_mode ?? $defaultValueMode)));
+        if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+            $valueMode = $defaultValueMode;
+        }
+
+        return [
+            'scheme' => $normalizedScheme,
+            'value_mode' => $valueMode,
+            'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $repaymentPlan
+     * @return array<string, mixed>
+     */
+    private function normalizeFinanceRepaymentPenaltyScheme(array $repaymentPlan): array
+    {
+        $rawScheme = trim((string) ($repaymentPlan['penalty_scheme'] ?? ''));
+        $existingType = strtolower(trim((string) ($repaymentPlan['penalty_scheme_type'] ?? $repaymentPlan['penalty_type'] ?? '')));
+
+        $fallbackScheme = in_array($existingType, $this->supportedFinancePenaltySchemeTypes(), true)
+            ? $existingType
+            : 'daily_percentage';
+
+        $lookupScheme = $rawScheme !== '' ? $rawScheme : $fallbackScheme;
+        $rule = $this->resolveActiveFinancePenaltyRule($lookupScheme);
+        if ($rule === null) {
+            return $repaymentPlan;
+        }
+
+        $amountOrRate = round(max((float) ($rule['amount_or_rate'] ?? 0), 0), 4);
+        $schemeType = (string) ($rule['scheme'] ?? $fallbackScheme);
+        $valueMode = in_array((string) ($rule['value_mode'] ?? ''), ['amount', 'percentage'], true)
+            ? (string) $rule['value_mode']
+            : (in_array($schemeType, ['daily_percentage', 'monthly_percentage'], true) ? 'percentage' : 'amount');
+
+        $repaymentPlan['penalty_scheme'] = $rawScheme !== '' ? $rawScheme : $schemeType;
+        $repaymentPlan['penalty_scheme_type'] = $schemeType;
+        $repaymentPlan['penalty_type'] = $schemeType;
+        $repaymentPlan['penalty_value_mode'] = $valueMode;
+        $repaymentPlan['penalty_amount_or_rate'] = $amountOrRate;
+        $repaymentPlan['penalty_rate_percent'] = $valueMode === 'percentage' ? $amountOrRate : 0;
+
+        return $repaymentPlan;
     }
 
     private function isAdminUser(?object $user): bool
@@ -547,7 +663,7 @@ class FinanceController extends Controller
             ->orderBy('first_name')
             ->orderBy('last_name')
             ->get()
-            ->map(function (Employee $employee) {
+            ->map(function ($employee) {
                 $fullName = trim((string) ($employee->first_name ?? '') . ' ' . (string) ($employee->last_name ?? ''));
                 return [
                     'id' => (int) $employee->id,
@@ -745,6 +861,8 @@ class FinanceController extends Controller
             'down_payment' => ['nullable', 'numeric', 'min:0'],
             'interest_rate' => ['nullable', 'numeric', 'min:0'],
             'interest_type' => ['nullable', 'in:fixed,reducing'],
+            'arrears' => ['nullable', 'numeric', 'min:0'],
+            'penalty' => ['nullable', 'numeric', 'min:0'],
             'start_date' => ['nullable', 'date'],
             'next_due_date' => ['nullable', 'date'],
             'tenure_months' => ['nullable', 'integer', 'min:1', 'max:600'],
@@ -781,6 +899,8 @@ class FinanceController extends Controller
             || array_key_exists('down_payment', $validated)
             || array_key_exists('interest_rate', $validated)
             || array_key_exists('interest_type', $validated)
+            || array_key_exists('arrears', $validated)
+            || array_key_exists('penalty', $validated)
             || array_key_exists('responsible_officer_employee_id', $validated)
             || array_key_exists('vehicle_details', $validated)
             || array_key_exists('valuation_details', $validated)
@@ -838,6 +958,14 @@ class FinanceController extends Controller
 
         if (array_key_exists('interest_rate', $validated)) {
             $finance->setAttribute('interest_rate', round((float) $validated['interest_rate'], 4));
+        }
+
+        if (array_key_exists('arrears', $validated)) {
+            $finance->setAttribute('arrears', number_format((float) ($validated['arrears'] ?? 0), 2, '.', ''));
+        }
+
+        if (array_key_exists('penalty', $validated)) {
+            $finance->setAttribute('penalty', number_format((float) ($validated['penalty'] ?? 0), 2, '.', ''));
         }
 
         if (array_key_exists('tenure_months', $validated)) {
@@ -958,6 +1086,11 @@ class FinanceController extends Controller
                 $repaymentPlan['next_installment_index'] = 0;
                 $repaymentPlan['total_planned_amount'] = round(array_sum(array_map(static fn ($row) => (float) $row['amount'], $candidatePlanRows)), 2);
             }
+
+            $repaymentPlan = $this->normalizeFinanceRepaymentPenaltyScheme($repaymentPlan);
+            $finance->penalty_scheme = isset($repaymentPlan['penalty_scheme'])
+                ? (string) $repaymentPlan['penalty_scheme']
+                : null;
         }
 
         $repaymentPlan['approval_workflow'] = $this->normalizeFinanceApprovalWorkflowState($repaymentPlan['approval_workflow'] ?? $workflow);
@@ -2222,6 +2355,8 @@ class FinanceController extends Controller
             'down_payment' => ['nullable', 'numeric', 'min:0'],
             'interest_rate' => ['required', 'numeric', 'min:0'],
             'interest_type' => ['nullable', 'in:fixed,reducing'],
+            'arrears' => ['nullable', 'numeric', 'min:0'],
+            'penalty' => ['nullable', 'numeric', 'min:0'],
             'tenure_months' => ['required', 'integer', 'min:1'],
             'installment_frequency' => ['nullable', 'in:daily,weekly,monthly,quarterly,yearly'],
             'manual_installment_amount' => ['nullable', 'numeric', 'min:0.01'],
@@ -2338,6 +2473,8 @@ class FinanceController extends Controller
             ];
         }
 
+        $repaymentPlan = $this->normalizeFinanceRepaymentPenaltyScheme($repaymentPlan);
+
         $repaymentPlan['approval_workflow'] = $this->normalizeFinanceApprovalWorkflowState($repaymentPlan['approval_workflow'] ?? null);
 
         $isDraftLoan = self::isDraftLoanProductType((string) ($validated['product_type'] ?? ''));
@@ -2374,6 +2511,11 @@ class FinanceController extends Controller
                 'tenure_months' => $validated['tenure_months'],
                 'installment_frequency' => $effectiveFrequency,
                 'installment_amount' => $installmentAmount,
+                'arrears' => round((float) ($validated['arrears'] ?? 0), 2),
+                'penalty' => round((float) ($validated['penalty'] ?? 0), 2),
+                'penalty_scheme' => isset($repaymentPlan['penalty_scheme'])
+                    ? (string) $repaymentPlan['penalty_scheme']
+                    : null,
                 'status' => $initialStatus,
                 'start_date' => $validated['start_date'] ?? now()->toDateString(),
                 'branch_manager_user_id' => $branchManagerUserId,

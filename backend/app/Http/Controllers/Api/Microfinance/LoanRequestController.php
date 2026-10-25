@@ -16,7 +16,7 @@ use App\Models\MicrofinanceLoanGuarantor;
 use App\Models\MicrofinanceActionCenterStepRole;
 use App\Models\MicrofinanceLoanProduct;
 use App\Models\MicrofinanceLoanRequest;
-use App\Models\MicrofinancePenaltySetting;
+use App\Models\LoanPenaltyRule;
 use App\Models\MicrofinanceRoute;
 use App\Models\Role;
 use App\Models\SavingsAccount;
@@ -38,6 +38,113 @@ class LoanRequestController extends Controller
     private const LOAN_REQUEST_MIN_DOCUMENT_COMPLETION = 0;
     private const WORKFLOW_FINAL_STEP = 14;
     private const INDEX_CACHE_TTL_SECONDS = 20;
+
+    /**
+     * @return array<int, string>
+     */
+    private function supportedPenaltySchemeTypes(): array
+    {
+        return ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'];
+    }
+
+    private function penaltySchemeLabel(string $type): string
+    {
+        return match ($type) {
+            'fixed_daily' => 'Fixed Daily Penalty',
+            'daily_percentage' => 'Daily Percentage',
+            'one_time' => 'One-time Penalty',
+            'monthly_percentage' => 'Monthly Percentage Penalty',
+            default => 'Penalty Scheme',
+        };
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function defaultPenaltySchemeOptions(): array
+    {
+        return collect($this->supportedPenaltySchemeTypes())
+            ->map(fn (string $type) => [
+                'value' => $type,
+                'label' => $this->penaltySchemeLabel($type),
+                'value_mode' => null,
+                'amount_or_rate' => null,
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array{scheme:string,value_mode:string,amount_or_rate:float}|null
+     */
+    private function resolveActiveMicrofinancePenaltyRule(?string $scheme): ?array
+    {
+        $rawScheme = trim((string) $scheme);
+        $normalizedScheme = strtolower($rawScheme);
+
+        if (preg_match('/^rule_(\d+)$/i', $rawScheme, $matches) === 1) {
+            $ruleId = (int) ($matches[1] ?? 0);
+            if ($ruleId > 0) {
+                $rule = LoanPenaltyRule::query()
+                    ->where('id', $ruleId)
+                    ->where('applicable_for', 'microfinance')
+                    ->where('is_active', true)
+                    ->first();
+
+                if ($rule) {
+                    $type = strtolower(trim((string) ($rule->penalty_type ?? 'daily_percentage')));
+                    if (!in_array($type, $this->supportedPenaltySchemeTypes(), true)) {
+                        $type = 'daily_percentage';
+                    }
+
+                    $defaultMode = in_array($type, ['daily_percentage', 'monthly_percentage'], true)
+                        ? 'percentage'
+                        : 'amount';
+                    $valueMode = strtolower(trim((string) ($rule->value_mode ?? $defaultMode)));
+                    if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+                        $valueMode = $defaultMode;
+                    }
+
+                    return [
+                        'scheme' => $type,
+                        'value_mode' => $valueMode,
+                        'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+                    ];
+                }
+            }
+        }
+
+        if (!in_array($normalizedScheme, $this->supportedPenaltySchemeTypes(), true)) {
+            $normalizedScheme = 'daily_percentage';
+        }
+
+        $defaultValueMode = in_array($normalizedScheme, ['daily_percentage', 'monthly_percentage'], true)
+            ? 'percentage'
+            : 'amount';
+
+        $rule = LoanPenaltyRule::query()
+            ->where('applicable_for', 'microfinance')
+            ->where('penalty_type', $normalizedScheme)
+            ->where('is_active', true)
+            ->orderBy('display_order')
+            ->orderBy('id')
+            ->first();
+
+        if (!$rule) {
+            return null;
+        }
+
+        $valueMode = strtolower(trim((string) ($rule->value_mode ?? $defaultValueMode)));
+        if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+            $valueMode = $defaultValueMode;
+        }
+
+        return [
+            'scheme' => $normalizedScheme,
+            'value_mode' => $valueMode,
+            'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+        ];
+    }
 
     private function resolveTermMonths(int $termsCount, string $refundOption, int $assumedMonthDays): float
     {
@@ -2643,6 +2750,120 @@ class LoanRequestController extends Controller
 
             $loans = $query->get();
 
+            $penaltyRuleByType = [];
+            $penaltyRuleById = [];
+            $activePenaltyRules = LoanPenaltyRule::query()
+                ->where('applicable_for', 'microfinance')
+                ->where('is_active', true)
+                ->orderBy('display_order')
+                ->orderBy('id')
+                ->get(['id', 'penalty_type', 'value_mode', 'amount_or_rate']);
+
+            foreach ($activePenaltyRules as $rule) {
+                $type = strtolower(trim((string) ($rule->penalty_type ?? '')));
+                $ruleId = (int) ($rule->id ?? 0);
+                if ($type === '' || $ruleId <= 0) {
+                    continue;
+                }
+
+                $valueModeRaw = strtolower(trim((string) ($rule->value_mode ?? '')));
+                $defaultMode = in_array($type, ['daily_percentage', 'monthly_percentage'], true) ? 'percentage' : 'amount';
+                $valueMode = in_array($valueModeRaw, ['amount', 'percentage'], true) ? $valueModeRaw : $defaultMode;
+                $normalizedRule = [
+                    'value_mode' => $valueMode,
+                    'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+                    'penalty_type' => $type,
+                    'scheme_key' => 'rule_' . $ruleId,
+                ];
+
+                $penaltyRuleById[$ruleId] = $normalizedRule;
+
+                if (isset($penaltyRuleByType[$type])) {
+                    continue;
+                }
+
+                $penaltyRuleByType[$type] = $normalizedRule;
+            }
+
+            $loans->each(function ($loan) use ($penaltyRuleByType, $penaltyRuleById): void {
+                $rawScheme = trim((string) ($loan->penalty_scheme ?? ''));
+                $scheme = strtolower($rawScheme);
+                $rule = null;
+
+                if (preg_match('/^rule_(\d+)$/i', $rawScheme, $matches) === 1) {
+                    $ruleId = (int) ($matches[1] ?? 0);
+                    if ($ruleId > 0) {
+                        $rule = $penaltyRuleById[$ruleId] ?? null;
+                        if (is_array($rule) && !empty($rule['penalty_type'])) {
+                            $scheme = (string) $rule['penalty_type'];
+                        }
+                    }
+                }
+
+                if (!$rule) {
+                    if (!in_array($scheme, ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'], true)) {
+                        $scheme = 'daily_percentage';
+                    }
+                    $rule = $penaltyRuleByType[$scheme] ?? null;
+                }
+
+                $defaultMode = in_array($scheme, ['daily_percentage', 'monthly_percentage'], true)
+                    ? 'percentage'
+                    : 'amount';
+                $valueMode = strtolower(trim((string) ($rule['value_mode'] ?? $defaultMode)));
+                if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+                    $valueMode = $defaultMode;
+                }
+
+                $amountOrRate = isset($rule['amount_or_rate'])
+                    ? max((float) $rule['amount_or_rate'], 0)
+                    : max((float) ($loan->penalty_rate ?? 0), 0);
+
+                $loan->penalty_scheme = $rawScheme !== '' ? $rawScheme : $scheme;
+                $loan->penalty_scheme_type = $scheme;
+                $loan->penalty_value_mode = $valueMode;
+                $loan->penalty_amount_or_rate = $amountOrRate;
+
+                $penaltyLapseDays = 0;
+                $penaltyPreviewAmount = 0.0;
+                $dueDateRaw = trim((string) ($loan->due_date ?? ''));
+                $installmentAmount = max((float) ($loan->installment_amount ?? 0), 0);
+                $graceDays = max((int) ($loan->penalty_grace_days ?? 2), 0);
+
+                if ($dueDateRaw !== '' && $installmentAmount > 0 && $amountOrRate > 0) {
+                    try {
+                        $dueDate = (new \DateTimeImmutable($dueDateRaw))->setTime(0, 0, 0);
+                        $today = new \DateTimeImmutable('today');
+                        $dayDiff = (int) $dueDate->diff($today)->format('%r%a');
+
+                        if ($dayDiff > $graceDays) {
+                            $penaltyLapseDays = $dayDiff - $graceDays;
+
+                            if ($scheme === 'one_time') {
+                                $penaltyPreviewAmount = $valueMode === 'percentage'
+                                    ? ($installmentAmount * $amountOrRate) / 100
+                                    : $amountOrRate;
+                            } elseif ($scheme === 'monthly_percentage') {
+                                $lateMonths = $penaltyLapseDays / 30;
+                                $penaltyPreviewAmount = $valueMode === 'percentage'
+                                    ? ($installmentAmount * $amountOrRate * $lateMonths) / 100
+                                    : ($amountOrRate * $lateMonths);
+                            } else {
+                                $penaltyPreviewAmount = $valueMode === 'percentage'
+                                    ? ($installmentAmount * $amountOrRate * $penaltyLapseDays) / 100
+                                    : ($amountOrRate * $penaltyLapseDays);
+                            }
+                        }
+                    } catch (\Throwable) {
+                        $penaltyLapseDays = 0;
+                        $penaltyPreviewAmount = 0.0;
+                    }
+                }
+
+                $loan->penalty_lapse_days = max($penaltyLapseDays, 0);
+                $loan->penalty_preview_amount = round(max($penaltyPreviewAmount, 0), 2);
+            });
+
             if (!$compact) {
                 $loans->each(function (MicrofinanceLoanRequest $loan) use ($viewer) {
                     $currentStep = $this->resolveWorkflowStep($loan);
@@ -2926,6 +3147,55 @@ class LoanRequestController extends Controller
             'customer_no' => $customerNo,
             'registered_customer_count' => $registeredCustomerCount,
             'issued_loan_count' => $issuedLoanCount,
+        ]);
+    }
+
+    public function penaltySchemes(Request $request)
+    {
+        if (!Schema::hasTable('loan_penalty_rules')) {
+            return response()->json([
+                'source' => 'table_missing',
+                'schemes' => [],
+            ]);
+        }
+
+        $allowedTypes = $this->supportedPenaltySchemeTypes();
+        $schemes = [];
+
+        $rules = LoanPenaltyRule::query()
+            ->where('applicable_for', 'microfinance')
+            ->where('is_active', true)
+            ->orderBy('display_order')
+            ->orderBy('id')
+            ->get(['id', 'identification', 'penalty_type', 'value_mode', 'amount_or_rate']);
+
+        foreach ($rules as $rule) {
+            $penaltyType = strtolower(trim((string) ($rule->penalty_type ?? '')));
+            if (!in_array($penaltyType, $allowedTypes, true)) {
+                continue;
+            }
+
+            $valueMode = strtolower(trim((string) ($rule->value_mode ?? '')));
+            $labelBase = trim((string) ($rule->identification ?? ''));
+            $value = 'rule_' . (int) ($rule->id ?? 0);
+            if ($value === 'rule_0') {
+                continue;
+            }
+
+            $schemes[] = [
+                'value' => $value,
+                'penalty_type' => $penaltyType,
+                'label' => $labelBase !== ''
+                    ? ($labelBase . ' - ' . $this->penaltySchemeLabel($penaltyType))
+                    : $this->penaltySchemeLabel($penaltyType),
+                'value_mode' => in_array($valueMode, ['amount', 'percentage'], true) ? $valueMode : null,
+                'amount_or_rate' => is_numeric($rule->amount_or_rate ?? null) ? (float) $rule->amount_or_rate : null,
+            ];
+        }
+
+        return response()->json([
+            'source' => 'loan_penalty_rules',
+            'schemes' => $schemes,
         ]);
     }
 
@@ -3408,6 +3678,8 @@ class LoanRequestController extends Controller
             'interest_type' => 'required|in:flat,reducing',
             'interest_rate' => 'required|numeric|min:0',
             'terms_count' => 'required|integer|min:1',
+            'penalty_scheme' => 'nullable|string|max:64',
+            'penalty_grace_days' => 'nullable|integer|min:0|max:365',
             'refundable_amount' => 'required|numeric|min:0',
             'installment_amount' => 'required|numeric|min:0',
             'loan_balance' => 'nullable|numeric|min:0',
@@ -3571,6 +3843,9 @@ class LoanRequestController extends Controller
         $loanProduct = !empty($validated['loan_product_id'])
             ? MicrofinanceLoanProduct::query()->find((int) $validated['loan_product_id'])
             : null;
+        $resolvedGraceDays = array_key_exists('penalty_grace_days', $validated)
+            ? max(0, (int) ($validated['penalty_grace_days'] ?? 0))
+            : max(0, (int) ($loanProduct?->penalty_grace_days ?? 2));
 
         $resolvedDocumentCharges = $this->resolveDocumentChargesAmount(
             $loanAmount,
@@ -3640,7 +3915,7 @@ class LoanRequestController extends Controller
         }
 
         $customerPortalCredentials = null;
-        $loanRequest = DB::transaction(function () use ($request, $validated, $loanAmount, $totalCharges, $resolvedDocumentCharges, $resolvedExtraDocumentCharges, $managerEmployee, $scope, $routeId, $centerId, $groupId, $customerRecord, $customerNoForLoan, $customerNameForLoan, $customerNickNameForLoan, $customerNicForLoan, $customerAddressForLoan, $customerContactForLoan, $banking, $evaluationPayload, $evaluationPayloadVersion, &$customerPortalCredentials, $hasBankNameColumn, $hasBankBranchColumn, $hasBankAccountNoColumn, $resolvedBranchId) {
+        $loanRequest = DB::transaction(function () use ($request, $validated, $loanAmount, $totalCharges, $resolvedDocumentCharges, $resolvedExtraDocumentCharges, $resolvedGraceDays, $managerEmployee, $scope, $routeId, $centerId, $groupId, $customerRecord, $customerNoForLoan, $customerNameForLoan, $customerNickNameForLoan, $customerNicForLoan, $customerAddressForLoan, $customerContactForLoan, $banking, $evaluationPayload, $evaluationPayloadVersion, &$customerPortalCredentials, $hasBankNameColumn, $hasBankBranchColumn, $hasBankAccountNoColumn, $resolvedBranchId) {
             $createdBy = optional($request->user())->id ?? 1;
 
             $loanPayload = [
@@ -3670,6 +3945,8 @@ class LoanRequestController extends Controller
                 'interest_type' => $validated['interest_type'],
                 'interest_rate' => $validated['interest_rate'],
                 'terms_count' => $validated['terms_count'],
+                'penalty_scheme' => (string) ($validated['penalty_scheme'] ?? 'daily_percentage'),
+                'penalty_grace_days' => $resolvedGraceDays,
                 'refundable_amount' => $validated['refundable_amount'],
                 'installment_amount' => $validated['installment_amount'],
                 'document_charges' => $resolvedDocumentCharges,
@@ -3793,6 +4070,8 @@ class LoanRequestController extends Controller
             'interest_type' => 'required|in:flat,reducing',
             'interest_rate' => 'required|numeric|min:0',
             'terms_count' => 'required|integer|min:1',
+            'penalty_scheme' => 'nullable|string|max:64',
+            'penalty_grace_days' => 'nullable|integer|min:0|max:365',
             'refundable_amount' => 'required|numeric|min:0',
             'installment_amount' => 'required|numeric|min:0',
             'document_charges' => 'nullable|numeric|min:0',
@@ -3850,6 +4129,9 @@ class LoanRequestController extends Controller
         $loanProduct = !empty($validated['loan_product_id'])
             ? MicrofinanceLoanProduct::query()->find((int) $validated['loan_product_id'])
             : null;
+        $resolvedGraceDays = array_key_exists('penalty_grace_days', $validated)
+            ? max(0, (int) ($validated['penalty_grace_days'] ?? 0))
+            : max(0, (int) ($loanProduct?->penalty_grace_days ?? ($loanRequest->penalty_grace_days ?? 2)));
 
         $resolvedDocumentCharges = $this->resolveDocumentChargesAmount(
             $loanAmount,
@@ -3924,6 +4206,8 @@ class LoanRequestController extends Controller
             'interest_type' => $validated['interest_type'],
             'interest_rate' => $validated['interest_rate'],
             'terms_count' => $validated['terms_count'],
+            'penalty_scheme' => (string) ($validated['penalty_scheme'] ?? ($loanRequest->penalty_scheme ?? 'daily_percentage')),
+            'penalty_grace_days' => $resolvedGraceDays,
             'refundable_amount' => $validated['refundable_amount'],
             'installment_amount' => $validated['installment_amount'],
             'document_charges' => $resolvedDocumentCharges,
@@ -4207,14 +4491,10 @@ class LoanRequestController extends Controller
             ], 403);
         }
 
-        $penaltySetting = MicrofinancePenaltySetting::query()
-            ->where('is_active', true)
-            ->orderByDesc('id')
-            ->first();
-
-        if (!$penaltySetting) {
+        $penaltyRule = $this->resolveActiveMicrofinancePenaltyRule((string) ($loanRequest->penalty_scheme ?? 'daily_percentage'));
+        if (!$penaltyRule) {
             return response()->json([
-                'message' => 'Please configure an active penalty rate in Microfinance Settings before approving loans.'
+                'message' => 'Please configure an active penalty rule in Panelty settings before approving loans.'
             ], 422);
         }
 
@@ -4224,7 +4504,7 @@ class LoanRequestController extends Controller
             'loan_end_date' => ['nullable', 'date'],
         ]);
 
-        $graceDays = 2;
+        $graceDays = max((int) ($loanRequest->penalty_grace_days ?? 2), 0);
         $approveDate = !empty($validated['approval_date'])
             ? new \DateTimeImmutable((string) $validated['approval_date'])
             : new \DateTimeImmutable(date('Y-m-d'));
@@ -4270,7 +4550,7 @@ class LoanRequestController extends Controller
         $loanRequest->setAttribute('due_date', $dueDate);
         $loanRequest->loan_end_date = $loanEndDate;
         $loanRequest->arrears_balance = 0;
-        $loanRequest->penalty_rate = $penaltySetting->penalty_rate;
+        $loanRequest->penalty_rate = (float) ($penaltyRule['amount_or_rate'] ?? 0);
         $loanRequest->penalty_grace_days = $graceDays;
         $loanRequest->penalty_starts_on = $penaltyStartsOn;
         $loanRequest->save();
@@ -4300,14 +4580,10 @@ class LoanRequestController extends Controller
             ], 403);
         }
 
-        $penaltySetting = MicrofinancePenaltySetting::query()
-            ->where('is_active', true)
-            ->orderByDesc('id')
-            ->first();
-
-        if (!$penaltySetting) {
+        $penaltyRule = $this->resolveActiveMicrofinancePenaltyRule((string) ($loanRequest->penalty_scheme ?? 'daily_percentage'));
+        if (!$penaltyRule) {
             return response()->json([
-                'message' => 'Please configure an active penalty rate in Microfinance Settings before approving loans.'
+                'message' => 'Please configure an active penalty rule in Panelty settings before approving loans.'
             ], 422);
         }
 
@@ -4317,7 +4593,7 @@ class LoanRequestController extends Controller
             'loan_end_date' => ['nullable', 'date'],
         ]);
 
-        $graceDays = 2;
+        $graceDays = max((int) ($loanRequest->penalty_grace_days ?? 2), 0);
         $approveDate = !empty($validated['approval_date'])
             ? new \DateTimeImmutable((string) $validated['approval_date'])
             : new \DateTimeImmutable(date('Y-m-d'));
@@ -4363,7 +4639,7 @@ class LoanRequestController extends Controller
         $loanRequest->setAttribute('due_date', $dueDate);
         $loanRequest->loan_end_date = $loanEndDate;
         $loanRequest->arrears_balance = 0;
-        $loanRequest->penalty_rate = $penaltySetting->penalty_rate;
+        $loanRequest->penalty_rate = (float) ($penaltyRule['amount_or_rate'] ?? 0);
         $loanRequest->penalty_grace_days = $graceDays;
         $loanRequest->penalty_starts_on = $penaltyStartsOn;
         $loanRequest->save();

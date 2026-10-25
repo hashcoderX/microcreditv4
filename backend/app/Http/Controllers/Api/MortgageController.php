@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreMortgageRequest;
+use App\Models\LoanPenaltyRule;
 use App\Models\Mortgage;
 use App\Models\MortgageAsset;
 use App\Models\MortgageGuarantor;
@@ -12,6 +13,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use App\Models\MortgageSchedule;
 use App\Models\MortgagePayment;
@@ -27,6 +29,149 @@ use Illuminate\Support\Str;
 
 class MortgageController extends Controller
 {
+    /**
+     * @return array<int, string>
+     */
+    private function supportedPenaltySchemeTypes(): array
+    {
+        return ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'];
+    }
+
+    private function penaltySchemeLabel(string $type): string
+    {
+        return match ($type) {
+            'fixed_daily' => 'Fixed Daily Penalty',
+            'daily_percentage' => 'Daily Percentage',
+            'one_time' => 'One-time Penalty',
+            'monthly_percentage' => 'Monthly Percentage Penalty',
+            default => 'Penalty Scheme',
+        };
+    }
+
+    /**
+     * @return array{scheme_type:string,value_mode:string,amount_or_rate:float}|null
+     */
+    private function resolveMortgagePenaltyRule(?string $scheme): ?array
+    {
+        $rawScheme = trim((string) $scheme);
+        $normalizedScheme = strtolower($rawScheme);
+
+        if (!Schema::hasTable('loan_penalty_rules')) {
+            return null;
+        }
+
+        if (preg_match('/^rule_(\d+)$/i', $rawScheme, $matches) === 1) {
+            $ruleId = (int) ($matches[1] ?? 0);
+            if ($ruleId > 0) {
+                $rule = LoanPenaltyRule::query()
+                    ->where('id', $ruleId)
+                    ->where('applicable_for', 'mortgage')
+                    ->where('is_active', true)
+                    ->first();
+
+                if ($rule) {
+                    $type = strtolower(trim((string) ($rule->penalty_type ?? 'daily_percentage')));
+                    if (!in_array($type, $this->supportedPenaltySchemeTypes(), true)) {
+                        $type = 'daily_percentage';
+                    }
+
+                    $defaultMode = in_array($type, ['daily_percentage', 'monthly_percentage'], true)
+                        ? 'percentage'
+                        : 'amount';
+                    $valueMode = strtolower(trim((string) ($rule->value_mode ?? $defaultMode)));
+                    if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+                        $valueMode = $defaultMode;
+                    }
+
+                    return [
+                        'scheme_type' => $type,
+                        'value_mode' => $valueMode,
+                        'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+                    ];
+                }
+            }
+        }
+
+        if (!in_array($normalizedScheme, $this->supportedPenaltySchemeTypes(), true)) {
+            return null;
+        }
+
+        $rule = LoanPenaltyRule::query()
+            ->where('applicable_for', 'mortgage')
+            ->where('penalty_type', $normalizedScheme)
+            ->where('is_active', true)
+            ->orderBy('display_order')
+            ->orderBy('id')
+            ->first();
+
+        if (!$rule) {
+            return null;
+        }
+
+        $defaultMode = in_array($normalizedScheme, ['daily_percentage', 'monthly_percentage'], true)
+            ? 'percentage'
+            : 'amount';
+        $valueMode = strtolower(trim((string) ($rule->value_mode ?? $defaultMode)));
+        if (!in_array($valueMode, ['amount', 'percentage'], true)) {
+            $valueMode = $defaultMode;
+        }
+
+        return [
+            'scheme_type' => $normalizedScheme,
+            'value_mode' => $valueMode,
+            'amount_or_rate' => max((float) ($rule->amount_or_rate ?? 0), 0),
+        ];
+    }
+
+    public function penaltySchemes(Request $request): JsonResponse
+    {
+        if (!Schema::hasTable('loan_penalty_rules')) {
+            return response()->json([
+                'source' => 'table_missing',
+                'schemes' => [],
+            ]);
+        }
+
+        $allowedTypes = $this->supportedPenaltySchemeTypes();
+        $schemes = [];
+
+        $rules = LoanPenaltyRule::query()
+            ->where('applicable_for', 'mortgage')
+            ->where('is_active', true)
+            ->orderBy('display_order')
+            ->orderBy('id')
+            ->get(['id', 'identification', 'penalty_type', 'value_mode', 'amount_or_rate']);
+
+        foreach ($rules as $rule) {
+            $penaltyType = strtolower(trim((string) ($rule->penalty_type ?? '')));
+            if (!in_array($penaltyType, $allowedTypes, true)) {
+                continue;
+            }
+
+            $valueMode = strtolower(trim((string) ($rule->value_mode ?? '')));
+            $labelBase = trim((string) ($rule->identification ?? ''));
+            $value = 'rule_' . (int) ($rule->id ?? 0);
+            if ($value === 'rule_0') {
+                continue;
+            }
+
+            $schemes[] = [
+                'value' => $value,
+                'penalty_type' => $penaltyType,
+                'label' => $labelBase !== ''
+                    ? ($labelBase . ' - ' . $this->penaltySchemeLabel($penaltyType))
+                    : $this->penaltySchemeLabel($penaltyType),
+                'value_mode' => in_array($valueMode, ['amount', 'percentage'], true) ? $valueMode : null,
+                'amount_or_rate' => is_numeric($rule->amount_or_rate ?? null) ? (float) $rule->amount_or_rate : null,
+            ];
+        }
+
+        return response()->json([
+            'source' => 'loan_penalty_rules',
+            'schemes' => $schemes,
+        ]);
+    }
+
     private function generateUniqueMortgageQrCode(int $mortgageId): string
     {
         do {
@@ -306,6 +451,23 @@ class MortgageController extends Controller
         }
 
         $data = $query->paginate($perPage);
+
+        $data->getCollection()->transform(function (Mortgage $mortgage) {
+            $rule = $this->resolveMortgagePenaltyRule((string) ($mortgage->penalty_scheme ?? ''));
+            if ($rule) {
+                $mortgage->setAttribute('penalty_scheme_type', (string) ($rule['scheme_type'] ?? ''));
+                $mortgage->setAttribute('penalty_value_mode', (string) ($rule['value_mode'] ?? 'percentage'));
+                $mortgage->setAttribute('penalty_amount_or_rate', (float) ($rule['amount_or_rate'] ?? 0));
+            } else {
+                $fallbackRate = max((float) ($mortgage->penalty_rate ?? 0), 0);
+                $mortgage->setAttribute('penalty_scheme_type', null);
+                $mortgage->setAttribute('penalty_value_mode', 'percentage');
+                $mortgage->setAttribute('penalty_amount_or_rate', $fallbackRate);
+            }
+
+            return $mortgage;
+        });
+
         return response()->json($data);
     }
 
@@ -370,9 +532,16 @@ class MortgageController extends Controller
                 'installment_frequency' => $validated['installment_frequency'],
                 'interest_calculation_frequency' => $validated['interest_calculation_frequency'],
                 'installment_amount' => $installmentAmount,
+                'penalty_scheme' => isset($validated['penalty_scheme'])
+                    ? trim((string) $validated['penalty_scheme'])
+                    : null,
                 'penalty_rate' => $validated['penalty_rate'] ?? 0,
                 'processing_fee' => $validated['processing_fee'] ?? 0,
                 'insurance_fee' => $validated['insurance_fee'] ?? 0,
+                'start_date' => $validated['start_date'] ?? null,
+                'previous_mortgages' => isset($validated['previous_mortgages'])
+                    ? trim((string) $validated['previous_mortgages'])
+                    : null,
                 'status' => 'draft',
                 'created_by' => $user->id,
                 'entry_officer_name' => $entryOfficerName !== '' ? $entryOfficerName : null,
@@ -524,6 +693,18 @@ class MortgageController extends Controller
     {
         $mortgage = $this->resolveMortgageOrFail($request, $id, ['asset', 'valuation', 'guarantors']);
         $mortgage->loadSum('payments as total_paid_amount', 'amount');
+
+        $rule = $this->resolveMortgagePenaltyRule((string) ($mortgage->penalty_scheme ?? ''));
+        if ($rule) {
+            $mortgage->setAttribute('penalty_scheme_type', (string) ($rule['scheme_type'] ?? ''));
+            $mortgage->setAttribute('penalty_value_mode', (string) ($rule['value_mode'] ?? 'percentage'));
+            $mortgage->setAttribute('penalty_amount_or_rate', (float) ($rule['amount_or_rate'] ?? 0));
+        } else {
+            $fallbackRate = max((float) ($mortgage->penalty_rate ?? 0), 0);
+            $mortgage->setAttribute('penalty_scheme_type', null);
+            $mortgage->setAttribute('penalty_value_mode', 'percentage');
+            $mortgage->setAttribute('penalty_amount_or_rate', $fallbackRate);
+        }
 
         return response()->json($mortgage);
     }
@@ -741,9 +922,9 @@ class MortgageController extends Controller
         $customer = trim((string) (($mortgage->customer?->first_name ?? '') . ' ' . ($mortgage->customer?->last_name ?? '')));
         $customerCode = (string) ($mortgage->customer?->customer_code ?? 'NA');
         $asset = $mortgage->asset;
-        $totalAmount = (float) $payments->sum(static fn (MortgagePayment $payment) => (float) ($payment->amount ?? 0));
-        $totalInterest = (float) $payments->sum(static fn (MortgagePayment $payment) => (float) ($payment->interest_amount ?? 0));
-        $totalPrincipal = (float) $payments->sum(static fn (MortgagePayment $payment) => (float) ($payment->principal_amount ?? 0));
+        $totalAmount = (float) $payments->sum(static fn ($payment) => (float) ($payment->amount ?? 0));
+        $totalInterest = (float) $payments->sum(static fn ($payment) => (float) ($payment->interest_amount ?? 0));
+        $totalPrincipal = (float) $payments->sum(static fn ($payment) => (float) ($payment->principal_amount ?? 0));
 
         $rowsHtml = '';
         foreach ($payments as $payment) {

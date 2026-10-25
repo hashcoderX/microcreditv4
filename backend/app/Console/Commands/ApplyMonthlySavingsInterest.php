@@ -7,12 +7,56 @@ use App\Models\SavingsAccountTransaction;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class ApplyMonthlySavingsInterest extends Command
 {
+    private const SAVINGS_SETTINGS_KEY = 'savings_deposits_settings';
+
     protected $signature = 'savings:apply-monthly-interest {--date=} {--force : Run even if date is not month-end}';
 
     protected $description = 'Apply monthly interest to savings/fixed deposit accounts on month end';
+
+    /**
+     * @return array<string, float>
+     */
+    private function defaultInterestRates(): array
+    {
+        $defaults = [
+            'savings' => 4.5,
+            'current' => 0.0,
+            'fixed_deposit' => 10.5,
+            'investment' => 12.0,
+        ];
+
+        if (!Schema::hasTable('system_settings')) {
+            return $defaults;
+        }
+
+        $rawValue = DB::table('system_settings')
+            ->where('key', self::SAVINGS_SETTINGS_KEY)
+            ->value('value');
+
+        if (!is_string($rawValue) || trim($rawValue) === '') {
+            return $defaults;
+        }
+
+        $decoded = json_decode($rawValue, true);
+        if (!is_array($decoded)) {
+            return $defaults;
+        }
+
+        $matrix = is_array($decoded['default_interest_rates'] ?? null)
+            ? $decoded['default_interest_rates']
+            : [];
+
+        foreach ($defaults as $accountType => $fallbackRate) {
+            $rate = (float) ($matrix[$accountType] ?? $fallbackRate);
+            $defaults[$accountType] = round(max($rate, 0), 4);
+        }
+
+        return $defaults;
+    }
 
     public function handle(): int
     {
@@ -28,11 +72,11 @@ class ApplyMonthlySavingsInterest extends Command
 
         $periodKey = $asOfDate->format('Ym');
         $transactionDate = $asOfDate->toDateString();
+        $defaultRates = $this->defaultInterestRates();
 
         $eligibleAccounts = SavingsAccount::query()
             ->where('status', 'active')
-            ->whereIn('account_type', ['savings', 'fixed_deposit'])
-            ->where('interest_rate', '>', 0)
+            ->whereIn('account_type', ['savings', 'current', 'fixed_deposit', 'investment'])
             ->where('balance', '>', 0)
             ->orderBy('id')
             ->get();
@@ -53,8 +97,15 @@ class ApplyMonthlySavingsInterest extends Command
                 continue;
             }
 
+            $accountType = strtolower(trim((string) $account->account_type));
+            $annualRatePercent = (float) ($defaultRates[$accountType] ?? 0.0);
+            if ($annualRatePercent <= 0) {
+                $skipped++;
+                continue;
+            }
+
             $balanceBefore = round((float) $account->balance, 2);
-            $monthlyRate = (((float) $account->interest_rate) / 100) / 12;
+            $monthlyRate = ($annualRatePercent / 100) / 12;
             $interestAmount = round($balanceBefore * $monthlyRate, 2);
 
             if ($interestAmount <= 0) {
@@ -62,7 +113,7 @@ class ApplyMonthlySavingsInterest extends Command
                 continue;
             }
 
-            DB::transaction(function () use ($account, $balanceBefore, $interestAmount, $transactionDate, $periodKey) {
+            DB::transaction(function () use ($account, $balanceBefore, $interestAmount, $transactionDate, $periodKey, $annualRatePercent) {
                 $balanceAfter = round($balanceBefore + $interestAmount, 2);
 
                 SavingsAccountTransaction::create([
@@ -73,7 +124,7 @@ class ApplyMonthlySavingsInterest extends Command
                     'balance_after' => $balanceAfter,
                     'transaction_date' => $transactionDate,
                     'reference_no' => 'INT-' . $periodKey,
-                    'note' => 'Auto monthly interest credit',
+                    'note' => 'Auto month-end interest credit @ ' . number_format($annualRatePercent, 4, '.', '') . '% p.a. (default matrix)',
                     'created_by' => null,
                 ]);
 

@@ -55,6 +55,12 @@ type LoanRow = {
   workflow_step?: number | string;
   loan_request_date?: string | null;
   created_at?: string | null;
+  penalty_scheme?: 'fixed_daily' | 'daily_percentage' | 'one_time' | 'monthly_percentage' | string | null;
+  penalty_scheme_type?: 'fixed_daily' | 'daily_percentage' | 'one_time' | 'monthly_percentage' | string | null;
+  penalty_value_mode?: 'amount' | 'percentage' | string | null;
+  penalty_amount_or_rate?: number | string | null;
+  penalty_lapse_days?: number | string | null;
+  penalty_preview_amount?: number | string | null;
   penalty_rate?: number | string | null;
   penalty_grace_days?: number | string | null;
   due_date?: string | null;
@@ -207,6 +213,9 @@ export default function CollectionManagementPage() {
     installmentAmount: number;
     refundableAmount: number;
     dueDate: string;
+    penaltyScheme: 'fixed_daily' | 'daily_percentage' | 'one_time' | 'monthly_percentage';
+    penaltyValueMode: 'amount' | 'percentage';
+    penaltyAmountOrRate: number;
     penaltyRate: number;
     graceDays: number;
     note: string;
@@ -223,6 +232,9 @@ export default function CollectionManagementPage() {
     installmentAmount: 0,
     refundableAmount: 0,
     dueDate: '',
+    penaltyScheme: 'daily_percentage',
+    penaltyValueMode: 'percentage',
+    penaltyAmountOrRate: 0,
     penaltyRate: 0,
     graceDays: 0,
     note: '',
@@ -920,6 +932,8 @@ export default function CollectionManagementPage() {
     return Math.max(totalPayable - paidTotal, 0);
   };
 
+  const hasOutstandingBalance = (loan: LoanRow) => getOutstandingBalance(loan) > 0.0001;
+
   const hasCollectionOnDate = (loanId: number, dateKey: string) => {
     if (!dateKey) return false;
 
@@ -988,7 +1002,7 @@ export default function CollectionManagementPage() {
 
     if (refundOption === 'day') {
       next.setDate(next.getDate() + 1);
-      return alignToMeetingDay(next, meetingDay);
+      return next;
     }
 
     if (refundOption === 'week') {
@@ -1000,25 +1014,150 @@ export default function CollectionManagementPage() {
     return alignToMeetingDay(next, meetingDay);
   };
 
+  const parseLoanDate = (value?: string | null): Date | null => {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+
+    const datePart = raw.includes('T') ? raw.split('T')[0] : raw;
+    const parsed = new Date(`${datePart}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return null;
+
+    parsed.setHours(0, 0, 0, 0);
+    return parsed;
+  };
+
+  const resolveGraceDays = (value: number | string | null | undefined): number => {
+    const parsed = Number(value ?? 2);
+    if (!Number.isFinite(parsed) || parsed < 0) return 2;
+    return Math.floor(parsed);
+  };
+
   const getProjectedArrearsBalance = (loan: LoanRow) => {
     let balance = Number(loan.arrears_balance || 0);
     const installmentAmount = Number(loan.installment_amount || 0);
-    if (installmentAmount <= 0 || !loan.due_date) return balance;
+    if (installmentAmount <= 0) return balance;
 
-    let dueCursor = alignToMeetingDay(new Date(`${loan.due_date}T00:00:00`), loan.center?.meeting_day);
+    const dueDate = parseLoanDate(loan.due_date);
+    if (!dueDate) return balance;
+
+    const mode = String(loan.refund_option || 'month');
+
+    let dueCursor = new Date(dueDate);
+    if (mode !== 'day') {
+      dueCursor = alignToMeetingDay(dueCursor, loan.center?.meeting_day);
+    }
+
     if (Number.isNaN(dueCursor.getTime())) return balance;
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const mode = String(loan.refund_option || 'month');
+    const graceDays = resolveGraceDays(loan.penalty_grace_days);
+    let safeIterations = 0;
 
-    while (dueCursor <= today) {
+    while (safeIterations < 1200) {
+      const graceEnd = new Date(dueCursor);
+      graceEnd.setDate(graceEnd.getDate() + graceDays);
+      graceEnd.setHours(0, 0, 0, 0);
+
+      if (today <= graceEnd) {
+        break;
+      }
+
       balance += installmentAmount;
       dueCursor = shiftDateByRefundOption(dueCursor, mode, loan.center?.meeting_day);
+      safeIterations += 1;
     }
 
     return balance;
+  };
+
+  const getArrearsStatusText = (loan: LoanRow) => {
+    const dueDate = parseLoanDate(loan.due_date);
+    if (!dueDate) return 'No due date available';
+
+    const graceDays = resolveGraceDays(loan.penalty_grace_days);
+    const graceEnd = new Date(dueDate);
+    graceEnd.setDate(graceEnd.getDate() + graceDays);
+    graceEnd.setHours(0, 0, 0, 0);
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (today > graceEnd) {
+      const diffMs = today.getTime() - graceEnd.getTime();
+      const overdueDays = Math.max(1, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+      return `Overdue by ${overdueDays} day${overdueDays === 1 ? '' : 's'}`;
+    }
+
+    const arrearsStart = new Date(graceEnd);
+    arrearsStart.setDate(arrearsStart.getDate() + 1);
+    return `Grace ends ${formatDateDisplay(graceEnd.toISOString().slice(0, 10))} • Arrears from ${formatDateDisplay(arrearsStart.toISOString().slice(0, 10))}`;
+  };
+
+  const getPenaltyPreview = (loan: LoanRow) => {
+    const apiLateDays = Number(loan.penalty_lapse_days ?? NaN);
+    const apiPenaltyAmount = Number(loan.penalty_preview_amount ?? NaN);
+    if (Number.isFinite(apiLateDays) && Number.isFinite(apiPenaltyAmount)) {
+      return {
+        lateDays: Math.max(Math.trunc(apiLateDays), 0),
+        amount: Math.max(apiPenaltyAmount, 0),
+      };
+    }
+
+    const schemeRaw = String(loan.penalty_scheme_type || loan.penalty_scheme || '').trim().toLowerCase();
+    const penaltyScheme =
+      schemeRaw === 'fixed_daily' ||
+      schemeRaw === 'daily_percentage' ||
+      schemeRaw === 'one_time' ||
+      schemeRaw === 'monthly_percentage'
+        ? (schemeRaw as 'fixed_daily' | 'daily_percentage' | 'one_time' | 'monthly_percentage')
+        : 'daily_percentage';
+    const modeRaw = String(loan.penalty_value_mode || '').trim().toLowerCase();
+    const penaltyValueMode: 'amount' | 'percentage' = modeRaw === 'amount' || modeRaw === 'percentage'
+      ? (modeRaw as 'amount' | 'percentage')
+      : (penaltyScheme === 'daily_percentage' || penaltyScheme === 'monthly_percentage' ? 'percentage' : 'amount');
+    const penaltyAmountOrRate = Number(loan.penalty_amount_or_rate ?? loan.penalty_rate ?? 0);
+    const installment = Number(loan.installment_amount || 0);
+    const dueDate = parseLoanDate(loan.due_date);
+
+    if (!dueDate || penaltyAmountOrRate <= 0 || installment <= 0) {
+      return { lateDays: 0, amount: 0 };
+    }
+
+    const graceDays = resolveGraceDays(loan.penalty_grace_days);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const dayDiff = Math.floor((today.getTime() - dueDate.getTime()) / msPerDay);
+
+    if (dayDiff <= graceDays) {
+      return { lateDays: 0, amount: 0 };
+    }
+
+    const lateDays = dayDiff - graceDays;
+    let amount = 0;
+
+    if (penaltyScheme === 'one_time') {
+      amount = penaltyValueMode === 'percentage'
+        ? (installment * penaltyAmountOrRate) / 100
+        : penaltyAmountOrRate;
+    } else if (penaltyScheme === 'monthly_percentage') {
+      const lateMonths = lateDays / 30;
+      amount = penaltyValueMode === 'percentage'
+        ? (installment * penaltyAmountOrRate * lateMonths) / 100
+        : penaltyAmountOrRate * lateMonths;
+    } else {
+      amount = penaltyValueMode === 'percentage'
+        ? (installment * penaltyAmountOrRate * lateDays) / 100
+        : penaltyAmountOrRate * lateDays;
+    }
+
+    return {
+      lateDays,
+      amount,
+    };
   };
 
   const getExtraPayment = (loan: LoanRow) => {
@@ -1136,7 +1275,20 @@ export default function CollectionManagementPage() {
   };
 
   const hydrateCollectModalForLoan = useCallback((loan: LoanRow) => {
-    const graceDays = Number(loan.penalty_grace_days ?? 2);
+    const graceDays = resolveGraceDays(loan.penalty_grace_days);
+    const schemeRaw = String(loan.penalty_scheme_type || loan.penalty_scheme || '').trim().toLowerCase();
+    const penaltyScheme =
+      schemeRaw === 'fixed_daily' ||
+      schemeRaw === 'daily_percentage' ||
+      schemeRaw === 'one_time' ||
+      schemeRaw === 'monthly_percentage'
+        ? (schemeRaw as 'fixed_daily' | 'daily_percentage' | 'one_time' | 'monthly_percentage')
+        : 'daily_percentage';
+    const modeRaw = String(loan.penalty_value_mode || '').trim().toLowerCase();
+    const penaltyValueMode: 'amount' | 'percentage' = modeRaw === 'amount' || modeRaw === 'percentage'
+      ? (modeRaw as 'amount' | 'percentage')
+      : (penaltyScheme === 'daily_percentage' || penaltyScheme === 'monthly_percentage' ? 'percentage' : 'amount');
+    const configuredAmountOrRate = Number(loan.penalty_amount_or_rate ?? loan.penalty_rate ?? 0);
     const penaltyRate = Number(loan.penalty_rate ?? 0);
     const outstanding = getOutstandingBalance(loan);
     const suggestedAmount = Math.min(Number(loan.installment_amount || 0), outstanding);
@@ -1154,8 +1306,11 @@ export default function CollectionManagementPage() {
       installmentAmount: Number(loan.installment_amount || 0),
       refundableAmount: Number(loan.refundable_amount || 0),
       dueDate: loan.due_date || '',
+      penaltyScheme,
+      penaltyValueMode,
+      penaltyAmountOrRate: Number.isFinite(configuredAmountOrRate) ? Math.max(configuredAmountOrRate, 0) : 0,
       penaltyRate: Number.isFinite(penaltyRate) ? penaltyRate : 0,
-      graceDays: Number.isFinite(graceDays) && graceDays >= 0 ? graceDays : 0,
+      graceDays,
       note: '',
       date: new Date().toISOString().split('T')[0],
     }));
@@ -1547,7 +1702,7 @@ export default function CollectionManagementPage() {
       .filter((loan) => {
         if (loan.loan_scope !== 'route_loan') return false;
         const routeId = Number(loan.route?.id ?? loan.mf_route_id ?? 0);
-        return routeId > 0;
+        return routeId > 0 && isActiveCollectionLoan(loan);
       })
       .forEach((loan) => {
         const { routeId, routeName, routeCode } = getRouteMeta(loan);
@@ -1586,13 +1741,9 @@ export default function CollectionManagementPage() {
   const getLoanServerPaidTotal = (loan: LoanRow) =>
     Number(loan.total_paid_amount ?? loan.collections_sum_collected_amount ?? 0);
 
-  const isActiveCollectionLoan = (loan: LoanRow) => {
-    const refundableAmount = Number(loan.refundable_amount || 0);
-    if (refundableAmount <= 0) return false;
-
-    const paidTotal = getLoanServerPaidTotal(loan);
-    return refundableAmount - paidTotal > 0.0001;
-  };
+  function isActiveCollectionLoan(loan: LoanRow) {
+    return hasOutstandingBalance(loan);
+  }
 
   const centerCollections = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -1794,7 +1945,9 @@ export default function CollectionManagementPage() {
 
     const rows = filteredScopedLoans.filter(
       (loan) =>
-        loan.loan_scope === 'route_loan' && Number(loan.route?.id ?? loan.mf_route_id ?? 0) === selectedRouteId
+        loan.loan_scope === 'route_loan' &&
+        Number(loan.route?.id ?? loan.mf_route_id ?? 0) === selectedRouteId &&
+        isActiveCollectionLoan(loan)
     );
 
     if (!keyword) return rows;
@@ -1820,23 +1973,23 @@ export default function CollectionManagementPage() {
     if (activeMode === 'today') {
       return filteredLoans.filter((loan) => {
         const dueDate = String(loan.due_date || '').slice(0, 10);
-        return dueDate === todayDate;
+        return dueDate === todayDate && isActiveCollectionLoan(loan);
       });
     }
 
     if (activeMode === 'next') {
       return filteredLoans.filter((loan) => {
         const dueDate = String(loan.due_date || '').slice(0, 10);
-        return dueDate === debtTargetDate;
+        return dueDate === debtTargetDate && isActiveCollectionLoan(loan);
       });
     }
 
-    if (activeMode !== 'office') return filteredLoans;
-    if (!officeDebtDate) return filteredLoans;
+    if (activeMode !== 'office') return filteredLoans.filter(isActiveCollectionLoan);
+    if (!officeDebtDate) return filteredLoans.filter(isActiveCollectionLoan);
 
     return filteredLoans.filter((loan) => {
       const dueDate = String(loan.due_date || '').slice(0, 10);
-      return dueDate === officeDebtDate;
+      return dueDate === officeDebtDate && isActiveCollectionLoan(loan);
     });
   }, [activeMode, officeDebtDate, filteredLoans, todayDate, debtTargetDate]);
 
@@ -2044,6 +2197,9 @@ export default function CollectionManagementPage() {
       installmentAmount: 0,
       refundableAmount: 0,
       dueDate: '',
+      penaltyScheme: 'daily_percentage',
+      penaltyValueMode: 'percentage',
+      penaltyAmountOrRate: 0,
       penaltyRate: 0,
       graceDays: 0,
       note: '',
@@ -2465,7 +2621,7 @@ export default function CollectionManagementPage() {
       return { lateDays: 0, penaltyAmount: 0 };
     }
 
-    if (!collectModal.dueDate || !collectModal.date || collectModal.penaltyRate <= 0) {
+    if (!collectModal.dueDate || !collectModal.date || collectModal.penaltyAmountOrRate <= 0) {
       return { lateDays: 0, penaltyAmount: 0 };
     }
 
@@ -2484,7 +2640,21 @@ export default function CollectionManagementPage() {
     }
 
     const lateDays = dayDiff - collectModal.graceDays;
-    const penaltyAmount = (collectModal.installmentAmount * collectModal.penaltyRate * lateDays) / 100;
+    let penaltyAmount = 0;
+    if (collectModal.penaltyScheme === 'one_time') {
+      penaltyAmount = collectModal.penaltyValueMode === 'percentage'
+        ? (collectModal.installmentAmount * collectModal.penaltyAmountOrRate) / 100
+        : collectModal.penaltyAmountOrRate;
+    } else if (collectModal.penaltyScheme === 'monthly_percentage') {
+      const lateMonths = lateDays / 30;
+      penaltyAmount = collectModal.penaltyValueMode === 'percentage'
+        ? (collectModal.installmentAmount * collectModal.penaltyAmountOrRate * lateMonths) / 100
+        : collectModal.penaltyAmountOrRate * lateMonths;
+    } else {
+      penaltyAmount = collectModal.penaltyValueMode === 'percentage'
+        ? (collectModal.installmentAmount * collectModal.penaltyAmountOrRate * lateDays) / 100
+        : collectModal.penaltyAmountOrRate * lateDays;
+    }
 
     return {
       lateDays,
@@ -2494,9 +2664,11 @@ export default function CollectionManagementPage() {
     collectModal.open,
     collectModal.dueDate,
     collectModal.date,
-    collectModal.penaltyRate,
+    collectModal.penaltyAmountOrRate,
     collectModal.graceDays,
     collectModal.installmentAmount,
+    collectModal.penaltyScheme,
+    collectModal.penaltyValueMode,
   ]);
 
   const buildLocalMfReceipt = useCallback(
@@ -3545,6 +3717,8 @@ export default function CollectionManagementPage() {
                           {isColumnVisible('main_paid_total') && renderColumnHeader('main_paid_total', 'Paid Total')}
                           {isColumnVisible('main_outstanding') && renderColumnHeader('main_outstanding', 'Outstanding')}
                           {isColumnVisible('main_arrears') && renderColumnHeader('main_arrears', 'Arrears')}
+                          {isColumnVisible('main_lapse_days') && renderColumnHeader('main_lapse_days', 'Lapse Days')}
+                          {isColumnVisible('main_penalty_preview') && renderColumnHeader('main_penalty_preview', 'Penalty')}
                           {isColumnVisible('main_extra_payment') && renderColumnHeader('main_extra_payment', 'Extra Payment')}
                           {isColumnVisible('main_today_col') && renderColumnHeader('main_today_col', 'Today Col')}
                           {isColumnVisible('main_due_date') && renderColumnHeader('main_due_date', 'Due Date')}
@@ -3597,6 +3771,12 @@ export default function CollectionManagementPage() {
                               )}
                               {isColumnVisible('main_arrears') && (
                                 <td className="px-3 py-2 text-red-700 font-semibold">{getArrearsAmount(loan).toFixed(2)}</td>
+                              )}
+                              {isColumnVisible('main_lapse_days') && (
+                                <td className="px-3 py-2 text-amber-700 font-semibold">{getPenaltyPreview(loan).lateDays}</td>
+                              )}
+                              {isColumnVisible('main_penalty_preview') && (
+                                <td className="px-3 py-2 text-rose-700 font-semibold">{getPenaltyPreview(loan).amount.toFixed(2)}</td>
                               )}
                               {isColumnVisible('main_extra_payment') && (
                                 <td className="px-3 py-2 text-violet-700 font-semibold">{getExtraPayment(loan).toFixed(2)}</td>
@@ -3710,6 +3890,8 @@ export default function CollectionManagementPage() {
                           {isColumnVisible('route_paid_total') && renderColumnHeader('route_paid_total', 'Paid Total')}
                           {isColumnVisible('route_outstanding') && renderColumnHeader('route_outstanding', 'Outstanding')}
                           {isColumnVisible('route_arrears') && renderColumnHeader('route_arrears', 'Arrears')}
+                          {isColumnVisible('route_lapse_days') && renderColumnHeader('route_lapse_days', 'Lapse Days')}
+                          {isColumnVisible('route_penalty_preview') && renderColumnHeader('route_penalty_preview', 'Penalty')}
                           {isColumnVisible('route_extra_payment') && renderColumnHeader('route_extra_payment', 'Extra Payment')}
                           {isColumnVisible('route_today_col') && renderColumnHeader('route_today_col', 'Today Col')}
                           {isColumnVisible('route_due_date') && renderColumnHeader('route_due_date', 'Due Date')}
@@ -3752,6 +3934,12 @@ export default function CollectionManagementPage() {
                               )}
                               {isColumnVisible('route_arrears') && (
                                 <td className="px-3 py-2 text-red-700 font-semibold">{getArrearsAmount(loan).toFixed(2)}</td>
+                              )}
+                              {isColumnVisible('route_lapse_days') && (
+                                <td className="px-3 py-2 text-amber-700 font-semibold">{getPenaltyPreview(loan).lateDays}</td>
+                              )}
+                              {isColumnVisible('route_penalty_preview') && (
+                                <td className="px-3 py-2 text-rose-700 font-semibold">{getPenaltyPreview(loan).amount.toFixed(2)}</td>
                               )}
                               {isColumnVisible('route_extra_payment') && (
                                 <td className="px-3 py-2 text-violet-700 font-semibold">{getExtraPayment(loan).toFixed(2)}</td>
@@ -3826,6 +4014,8 @@ export default function CollectionManagementPage() {
                         {isColumnVisible('office_paid_total') && renderColumnHeader('office_paid_total', 'Paid Total')}
                         {isColumnVisible('office_outstanding') && renderColumnHeader('office_outstanding', 'Outstanding')}
                         {isColumnVisible('office_arrears') && renderColumnHeader('office_arrears', 'Arrears')}
+                        {isColumnVisible('office_lapse_days') && renderColumnHeader('office_lapse_days', 'Lapse Days')}
+                        {isColumnVisible('office_penalty_preview') && renderColumnHeader('office_penalty_preview', 'Penalty')}
                         {isColumnVisible('office_extra_payment') && renderColumnHeader('office_extra_payment', 'Extra Payment')}
                         {isColumnVisible('office_today_col') && renderColumnHeader('office_today_col', 'Today Col')}
                         {isColumnVisible('office_due_date') && renderColumnHeader('office_due_date', 'Due Date')}
@@ -3859,6 +4049,12 @@ export default function CollectionManagementPage() {
                           )}
                           {isColumnVisible('office_arrears') && (
                             <td className="px-3 py-2 text-red-700 font-semibold">{getArrearsAmount(loan).toFixed(2)}</td>
+                          )}
+                          {isColumnVisible('office_lapse_days') && (
+                            <td className="px-3 py-2 text-amber-700 font-semibold">{getPenaltyPreview(loan).lateDays}</td>
+                          )}
+                          {isColumnVisible('office_penalty_preview') && (
+                            <td className="px-3 py-2 text-rose-700 font-semibold">{getPenaltyPreview(loan).amount.toFixed(2)}</td>
                           )}
                           {isColumnVisible('office_extra_payment') && (
                             <td className="px-3 py-2 text-violet-700 font-semibold">{getExtraPayment(loan).toFixed(2)}</td>
@@ -4209,8 +4405,14 @@ export default function CollectionManagementPage() {
                     <p className="font-semibold text-slate-800">{formatDateDisplay(collectModal.dueDate)}</p>
                   </div>
                   <div>
-                    <p className="uppercase text-slate-500">Penalty Rate</p>
-                    <p className="font-semibold text-slate-800">{collectModal.penaltyRate.toFixed(2)}%</p>
+                    <p className="uppercase text-slate-500">Penalty Scheme</p>
+                    <p className="font-semibold text-slate-800">{collectModal.penaltyScheme.replaceAll('_', ' ')}</p>
+                  </div>
+                  <div>
+                    <p className="uppercase text-slate-500">Penalty Config</p>
+                    <p className="font-semibold text-slate-800">
+                      {collectModal.penaltyAmountOrRate.toFixed(4)}{collectModal.penaltyValueMode === 'percentage' ? '%' : ''}
+                    </p>
                   </div>
                   <div>
                     <p className="uppercase text-slate-500">Grace Days</p>
@@ -4431,8 +4633,9 @@ export default function CollectionManagementPage() {
         )}
 
         {loanDetailsModal.open && loanDetailsModal.loan && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 backdrop-blur-sm px-4 py-6">
-            <div className="w-full max-w-4xl overflow-hidden rounded-3xl border border-cyan-100 bg-white shadow-[0_30px_90px_-35px_rgba(15,23,42,0.75)]">
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/55 backdrop-blur-sm px-3 py-4 sm:px-4 sm:py-6">
+            <div className="mx-auto flex min-h-full w-full max-w-5xl items-start sm:items-center justify-center">
+              <div className="w-full max-h-[94vh] overflow-hidden rounded-2xl sm:rounded-3xl border border-cyan-100 bg-white shadow-[0_30px_90px_-35px_rgba(15,23,42,0.75)] flex flex-col">
               <div className="relative bg-gradient-to-r from-cyan-600 via-sky-500 to-blue-500 px-5 py-5 text-white">
                 <div className="absolute -right-8 -top-8 h-24 w-24 rounded-full bg-white/20 blur-2xl"></div>
                 <div className="flex items-start justify-between gap-3">
@@ -4455,8 +4658,8 @@ export default function CollectionManagementPage() {
                 </div>
               </div>
 
-              <div className="p-5 bg-gradient-to-b from-cyan-50/35 to-white">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm text-slate-700">
+              <div className="flex-1 overflow-y-auto p-4 sm:p-5 bg-gradient-to-b from-cyan-50/35 to-white">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 text-sm text-slate-700">
                   <div className="rounded-xl border border-cyan-100 bg-cyan-50/70 p-3 md:col-span-3">
                     <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-700">Responsible Officers</p>
                     <div className="mt-2 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5">
@@ -4495,7 +4698,13 @@ export default function CollectionManagementPage() {
 
                   <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-3"><p className="text-xs text-emerald-700">Paid Total</p><p className="font-extrabold text-emerald-700">{getPaidTotal(loanDetailsModal.loan.id).toFixed(2)}</p></div>
                   <div className="rounded-xl border border-rose-100 bg-rose-50/60 p-3"><p className="text-xs text-rose-700">Outstanding Balance</p><p className="font-extrabold text-rose-700">{getOutstandingBalance(loanDetailsModal.loan).toFixed(2)}</p></div>
-                  <div className="rounded-xl border border-amber-100 bg-amber-50/60 p-3"><p className="text-xs text-amber-700">Arrears</p><p className="font-extrabold text-amber-700">{getArrearsAmount(loanDetailsModal.loan).toFixed(2)}</p></div>
+                  <div className="rounded-xl border border-amber-100 bg-amber-50/60 p-3"><p className="text-xs text-amber-700">Arrears</p><p className="font-extrabold text-amber-700">{getArrearsAmount(loanDetailsModal.loan).toFixed(2)}</p><p className="mt-1 text-[11px] text-amber-800/80">{getArrearsStatusText(loanDetailsModal.loan)}</p></div>
+
+                  <div className="rounded-xl border border-rose-100 bg-rose-50/60 p-3">
+                    <p className="text-xs text-rose-700">Penalty (as of today)</p>
+                    <p className="font-extrabold text-rose-700">{getPenaltyPreview(loanDetailsModal.loan).amount.toFixed(2)}</p>
+                    <p className="mt-1 text-[11px] text-rose-800/80">Late days: {getPenaltyPreview(loanDetailsModal.loan).lateDays}</p>
+                  </div>
 
                   <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3"><p className="text-xs text-violet-700">Extra Payment</p><p className="font-extrabold text-violet-700">{getExtraPayment(loanDetailsModal.loan).toFixed(2)}</p></div>
                   <div className="rounded-xl border border-cyan-100 bg-white p-3"><p className="text-xs text-slate-500">Due Date</p><p className="font-semibold">{formatDateDisplay(loanDetailsModal.loan.due_date)}</p></div>
@@ -4515,11 +4724,11 @@ export default function CollectionManagementPage() {
                 </div>
               </div>
 
-              <div className="border-t border-cyan-100 bg-white px-5 py-4 flex justify-end gap-2">
+              <div className="border-t border-cyan-100 bg-white px-4 sm:px-5 py-4 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
                 <button
                   type="button"
                   onClick={closeLoanDetailsModal}
-                  className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold"
+                  className="w-full sm:w-auto px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold"
                 >
                   Close
                 </button>
@@ -4527,7 +4736,7 @@ export default function CollectionManagementPage() {
                   <button
                     type="button"
                     onClick={() => openEarlySettlementModal(loanDetailsModal.loan as LoanRow)}
-                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-red-500 text-white text-sm font-semibold"
+                    className="w-full sm:w-auto px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-red-500 text-white text-sm font-semibold"
                   >
                     Settle Early
                   </button>
@@ -4538,11 +4747,12 @@ export default function CollectionManagementPage() {
                     closeLoanDetailsModal();
                     openCollectModal(loanDetailsModal.loan as LoanRow);
                   }}
-                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-sm font-semibold"
+                  className="w-full sm:w-auto px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white text-sm font-semibold"
                 >
                   Collect From This Loan
                 </button>
               </div>
+            </div>
             </div>
           </div>
         )}

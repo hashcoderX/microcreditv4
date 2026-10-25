@@ -42,6 +42,11 @@ type AuthUser = {
   roles?: Array<{ id?: number; name?: string }>;
 };
 
+type SavingsValidationSettings = {
+  minimum_hold_amount: number;
+  maximum_daily_withdrawal_amount: number;
+};
+
 function amount(v: unknown): string {
   const n = Number(v);
   if (!Number.isFinite(n)) return '-';
@@ -115,6 +120,7 @@ export default function SavingsTransactionsPage() {
   const [postingWithdrawal, setPostingWithdrawal] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [validationSettings, setValidationSettings] = useState<SavingsValidationSettings | null>(null);
 
   const [depositAmount, setDepositAmount] = useState('');
   const [depositDate, setDepositDate] = useState('');
@@ -258,6 +264,33 @@ export default function SavingsTransactionsPage() {
     }
   };
 
+  const loadValidationSettings = async (authToken: string) => {
+    try {
+      const response = await axios.get('/api/system/savings-deposits-settings', {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          Accept: 'application/json',
+        },
+      });
+
+      const config = response.data?.config;
+      if (!config || typeof config !== 'object') {
+        setValidationSettings({ minimum_hold_amount: 0, maximum_daily_withdrawal_amount: 0 });
+        return;
+      }
+
+      const minimumHoldAmount = Number((config as { minimum_hold_amount?: unknown }).minimum_hold_amount ?? 0);
+      const maximumDailyWithdrawalAmount = Number((config as { maximum_daily_withdrawal_amount?: unknown }).maximum_daily_withdrawal_amount ?? 0);
+
+      setValidationSettings({
+        minimum_hold_amount: Number.isFinite(minimumHoldAmount) ? Math.max(minimumHoldAmount, 0) : 0,
+        maximum_daily_withdrawal_amount: Number.isFinite(maximumDailyWithdrawalAmount) ? Math.max(maximumDailyWithdrawalAmount, 0) : 0,
+      });
+    } catch {
+      setValidationSettings(null);
+    }
+  };
+
   const loadTransactions = async (authToken: string, accountId: number) => {
     setLoadingTransactions(true);
     try {
@@ -286,6 +319,7 @@ export default function SavingsTransactionsPage() {
   useEffect(() => {
     if (!token) return;
     loadAccounts(token);
+    void loadValidationSettings(token);
   }, [token]);
 
   useEffect(() => {
@@ -377,6 +411,40 @@ export default function SavingsTransactionsPage() {
     if (!Number.isFinite(value) || value <= 0) {
       setErrorMessage('Transaction amount must be a valid value greater than zero.');
       return;
+    }
+
+    if (type === 'withdrawal') {
+      const currentBalance = Number(selectedAccount?.balance ?? 0);
+      if (Number.isFinite(currentBalance) && value > currentBalance) {
+        setErrorMessage('Insufficient balance for withdrawal.');
+        return;
+      }
+
+      if (validationSettings) {
+        const minimumHold = Math.max(Number(validationSettings.minimum_hold_amount || 0), 0);
+        const remainingBalance = currentBalance - value;
+        if (Number.isFinite(currentBalance) && remainingBalance < minimumHold) {
+          setErrorMessage(`Withdrawal would breach minimum hold amount of ${minimumHold.toFixed(2)}.`);
+          return;
+        }
+
+        const maximumDaily = Math.max(Number(validationSettings.maximum_daily_withdrawal_amount || 0), 0);
+        if (maximumDaily > 0) {
+          const transactionDate = String(withdrawDate || new Date().toISOString().slice(0, 10));
+          const alreadyWithdrawnForDate = transactions.reduce((sum, row) => {
+            if (row.transaction_type !== 'withdrawal') return sum;
+            const rowDate = String(row.transaction_date || '').slice(0, 10);
+            if (rowDate !== transactionDate) return sum;
+            const rowAmount = Number(row.amount || 0);
+            return sum + (Number.isFinite(rowAmount) ? rowAmount : 0);
+          }, 0);
+
+          if ((alreadyWithdrawnForDate + value) > maximumDaily) {
+            setErrorMessage(`Daily withdrawal limit exceeded. Maximum allowed is ${maximumDaily.toFixed(2)}.`);
+            return;
+          }
+        }
+      }
     }
 
     try {

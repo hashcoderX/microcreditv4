@@ -40,7 +40,13 @@ type ViewMode = 'table' | 'cards';
 
 type MortgageRow = {
   id: number;
+  start_date?: string | null;
   due_date?: string | null;
+  penalty_scheme?: string | null;
+  penalty_scheme_type?: string | null;
+  penalty_value_mode?: 'amount' | 'percentage' | string | null;
+  penalty_amount_or_rate?: number | string | null;
+  penalty_rate?: number | string | null;
   arrears_amount?: number | string | null;
   due_amount?: number | string | null;
   due_interest_amount?: number | string | null;
@@ -146,6 +152,21 @@ function statusTone(status: string): 'success' | 'warning' | 'info' | 'default' 
   if (s === 'arrears') return 'warning';
   if (s === 'approved') return 'info';
   return 'default';
+}
+
+function formatPenaltyValue(row: MortgageRow): string {
+  const mode = String(row.penalty_value_mode || '').toLowerCase();
+  const configured = toNumber(row.penalty_amount_or_rate);
+  const fallback = toNumber(row.penalty_rate);
+  const value = Number.isFinite(configured) ? configured : fallback;
+
+  if (!Number.isFinite(value)) return '—';
+
+  if (mode === 'amount') {
+    return formatAmount(value);
+  }
+
+  return `${value.toFixed(2)}%`;
 }
 
 export default function MortgageCollectionsPage() {
@@ -745,6 +766,18 @@ export default function MortgageCollectionsPage() {
     },
     { key: 'paid_amount', label: 'Paid Amount', tdClassName: 'text-sm font-bold text-violet-800', render: (row) => formatAmount(row.total_paid_amount ?? 0) },
     {
+      key: 'penalty',
+      label: 'Penalty',
+      tdClassName: 'text-sm font-bold text-amber-800',
+      render: (row) => formatPenaltyValue(row),
+    },
+    {
+      key: 'start_date',
+      label: 'Start Date',
+      tdClassName: 'text-sm font-semibold text-slate-900',
+      render: (row) => formatDate(row.start_date),
+    },
+    {
       key: 'due_date',
       label: 'Due Date',
       render: (row) => {
@@ -1163,6 +1196,8 @@ export default function MortgageCollectionsPage() {
                       </div>
 
                       <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2 text-xs text-slate-600">
+                        Start: <span className="font-bold text-slate-900">{formatDate(row.start_date)}</span>
+                        {' • '}
                         Principal due: <span className="font-bold text-slate-900">{formatAmount(row.due_amount ?? 0)}</span>
                         {' • '}
                         Paid: <span className="font-bold text-violet-800">{formatAmount(row.total_paid_amount ?? 0)}</span>
@@ -1250,6 +1285,7 @@ export default function MortgageCollectionsPage() {
                     { label: 'Due Interest', value: formatAmount(detailsRow.due_interest_amount ?? 0), tone: 'text-amber-700' },
                     { label: 'Paid Amount', value: formatAmount(detailsRow.total_paid_amount ?? 0), tone: 'text-violet-800' },
                     { label: 'Installment', value: formatAmount(detailsRow.installment_amount), tone: 'text-emerald-700' },
+                    { label: 'Penalty', value: formatPenaltyValue(detailsRow), tone: 'text-amber-800' },
                   ].map((item) => (
                     <div key={item.label} className="rounded-xl border border-slate-100 bg-slate-50/80 p-3">
                       <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{item.label}</p>
@@ -1272,6 +1308,7 @@ export default function MortgageCollectionsPage() {
                     <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Loan Terms</p>
                     <p className="text-sm text-slate-700 capitalize">Type: {detailsRow.mortgage_type || '—'}</p>
                     <p className="text-sm text-slate-700">Approved: {formatAmount(detailsRow.approved_amount)}</p>
+                    <p className="text-sm text-slate-700">Start Date: {formatDate(detailsRow.start_date)}</p>
                     <p className="text-sm text-slate-700">
                       Interest: {Number.isFinite(toNumber(detailsRow.interest_rate)) ? `${toNumber(detailsRow.interest_rate).toFixed(2)}%` : '—'} ({detailsRow.interest_type || '—'})
                     </p>

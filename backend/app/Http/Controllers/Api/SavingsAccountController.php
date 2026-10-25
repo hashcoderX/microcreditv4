@@ -449,7 +449,7 @@ class SavingsAccountController extends Controller
             'to_date' => ['nullable', 'date'],
             'account_type' => ['nullable', 'in:' . implode(',', self::ACCOUNT_TYPES)],
             'status' => ['nullable', 'in:active,dormant,closed'],
-            'transaction_type' => ['nullable', 'in:deposit,withdrawal'],
+            'transaction_type' => ['nullable', 'in:deposit,withdrawal,interest_credit'],
             'search' => ['nullable', 'string', 'max:120'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:200'],
         ]);
@@ -523,11 +523,15 @@ class SavingsAccountController extends Controller
             'total_transactions' => (int) (clone $summaryQuery)->count(),
             'total_deposits' => (float) ((clone $summaryQuery)->where('transaction_type', 'deposit')->sum('amount') ?: 0),
             'total_withdrawals' => (float) ((clone $summaryQuery)->where('transaction_type', 'withdrawal')->sum('amount') ?: 0),
+            'total_interest_credits' => (float) ((clone $summaryQuery)->where('transaction_type', 'interest_credit')->sum('amount') ?: 0),
             'accounts_touched' => (int) (clone $summaryQuery)->distinct('savings_account_id')->count('savings_account_id'),
             'latest_transaction_date' => (clone $summaryQuery)->max('transaction_date'),
         ];
 
-        $summary['net_movement'] = round((float) $summary['total_deposits'] - (float) $summary['total_withdrawals'], 2);
+        $summary['net_movement'] = round(
+            ((float) $summary['total_deposits'] + (float) $summary['total_interest_credits']) - (float) $summary['total_withdrawals'],
+            2,
+        );
 
         $records = $baseQuery->paginate($perPage);
 
