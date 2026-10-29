@@ -107,6 +107,20 @@ type JsPdfAutoTable = (
 
 const API_BASE = getApiBaseUrl();
 const ISSUED_STATUSES = new Set(['approved', 'released']);
+const LOANS_CACHE_KEY = 'mf_customer_payment_history_loans_v1';
+const HISTORY_CACHE_KEY_PREFIX = 'mf_customer_payment_history_history_v1';
+const LOANS_CACHE_TTL_MS = 2 * 60 * 1000;
+const HISTORY_CACHE_TTL_MS = 2 * 60 * 1000;
+
+type LoansCachePayload = {
+  cachedAt: string;
+  rows: IssuedLoanRow[];
+};
+
+type HistoryCachePayload = {
+  cachedAt: string;
+  rows: HistoryRow[];
+};
 
 const formatMoney = (value: number) => Number(value || 0).toFixed(2);
 
@@ -185,6 +199,11 @@ export default function CustomerPaymentHistoryReportPage() {
   const [token, setToken] = useState('');
   const [loansLoading, setLoansLoading] = useState(true);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyRefreshing, setHistoryRefreshing] = useState(false);
+  const [loansProgressVisible, setLoansProgressVisible] = useState(false);
+  const [loansProgress, setLoansProgress] = useState(0);
+  const [historyProgressVisible, setHistoryProgressVisible] = useState(false);
+  const [historyProgress, setHistoryProgress] = useState(0);
   const [issuedLoans, setIssuedLoans] = useState<IssuedLoanRow[]>([]);
   const [paymentHistory, setPaymentHistory] = useState<HistoryRow[]>([]);
   const [selectedLoanId, setSelectedLoanId] = useState<number | null>(null);
@@ -210,6 +229,56 @@ export default function CustomerPaymentHistoryReportPage() {
     [token]
   );
 
+  const loadLoansFromCache = useCallback((): IssuedLoanRow[] | null => {
+    if (typeof window === 'undefined') return null;
+    const raw = sessionStorage.getItem(LOANS_CACHE_KEY);
+    if (!raw) return null;
+
+    try {
+      const payload = JSON.parse(raw) as LoansCachePayload;
+      const cachedAt = new Date(String(payload.cachedAt || '')).getTime();
+      if (!Number.isFinite(cachedAt)) return null;
+      if (Date.now() - cachedAt > LOANS_CACHE_TTL_MS) return null;
+      return Array.isArray(payload.rows) ? payload.rows : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const saveLoansToCache = useCallback((rows: IssuedLoanRow[]) => {
+    if (typeof window === 'undefined') return;
+    const payload: LoansCachePayload = {
+      cachedAt: new Date().toISOString(),
+      rows,
+    };
+    sessionStorage.setItem(LOANS_CACHE_KEY, JSON.stringify(payload));
+  }, []);
+
+  const loadHistoryFromCache = useCallback((loanId: number): HistoryRow[] | null => {
+    if (typeof window === 'undefined') return null;
+    const raw = sessionStorage.getItem(`${HISTORY_CACHE_KEY_PREFIX}_${loanId}`);
+    if (!raw) return null;
+
+    try {
+      const payload = JSON.parse(raw) as HistoryCachePayload;
+      const cachedAt = new Date(String(payload.cachedAt || '')).getTime();
+      if (!Number.isFinite(cachedAt)) return null;
+      if (Date.now() - cachedAt > HISTORY_CACHE_TTL_MS) return null;
+      return Array.isArray(payload.rows) ? payload.rows : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const saveHistoryToCache = useCallback((loanId: number, rows: HistoryRow[]) => {
+    if (typeof window === 'undefined') return;
+    const payload: HistoryCachePayload = {
+      cachedAt: new Date().toISOString(),
+      rows,
+    };
+    sessionStorage.setItem(`${HISTORY_CACHE_KEY_PREFIX}_${loanId}`, JSON.stringify(payload));
+  }, []);
+
   useEffect(() => {
     const storedToken = localStorage.getItem('token');
     if (!storedToken) {
@@ -224,7 +293,23 @@ export default function CustomerPaymentHistoryReportPage() {
     if (!token) return;
 
     const loadIssuedLoans = async () => {
-      setLoansLoading(true);
+      const cachedRows = loadLoansFromCache();
+      if (cachedRows && cachedRows.length > 0) {
+        setIssuedLoans(cachedRows);
+        setLoansLoading(false);
+      } else {
+        setLoansLoading(true);
+      }
+
+      setLoansProgressVisible(true);
+      setLoansProgress(12);
+      const progressTimer = window.setInterval(() => {
+        setLoansProgress((prev) => {
+          if (prev >= 88) return prev;
+          return Math.min(88, prev + Math.max(2, Math.ceil((88 - prev) / 6)));
+        });
+      }, 160);
+
       try {
         const loanRes = await axios.get(`${API_BASE}/microfinance/loan-requests`, { headers });
         const loansRaw: LoanApiRow[] = Array.isArray(loanRes.data)
@@ -264,15 +349,25 @@ export default function CustomerPaymentHistoryReportPage() {
           .sort((a, b) => b.id - a.id);
 
         setIssuedLoans(mapped);
+        saveLoansToCache(mapped);
+        setLoansProgress(100);
       } catch {
-        setIssuedLoans([]);
+        if (!cachedRows) {
+          setIssuedLoans([]);
+        }
+        setLoansProgress(100);
       } finally {
+        window.clearInterval(progressTimer);
         setLoansLoading(false);
+        window.setTimeout(() => {
+          setLoansProgressVisible(false);
+          setLoansProgress(0);
+        }, 450);
       }
     };
 
     loadIssuedLoans();
-  }, [token, headers]);
+  }, [token, headers, loadLoansFromCache, saveLoansToCache]);
 
   useEffect(() => {
     if (!isHistoryModalOpen) return;
@@ -307,8 +402,25 @@ export default function CustomerPaymentHistoryReportPage() {
       setHistorySearch('');
       setFromDate('');
       setToDate('');
-      setHistoryLoading(true);
-      setPaymentHistory([]);
+      const cachedRows = loadHistoryFromCache(loan.id);
+      if (cachedRows && cachedRows.length > 0) {
+        setPaymentHistory(cachedRows);
+        setHistoryLoading(false);
+        setHistoryRefreshing(true);
+      } else {
+        setHistoryLoading(true);
+        setHistoryRefreshing(false);
+        setPaymentHistory([]);
+      }
+
+      setHistoryProgressVisible(true);
+      setHistoryProgress(10);
+      const progressTimer = window.setInterval(() => {
+        setHistoryProgress((prev) => {
+          if (prev >= 90) return prev;
+          return Math.min(90, prev + Math.max(2, Math.ceil((90 - prev) / 7)));
+        });
+      }, 150);
 
       try {
         const requests = [
@@ -360,13 +472,24 @@ export default function CustomerPaymentHistoryReportPage() {
           });
 
         setPaymentHistory(mapped);
+        saveHistoryToCache(loan.id, mapped);
+        setHistoryProgress(100);
       } catch {
-        setPaymentHistory([]);
+        if (!cachedRows) {
+          setPaymentHistory([]);
+        }
+        setHistoryProgress(100);
       } finally {
+        window.clearInterval(progressTimer);
         setHistoryLoading(false);
+        setHistoryRefreshing(false);
+        window.setTimeout(() => {
+          setHistoryProgressVisible(false);
+          setHistoryProgress(0);
+        }, 450);
       }
     },
-    [token, headers]
+    [token, headers, loadHistoryFromCache, saveHistoryToCache]
   );
 
   const filteredLoans = useMemo(() => {
@@ -697,6 +820,21 @@ export default function CustomerPaymentHistoryReportPage() {
             />
           </div>
 
+          {loansProgressVisible && (
+            <div className="mt-3 rounded-xl border border-fuchsia-100 bg-fuchsia-50/40 p-3">
+              <div className="mb-1.5 flex items-center justify-between text-xs font-semibold text-fuchsia-700">
+                <span>Loading issued loans data...</span>
+                <span>{Math.round(loansProgress)}%</span>
+              </div>
+              <div className="h-2.5 w-full overflow-hidden rounded-full bg-fuchsia-100">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-fuchsia-500 to-rose-500 transition-all duration-200"
+                  style={{ width: `${Math.max(0, Math.min(100, loansProgress))}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {loansLoading ? (
             <p className="py-8 text-center text-slate-600">Loading issued loans...</p>
           ) : filteredLoans.length === 0 ? (
@@ -868,6 +1006,25 @@ export default function CustomerPaymentHistoryReportPage() {
 
           {selectedLoan && (
             <>
+              {historyProgressVisible && (
+                <div className="mt-4 rounded-xl border border-cyan-100 bg-cyan-50/40 p-3">
+                  <div className="mb-1.5 flex items-center justify-between text-xs font-semibold text-cyan-700">
+                    <span>{historyRefreshing ? 'Refreshing payment history...' : 'Loading payment history...'}</span>
+                    <span>{Math.round(historyProgress)}%</span>
+                  </div>
+                  <div className="h-2.5 w-full overflow-hidden rounded-full bg-cyan-100">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-200"
+                      style={{ width: `${Math.max(0, Math.min(100, historyProgress))}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {historyRefreshing && (
+                <p className="mt-3 text-xs font-semibold text-cyan-700">Showing cached history while refreshing latest records...</p>
+              )}
+
               <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
                   <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Search Payments</label>

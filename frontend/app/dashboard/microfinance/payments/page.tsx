@@ -28,6 +28,7 @@ type LoanLookupRow = {
 
 type PaymentRow = {
   id: number;
+  invoice_no?: string | null;
   mf_loan_request_id: number;
   collection_date?: string | null;
   created_at?: string | null;
@@ -203,12 +204,27 @@ const writePaymentsCache = (key: string, payload: PaymentsCachePayload) => {
   }
 };
 
+const resolveInvoiceNo = (row: Pick<PaymentRow, 'id' | 'invoice_no' | 'payment_reference'>) => {
+  const explicitInvoice = String(row.invoice_no || '').trim();
+  if (explicitInvoice !== '') return explicitInvoice;
+
+  const reference = String(row.payment_reference || '').trim();
+  if (/^inv[-_/\s]?/i.test(reference)) return reference;
+
+  const id = Number(row.id || 0);
+  if (id > 0) return `INV-MF-${String(id).padStart(6, '0')}`;
+  return '-';
+};
+
 export default function MicrofinancePaymentsPage() {
   const router = useRouter();
   const [token, setToken] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [isSyncingData, setIsSyncingData] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0);
+  const [loadStage, setLoadStage] = useState('Preparing data...');
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [loansCatalog, setLoansCatalog] = useState<LoanLookupRow[]>([]);
   const [query, setQuery] = useState('');
@@ -219,6 +235,7 @@ export default function MicrofinancePaymentsPage() {
   const [customerNoFilter, setCustomerNoFilter] = useState('');
   const [customerNicFilter, setCustomerNicFilter] = useState('');
   const [customerNameFilter, setCustomerNameFilter] = useState('');
+  const [invoiceNoFilter, setInvoiceNoFilter] = useState('');
   const [showDeleted, setShowDeleted] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -338,6 +355,10 @@ export default function MicrofinancePaymentsPage() {
       const cacheKey = buildPaymentsCacheKey(branchId, datasetMode, includeDeleted, userId);
 
       const cached = readPaymentsCache(cacheKey);
+      setIsSyncingData(true);
+      setLoadStage(cached ? 'Refreshing cached payment data...' : 'Requesting payment records...');
+      setLoadProgress(cached ? 28 : 8);
+
       if (cached) {
         setPayments(cached.payments);
         setLoansCatalog(cached.loansCatalog);
@@ -354,6 +375,8 @@ export default function MicrofinancePaymentsPage() {
             limit: datasetMode === 'fast' ? 500 : undefined,
           },
         });
+        setLoadStage('Normalizing payment data...');
+        setLoadProgress((prev) => Math.max(prev, 56));
 
         const rawPayments: PaymentRow[] = Array.isArray(paymentRes.data) ? paymentRes.data : [];
 
@@ -392,6 +415,8 @@ export default function MicrofinancePaymentsPage() {
             },
           };
         });
+        setLoadStage('Applying branch and officer filters...');
+        setLoadProgress((prev) => Math.max(prev, 74));
 
         const branchId = Number(authUser?.branch_id || 0);
         const authOfficerId = Number(authUser?.employee?.id || 0);
@@ -421,6 +446,8 @@ export default function MicrofinancePaymentsPage() {
         });
 
         setPayments(scopedPayments);
+        setLoadStage('Building loan lookup index...');
+        setLoadProgress((prev) => Math.max(prev, 88));
 
         const loanMap = new Map<number, LoanLookupRow>();
         scopedPayments.forEach((row) => {
@@ -447,18 +474,40 @@ export default function MicrofinancePaymentsPage() {
           payments: scopedPayments,
           loansCatalog: catalog,
         });
+        setLoadStage('Data loaded');
+        setLoadProgress(100);
       } catch {
+        setLoadStage('Unable to refresh data');
+        setLoadProgress(100);
         if (!cached) {
           setPayments([]);
           setLoansCatalog([]);
         }
       } finally {
         setLoading(false);
+        window.setTimeout(() => {
+          setIsSyncingData(false);
+        }, 380);
       }
     };
 
     loadPayments();
   }, [token, headers, isAdmin, isManager, isCollectionOfficer, authUser?.id, authUser?.branch_id, authUser?.employee?.id, officerNameCandidates, reloadCounter, canDeletePayments, showDeleted, datasetMode]);
+
+  useEffect(() => {
+    if (!isSyncingData) return;
+
+    const timer = window.setInterval(() => {
+      setLoadProgress((prev) => {
+        if (prev >= 92) return prev;
+        return Math.min(92, prev + 3);
+      });
+    }, 180);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [isSyncingData]);
 
   const openDeleteConfirm = (invoiceId: number) => {
     if (!canDeletePayments) {
@@ -563,9 +612,17 @@ export default function MicrofinancePaymentsPage() {
         }
       }
 
+      if (invoiceNoFilter.trim() !== '') {
+        const invoiceNo = resolveInvoiceNo(row).toLowerCase();
+        if (!invoiceNo.includes(invoiceNoFilter.trim().toLowerCase())) {
+          return false;
+        }
+      }
+
       if (!keyword) return true;
 
       const haystack = [
+        resolveInvoiceNo(row),
         row.loanRequest?.customer_no || '',
         row.loanRequest?.customer_name || '',
         row.customer_nic || '',
@@ -590,6 +647,7 @@ export default function MicrofinancePaymentsPage() {
     customerNoFilter,
     customerNicFilter,
     customerNameFilter,
+    invoiceNoFilter,
   ]);
 
   const officerOptions = useMemo(() => {
@@ -636,7 +694,7 @@ export default function MicrofinancePaymentsPage() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [query, fromDate, toDate, fieldOfficerFilter, loanIdFilter, customerNoFilter, customerNicFilter, customerNameFilter, pageSize]);
+  }, [query, fromDate, toDate, fieldOfficerFilter, loanIdFilter, customerNoFilter, customerNicFilter, customerNameFilter, invoiceNoFilter, pageSize]);
 
   const selectedLoanPayments = useMemo(() => {
     if (!selectedLoanId) return [];
@@ -671,6 +729,7 @@ export default function MicrofinancePaymentsPage() {
       field_officer: string;
       payment_type: string;
       payment_reference: string;
+      invoice_no?: string;
       collected_amount: number;
       capital_amount: number;
       interest_amount: number;
@@ -716,6 +775,7 @@ export default function MicrofinancePaymentsPage() {
         field_officer: row.field_officer || '-',
         payment_type: String(row.payment_type || '-'),
         payment_reference: row.payment_reference || '-',
+        invoice_no: resolveInvoiceNo(row),
         collected_amount: Number(row.collected_amount || 0),
         capital_amount: Number(row.capital_amount || 0),
         interest_amount: Number(row.interest_amount || 0),
@@ -1020,6 +1080,21 @@ export default function MicrofinancePaymentsPage() {
             </div>
           </div>
 
+          {(loading || isSyncingData) && (
+            <div className="mt-3 rounded-2xl border border-cyan-100 bg-gradient-to-r from-white via-cyan-50/70 to-emerald-50/60 px-3 py-2.5">
+              <div className="mb-1.5 flex items-center justify-between text-xs font-semibold text-cyan-900">
+                <span>{loadStage}</span>
+                <span>{Math.max(0, Math.min(100, Math.round(loadProgress)))}%</span>
+              </div>
+              <div className="h-2.5 w-full overflow-hidden rounded-full bg-cyan-100">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-sky-500 to-emerald-500 transition-all duration-300 ease-out"
+                  style={{ width: `${Math.max(0, Math.min(100, loadProgress))}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2 rounded-2xl border border-cyan-100 bg-gradient-to-br from-cyan-50/70 to-sky-50/60 p-3">
             <div>
               <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">From Date</label>
@@ -1065,6 +1140,7 @@ export default function MicrofinancePaymentsPage() {
                   setCustomerNoFilter('');
                   setCustomerNicFilter('');
                   setCustomerNameFilter('');
+                  setInvoiceNoFilter('');
                   setSelectedLoanId(null);
                   setIsHistoryModalOpen(false);
                   setQuery('');
@@ -1091,7 +1167,7 @@ export default function MicrofinancePaymentsPage() {
             </div>
           )}
 
-          <div className="mt-2 grid grid-cols-1 md:grid-cols-4 gap-2 rounded-2xl border border-cyan-100 bg-gradient-to-br from-white to-cyan-50/30 p-3">
+          <div className="mt-2 grid grid-cols-1 md:grid-cols-5 gap-2 rounded-2xl border border-cyan-100 bg-gradient-to-br from-white to-cyan-50/30 p-3">
             <div>
               <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Loan ID</label>
               <input
@@ -1142,6 +1218,19 @@ export default function MicrofinancePaymentsPage() {
                 }}
                 className="mt-1 w-full px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900 shadow-sm"
                 placeholder="Customer name"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Invoice No</label>
+              <input
+                value={invoiceNoFilter}
+                onChange={(e) => {
+                  setSelectedLoanId(null);
+                  setIsHistoryModalOpen(false);
+                  setInvoiceNoFilter(e.target.value);
+                }}
+                className="mt-1 w-full px-3 py-2 rounded-xl border border-cyan-100 bg-white text-sm text-slate-900 shadow-sm"
+                placeholder="e.g. INV-MF-000123"
               />
             </div>
           </div>
@@ -1195,6 +1284,7 @@ export default function MicrofinancePaymentsPage() {
                   <thead className="bg-gradient-to-r from-cyan-50 via-sky-50 to-emerald-50/60 text-slate-700">
                     <tr>
                       <th className="px-3 py-2 font-semibold">Date & Time</th>
+                      <th className="px-3 py-2 font-semibold">Invoice No</th>
                       <th className="px-3 py-2 font-semibold">Loan Code</th>
                       <th className="px-3 py-2 font-semibold">Customer No</th>
                       <th className="px-3 py-2 font-semibold">Customer</th>
@@ -1216,6 +1306,7 @@ export default function MicrofinancePaymentsPage() {
                     {paginatedPayments.map((row) => (
                       <tr key={row.id} className="border-b border-cyan-100/90 last:border-b-0 odd:bg-white even:bg-cyan-50/25 hover:bg-cyan-50/55 transition-colors">
                         <td className="px-3 py-2">{formatDisplayDateTime(row.collection_date, row.created_at)}</td>
+                        <td className="px-3 py-2 font-semibold text-cyan-800">{resolveInvoiceNo(row)}</td>
                         <td className="px-3 py-2 font-semibold text-slate-900">{row.loan_code || '-'}</td>
                         <td className="px-3 py-2">{row.loanRequest?.customer_no || row.customer_no || '-'}</td>
                         <td className="px-3 py-2">{row.loanRequest?.customer_name || row.customer_name || '-'}</td>
@@ -1378,6 +1469,7 @@ export default function MicrofinancePaymentsPage() {
                     <thead className="sticky top-0 z-10 bg-gradient-to-r from-cyan-50 to-sky-50 text-slate-700">
                       <tr>
                         <th className="px-3 py-2 font-semibold">Date & Time</th>
+                        <th className="px-3 py-2 font-semibold">Invoice No</th>
                         <th className="px-3 py-2 font-semibold">Loan Code</th>
                         <th className="px-3 py-2 font-semibold">Customer</th>
                         <th className="px-3 py-2 font-semibold">Field Officer</th>
@@ -1398,6 +1490,7 @@ export default function MicrofinancePaymentsPage() {
                       {selectedLoanTimeline.map((row) => (
                         <tr key={row.id} className="border-b border-cyan-100/80 last:border-b-0 odd:bg-white even:bg-cyan-50/25 hover:bg-cyan-50/60 transition-colors">
                           <td className="px-3 py-2">{formatDisplayDateTime(row.date, row.created_at)}</td>
+                          <td className="px-3 py-2 font-semibold text-cyan-800">{row.kind === 'payment' ? String(row.invoice_no || '-') : '-'}</td>
                           <td className="px-3 py-2 font-semibold text-slate-900">{row.customer_no}</td>
                           <td className="px-3 py-2">{row.customer_name}</td>
                           <td className="px-3 py-2">{row.field_officer}</td>
