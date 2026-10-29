@@ -52,6 +52,9 @@ class Employee extends Model
         'apit_tax_rate',
         'employee_type',
         'status',
+        'resigned_at',
+        'resigned_by',
+        'resignation_meta',
     ];
 
     protected $casts = [
@@ -70,6 +73,8 @@ class Employee extends Model
         'apit_tax_rate' => 'decimal:2',
         'tax_applicable' => 'boolean',
         'tax_relief_eligible' => 'boolean',
+        'resigned_at' => 'date',
+        'resignation_meta' => 'array',
     ];
 
     public function getPhoneAttribute(): ?string

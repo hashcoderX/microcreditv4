@@ -52,7 +52,7 @@ class StoreEmployeeRequest extends FormRequest
             'department_id' => 'required|exists:departments,id',
             'designation_id' => 'required|exists:designations,id',
             'branch_id' => 'required|exists:companies,id',
-            'status' => 'in:active,inactive',
+            'status' => 'in:active,inactive,resigned',
             'create_wallet' => 'nullable|boolean',
             'wallet_opening_balance' => 'nullable|numeric|min:0',
         ];

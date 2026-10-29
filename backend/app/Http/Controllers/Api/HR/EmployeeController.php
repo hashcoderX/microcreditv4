@@ -1219,7 +1219,10 @@ class EmployeeController extends Controller
                     throw new HttpResponseException(response()->json(['message' => 'Collector cash in hand is insufficient for this approval.'], 422));
                 }
 
-                $wallet->current_balance = round($cashInHand - $amount, 2);
+                $wallet->setAttribute(
+                    'current_balance',
+                    number_format(round($cashInHand - $amount, 2), 2, '.', '')
+                );
                 $wallet->save();
 
                 $bankAccount->current_balance = round((float) ($bankAccount->current_balance ?? 0) + $amount, 2);
@@ -1295,7 +1298,10 @@ class EmployeeController extends Controller
                 $managerTenantId = (int) ($managerEmployee->tenant_id ?? $wallet->tenant_id ?? $row->branch_id);
                 $managerBranchId = (int) ($managerEmployee->branch_id ?? $row->branch_id);
                 $managerWallet = $this->ensureEmployeeWallet($managerEmployee, $managerTenantId, $managerBranchId);
-                $managerWallet->current_balance = round((float) ($managerWallet->current_balance ?? 0) + $amount, 2);
+                $managerWallet->setAttribute(
+                    'current_balance',
+                    number_format(round((float) ($managerWallet->current_balance ?? 0) + $amount, 2), 2, '.', '')
+                );
                 $managerWallet->save();
 
                 $row->status = 'approved';
@@ -1746,7 +1752,7 @@ class EmployeeController extends Controller
             'department_id' => 'sometimes|required|exists:departments,id',
             'designation_id' => 'sometimes|required|exists:designations,id',
             'branch_id' => 'sometimes|required|exists:companies,id',
-            'status' => 'in:active,inactive',
+            'status' => 'in:active,inactive,resigned',
         ]);
 
         // Map frontend fields to backend fields
@@ -1808,6 +1814,100 @@ class EmployeeController extends Controller
         }
 
         return response()->json($employee->load(['department', 'designation', 'branch', 'user:id,employee_id,email']));
+    }
+
+    /**
+     * Mark employee as resigned and capture handover details.
+     */
+    public function resign(Request $request, Employee $employee): JsonResponse
+    {
+        if (!$this->canAccessEmployee($request, $employee)) {
+            return response()->json(['message' => 'Employee not found.'], 404);
+        }
+
+        if (!$this->canManageEmployees($request, 'edit_employees')) {
+            return response()->json(['message' => 'You do not have permission to resign employees.'], 403);
+        }
+
+        if ((string) $employee->status === 'resigned') {
+            return response()->json(['message' => 'Employee is already marked as resigned.'], 422);
+        }
+
+        $validated = $request->validate([
+            'resignation_date' => 'nullable|date',
+            'resignation_reason' => 'nullable|string|max:2000',
+            'documents_returned' => 'nullable|boolean',
+            'handover_documents_submitted' => 'nullable|boolean',
+            'equipment_returned' => 'nullable|boolean',
+            'returned_documents' => 'nullable|array',
+            'returned_documents.*' => 'nullable|string|max:255',
+            'handover_documents' => 'nullable|array',
+            'handover_documents.*' => 'nullable|string|max:255',
+            'returned_equipments' => 'nullable|array',
+            'returned_equipments.*' => 'nullable|string|max:255',
+            'other_return_items' => 'nullable|array',
+            'other_return_items.*' => 'nullable|string|max:255',
+            'notes' => 'nullable|string|max:2000',
+        ]);
+
+        $cleanStringList = static function (array $rows): array {
+            $clean = [];
+            foreach ($rows as $row) {
+                $value = trim((string) $row);
+                if ($value !== '') {
+                    $clean[] = $value;
+                }
+            }
+
+            return array_values($clean);
+        };
+
+        $meta = [
+            'resignation_reason' => trim((string) ($validated['resignation_reason'] ?? '')),
+            'documents_returned' => (bool) ($validated['documents_returned'] ?? false),
+            'handover_documents_submitted' => (bool) ($validated['handover_documents_submitted'] ?? false),
+            'equipment_returned' => (bool) ($validated['equipment_returned'] ?? false),
+            'returned_documents' => $cleanStringList((array) ($validated['returned_documents'] ?? [])),
+            'handover_documents' => $cleanStringList((array) ($validated['handover_documents'] ?? [])),
+            'returned_equipments' => $cleanStringList((array) ($validated['returned_equipments'] ?? [])),
+            'other_return_items' => $cleanStringList((array) ($validated['other_return_items'] ?? [])),
+            'notes' => trim((string) ($validated['notes'] ?? '')),
+            'captured_at' => now()->toDateTimeString(),
+            'captured_by_user_id' => (int) ($request->user()?->id ?? 0),
+        ];
+
+        DB::transaction(function () use ($employee, $request, $validated, $meta): void {
+            $lockedEmployee = Employee::query()
+                ->where('id', (int) $employee->id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$lockedEmployee) {
+                throw new HttpResponseException(response()->json(['message' => 'Employee not found.'], 404));
+            }
+
+            $lockedEmployee->status = 'resigned';
+            $lockedEmployee->resigned_at = !empty($validated['resignation_date'])
+                ? (string) $validated['resignation_date']
+                : now()->toDateString();
+            $lockedEmployee->resigned_by = (int) ($request->user()?->id ?? 0) ?: null;
+            $lockedEmployee->resignation_meta = $meta;
+            $lockedEmployee->save();
+
+            $wallet = EmployeeWallet::query()
+                ->where('employee_id', (int) $lockedEmployee->id)
+                ->first();
+
+            if ($wallet && (string) $wallet->status !== 'inactive') {
+                $wallet->status = 'inactive';
+                $wallet->save();
+            }
+        });
+
+        return response()->json([
+            'message' => 'Employee marked as resigned successfully.',
+            'employee' => $employee->fresh()->load(['department', 'designation', 'branch', 'wallet', 'user:id,employee_id,email']),
+        ]);
     }
 
     /**

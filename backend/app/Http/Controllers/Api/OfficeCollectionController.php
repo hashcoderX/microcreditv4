@@ -19,6 +19,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class OfficeCollectionController extends Controller
 {
@@ -29,6 +30,24 @@ class OfficeCollectionController extends Controller
     {
         $rawScheme = trim((string) $scheme);
         $normalizedScheme = strtolower($rawScheme);
+        $allowedSchemes = ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'];
+
+        if (!in_array($normalizedScheme, $allowedSchemes, true)) {
+            $normalizedScheme = 'daily_percentage';
+        }
+
+        $defaultValueMode = in_array($normalizedScheme, ['daily_percentage', 'monthly_percentage'], true)
+            ? 'percentage'
+            : 'amount';
+
+        // Older deployments may not have the penalty rules table yet.
+        if (!Schema::hasTable('loan_penalty_rules')) {
+            return [
+                'scheme' => $normalizedScheme,
+                'value_mode' => $defaultValueMode,
+                'amount_or_rate' => 0.0,
+            ];
+        }
 
         if (preg_match('/^rule_(\d+)$/i', $rawScheme, $matches) === 1) {
             $ruleId = (int) ($matches[1] ?? 0);
@@ -41,7 +60,7 @@ class OfficeCollectionController extends Controller
 
                 if ($rule) {
                     $type = strtolower(trim((string) ($rule->penalty_type ?? 'daily_percentage')));
-                    if (!in_array($type, ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'], true)) {
+                    if (!in_array($type, $allowedSchemes, true)) {
                         $type = 'daily_percentage';
                     }
 
@@ -61,14 +80,6 @@ class OfficeCollectionController extends Controller
                 }
             }
         }
-
-        if (!in_array($normalizedScheme, ['fixed_daily', 'daily_percentage', 'one_time', 'monthly_percentage'], true)) {
-            $normalizedScheme = 'daily_percentage';
-        }
-
-        $defaultValueMode = in_array($normalizedScheme, ['daily_percentage', 'monthly_percentage'], true)
-            ? 'percentage'
-            : 'amount';
 
         $rule = LoanPenaltyRule::query()
             ->where('applicable_for', 'microfinance')

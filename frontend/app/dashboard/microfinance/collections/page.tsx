@@ -156,8 +156,8 @@ export default function CollectionManagementPage() {
     const saved = localStorage.getItem('mf_collections_load_profile');
     return saved === 'full' ? 'full' : 'fast';
   });
-  const [loanFetchLimit, setLoanFetchLimit] = useState(800);
-  const [collectionFetchLimit, setCollectionFetchLimit] = useState(1200);
+  const [loanFetchLimit, setLoanFetchLimit] = useState(500);
+  const [collectionFetchLimit, setCollectionFetchLimit] = useState(700);
   const [hasMoreLoanRecords, setHasMoreLoanRecords] = useState(false);
   const [hasMoreCollectionRecords, setHasMoreCollectionRecords] = useState(false);
   const [fetchedLoanCount, setFetchedLoanCount] = useState(0);

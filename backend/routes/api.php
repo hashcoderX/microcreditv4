@@ -173,6 +173,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::post('system/status', [CompanyController::class, 'updateSystemStatus']);
     Route::get('system/storage-link', [CompanyController::class, 'getStorageLinkStatus']);
     Route::post('system/storage-link', [CompanyController::class, 'createStorageLink']);
+    Route::post('system/optimize', [CompanyController::class, 'optimizeSystem']);
     Route::get('system/customer-profile-completion', [CompanyController::class, 'getCustomerProfileCompletionSetting']);
     Route::post('system/customer-profile-completion', [CompanyController::class, 'updateCustomerProfileCompletionSetting']);
     Route::get('system/sms-gateway', [CompanyController::class, 'getSmsGatewayConfig']);
@@ -184,6 +185,9 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::get('system/penalty-settings', [CompanyController::class, 'getPenaltySettings']);
     Route::post('system/penalty-settings', [CompanyController::class, 'updatePenaltySettings']);
     Route::post('system/penalty-settings/bulk-update', [CompanyController::class, 'bulkUpdatePenaltyScheme']);
+    Route::get('system/loan-officer-transfer/officers', [CompanyController::class, 'transferLoanOfficerCandidates']);
+    Route::post('system/loan-officer-transfer/preview', [CompanyController::class, 'previewLoanOfficerTransfer']);
+    Route::post('system/loan-officer-transfer/apply', [CompanyController::class, 'applyLoanOfficerTransfer']);
     Route::get('system/savings-deposits-settings', [SavingsDepositsSettingsController::class, 'show']);
     Route::post('system/savings-deposits-settings', [SavingsDepositsSettingsController::class, 'update']);
     Route::post('system/reset', [CompanyController::class, 'resetSystem']);
@@ -232,6 +236,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
         Route::apiResource('designations', DesignationController::class);
         Route::get('employees/designation-widget-template', [EmployeeController::class, 'designationWidgetTemplateSummary']);
         Route::apiResource('employees', EmployeeController::class);
+        Route::post('employees/{employee}/resign', [EmployeeController::class, 'resign']);
         Route::post('employees/{employee}/wallet', [EmployeeController::class, 'createWallet']);
         Route::put('employees/{employee}/wallet', [EmployeeController::class, 'updateWallet']);
         Route::apiResource('candidates', CandidateController::class);

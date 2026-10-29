@@ -158,12 +158,60 @@ type ActionCenterPreviewItem = {
   created_at?: string | null;
 };
 
+type InternetQuality = 'offline' | 'low' | 'medium' | 'good';
+
+const DASHBOARD_WIDGET_CACHE_KEY = 'dashboard_hidden_widget_keys_v1';
+const DASHBOARD_AUTH_CACHE_KEY = 'auth_user';
+const DASHBOARD_PREFETCH_PATHS = [
+  '/dashboard/credit',
+  '/dashboard/office-collections',
+  '/dashboard/hrm',
+  '/dashboard/savings-deposits',
+  '/dashboard/microfinance/customers',
+  '/dashboard/branches',
+  '/dashboard/accounting',
+  '/dashboard/reports',
+  '/dashboard/action-center',
+  '/dashboard/assistant',
+  '/dashboard/company-settings',
+  '/dashboard/wallet',
+];
+
 export default function Dashboard() {
+  const readCachedAuthUser = (): AuthUser | null => {
+    if (typeof window === 'undefined') return null;
+    const stored = localStorage.getItem(DASHBOARD_AUTH_CACHE_KEY);
+    if (!stored) return null;
+    try {
+      return JSON.parse(stored) as AuthUser;
+    } catch {
+      return null;
+    }
+  };
+
+  const readCachedHiddenWidgetKeys = (): Set<string> => {
+    if (typeof window === 'undefined') return new Set<string>();
+    const stored = localStorage.getItem(DASHBOARD_WIDGET_CACHE_KEY);
+    if (!stored) return new Set<string>();
+    try {
+      const rows = JSON.parse(stored) as string[];
+      if (!Array.isArray(rows)) return new Set<string>();
+      return new Set(rows.map((row) => String(row || '').trim()).filter(Boolean));
+    } catch {
+      return new Set<string>();
+    }
+  };
+
+  const writeCachedHiddenWidgetKeys = (keys: Set<string>) => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(DASHBOARD_WIDGET_CACHE_KEY, JSON.stringify(Array.from(keys.values())));
+  };
+
   const [token, setToken] = useState('');
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
-  const [loadingPrivileges, setLoadingPrivileges] = useState(true);
-  const [loadingWidgets, setLoadingWidgets] = useState(true);
-  const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => readCachedAuthUser());
+  const [loadingPrivileges, setLoadingPrivileges] = useState<boolean>(() => (typeof window === 'undefined' ? true : !Boolean(readCachedAuthUser())));
+  const [loadingWidgets, setLoadingWidgets] = useState(false);
+  const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(() => readCachedHiddenWidgetKeys());
   const [logoLoadFailed, setLogoLoadFailed] = useState(false);
   const [walletSummary, setWalletSummary] = useState<WalletSummary | null>(null);
   const [walletBankAccounts, setWalletBankAccounts] = useState<WalletBankAccount[]>([]);
@@ -239,6 +287,15 @@ export default function Dashboard() {
   const [notificationPreviewItems, setNotificationPreviewItems] = useState<NotificationPreviewItem[]>([]);
   const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
   const [actionCenterPreviewItems, setActionCenterPreviewItems] = useState<ActionCenterPreviewItem[]>([]);
+  const [internetStatus, setInternetStatus] = useState<{
+    quality: InternetQuality;
+    label: string;
+    detail: string;
+  }>({
+    quality: 'good',
+    label: 'Good internet',
+    detail: '',
+  });
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [calculatorInput, setCalculatorInput] = useState('');
   const [calculatorResult, setCalculatorResult] = useState('0');
@@ -247,6 +304,141 @@ export default function Dashboard() {
   const searchParams = useSearchParams();
   const apiBaseUrl = getApiBaseUrl();
   const companyLogoUrl = `${getBackendOrigin()}/media/company/logo`;
+
+  const updateInternetStatus = useCallback(() => {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
+
+    const nav = navigator as Navigator & {
+      connection?: {
+        effectiveType?: string;
+        downlink?: number;
+        rtt?: number;
+        saveData?: boolean;
+        addEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
+        removeEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
+        addListener?: (listener: () => void) => void;
+        removeListener?: (listener: () => void) => void;
+      };
+      mozConnection?: {
+        effectiveType?: string;
+        downlink?: number;
+        rtt?: number;
+        saveData?: boolean;
+      };
+      webkitConnection?: {
+        effectiveType?: string;
+        downlink?: number;
+        rtt?: number;
+        saveData?: boolean;
+      };
+    };
+
+    const connection = nav.connection || nav.mozConnection || nav.webkitConnection;
+    const online = navigator.onLine;
+
+    if (!online) {
+      setInternetStatus({
+        quality: 'offline',
+        label: 'Offline',
+        detail: 'No internet connection',
+      });
+      return;
+    }
+
+    const effectiveType = String(connection?.effectiveType || '').toLowerCase();
+    const downlink = Number(connection?.downlink || 0);
+    const rtt = Number(connection?.rtt || 0);
+    const saveData = Boolean(connection?.saveData);
+
+    const detailParts: string[] = [];
+    if (effectiveType) detailParts.push(effectiveType.toUpperCase());
+    if (downlink > 0) detailParts.push(`${downlink.toFixed(1)} Mbps`);
+    if (rtt > 0) detailParts.push(`${Math.round(rtt)}ms`);
+
+    const detail = detailParts.join(' | ');
+
+    const isLow =
+      saveData ||
+      effectiveType === 'slow-2g' ||
+      effectiveType === '2g' ||
+      (downlink > 0 && downlink < 1.5) ||
+      (rtt > 0 && rtt >= 350);
+
+    if (isLow) {
+      setInternetStatus({
+        quality: 'low',
+        label: 'Low internet strength',
+        detail,
+      });
+      return;
+    }
+
+    const isMedium = effectiveType === '3g' || (downlink > 0 && downlink < 5) || (rtt > 0 && rtt >= 180);
+
+    if (isMedium) {
+      setInternetStatus({
+        quality: 'medium',
+        label: 'Medium internet',
+        detail,
+      });
+      return;
+    }
+
+    setInternetStatus({
+      quality: 'good',
+      label: 'Good internet',
+      detail,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
+
+    const nav = navigator as Navigator & {
+      connection?: {
+        addEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
+        removeEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
+        addListener?: (listener: () => void) => void;
+        removeListener?: (listener: () => void) => void;
+      };
+      mozConnection?: {
+        addEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
+        removeEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
+        addListener?: (listener: () => void) => void;
+        removeListener?: (listener: () => void) => void;
+      };
+      webkitConnection?: {
+        addEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
+        removeEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
+        addListener?: (listener: () => void) => void;
+        removeListener?: (listener: () => void) => void;
+      };
+    };
+
+    const connection = nav.connection || nav.mozConnection || nav.webkitConnection;
+
+    updateInternetStatus();
+
+    window.addEventListener('online', updateInternetStatus);
+    window.addEventListener('offline', updateInternetStatus);
+
+    if (connection?.addEventListener) {
+      connection.addEventListener('change', updateInternetStatus);
+    } else if (connection?.addListener) {
+      connection.addListener(updateInternetStatus);
+    }
+
+    return () => {
+      window.removeEventListener('online', updateInternetStatus);
+      window.removeEventListener('offline', updateInternetStatus);
+
+      if (connection?.removeEventListener) {
+        connection.removeEventListener('change', updateInternetStatus);
+      } else if (connection?.removeListener) {
+        connection.removeListener(updateInternetStatus);
+      }
+    };
+  }, [updateInternetStatus]);
 
   const formatCalculatorNumber = useCallback((value: number) => {
     if (!Number.isFinite(value)) {
@@ -653,11 +845,18 @@ export default function Dashboard() {
       router.push('/');
     } else {
       setToken(storedToken);
-      fetchAuthUser(storedToken);
-      fetchWidgetPreferences(storedToken);
-      fetchNotificationPreview(storedToken);
+      void Promise.allSettled([
+        fetchAuthUser(storedToken),
+        fetchWidgetPreferences(storedToken),
+        fetchNotificationPreview(storedToken),
+      ]);
     }
   }, [router]);
+
+  useEffect(() => {
+    if (!token) return;
+    DASHBOARD_PREFETCH_PATHS.forEach((path) => router.prefetch(path));
+  }, [token, router]);
 
   useEffect(() => {
     if (!token) {
@@ -666,6 +865,10 @@ export default function Dashboard() {
       setWalletManagers([]);
       setWalletRecentDeposits([]);
       setWalletRecentHandovers([]);
+      return;
+    }
+
+    if (!authUser) {
       return;
     }
 
@@ -750,7 +953,7 @@ export default function Dashboard() {
     };
 
     void fetchWalletPreviewData();
-  }, [token, canUseWalletDeposit, canUseCompanyFundWallet, resolvedBranchId, apiBaseUrl]);
+  }, [token, authUser, canUseWalletDeposit, canUseCompanyFundWallet, resolvedBranchId, apiBaseUrl]);
 
   useEffect(() => {
     const handleOutsideClick = (event: MouseEvent) => {
@@ -807,16 +1010,16 @@ export default function Dashboard() {
         headers: { Authorization: `Bearer ${authToken}` },
       });
       setAuthUser(response.data || null);
-      localStorage.setItem('auth_user', JSON.stringify(response.data || null));
+      localStorage.setItem(DASHBOARD_AUTH_CACHE_KEY, JSON.stringify(response.data || null));
     } catch (error) {
       console.error('Failed to load user privileges:', error);
-      const stored = localStorage.getItem('auth_user');
+      const stored = localStorage.getItem(DASHBOARD_AUTH_CACHE_KEY);
       const cached = stored ? JSON.parse(stored) : null;
       setAuthUser(cached);
 
       // Avoid stale/no-data cache causing false "No Module Access Assigned".
       if (!cached) {
-        localStorage.removeItem('auth_user');
+        localStorage.removeItem(DASHBOARD_AUTH_CACHE_KEY);
       }
     } finally {
       setLoadingPrivileges(false);
@@ -854,8 +1057,9 @@ export default function Dashboard() {
         }
       }
       setHiddenWidgetKeys(nextHidden);
+      writeCachedHiddenWidgetKeys(nextHidden);
     } catch {
-      setHiddenWidgetKeys(new Set());
+      setHiddenWidgetKeys(readCachedHiddenWidgetKeys());
     } finally {
       setLoadingWidgets(false);
     }
@@ -894,10 +1098,12 @@ export default function Dashboard() {
     const next = new Set(hiddenWidgetKeys);
     next.add(widgetKey);
     setHiddenWidgetKeys(next);
+    writeCachedHiddenWidgetKeys(next);
 
     const ok = await saveWidgetPreference(widgetKey, false, hiddenRoutePath);
     if (!ok) {
       setHiddenWidgetKeys(previous);
+      writeCachedHiddenWidgetKeys(previous);
       setWalletNotice({
         open: true,
         title: 'Widget Update Failed',
@@ -932,6 +1138,7 @@ export default function Dashboard() {
         },
       });
       setHiddenWidgetKeys(new Set());
+      writeCachedHiddenWidgetKeys(new Set());
       setRestoreWidgetsModal({
         open: false,
         adminEmail: '',
@@ -1043,6 +1250,7 @@ export default function Dashboard() {
 
   const handleLogout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem(DASHBOARD_AUTH_CACHE_KEY);
     router.push('/');
   };
 
@@ -1488,7 +1696,7 @@ export default function Dashboard() {
     return uniqueKeys.reduce((sum, key) => sum + Number(notificationTypeCounts[key] || 0), 0);
   };
 
-  if (!token || loadingPrivileges || loadingWidgets) {
+  if (!token || loadingPrivileges) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-red-50 via-pink-50 to-purple-50 flex items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600"></div>
@@ -1521,8 +1729,39 @@ export default function Dashboard() {
             </div>
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
               <div className="hidden sm:flex items-center space-x-2 text-xs sm:text-sm text-gray-600">
-                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                <span>System Online</span>
+                <div
+                  className={`w-2 h-2 rounded-full animate-pulse ${
+                    internetStatus.quality === 'offline'
+                      ? 'bg-slate-500'
+                      : internetStatus.quality === 'low'
+                        ? 'bg-rose-500'
+                        : internetStatus.quality === 'medium'
+                          ? 'bg-amber-500'
+                          : 'bg-emerald-500'
+                  }`}
+                ></div>
+                <span className={internetStatus.quality === 'low' || internetStatus.quality === 'offline' ? 'font-semibold text-rose-700' : ''}>
+                  {internetStatus.label}
+                </span>
+                {internetStatus.detail ? (
+                  <span className="text-[11px] text-slate-500">({internetStatus.detail})</span>
+                ) : null}
+              </div>
+              <div className="sm:hidden flex items-center space-x-2 text-xs text-gray-600">
+                <div
+                  className={`w-2 h-2 rounded-full animate-pulse ${
+                    internetStatus.quality === 'offline'
+                      ? 'bg-slate-500'
+                      : internetStatus.quality === 'low'
+                        ? 'bg-rose-500'
+                        : internetStatus.quality === 'medium'
+                          ? 'bg-amber-500'
+                          : 'bg-emerald-500'
+                  }`}
+                ></div>
+                <span className={internetStatus.quality === 'low' || internetStatus.quality === 'offline' ? 'font-semibold text-rose-700' : ''}>
+                  {internetStatus.label}
+                </span>
               </div>
               <div className="hidden sm:flex items-center rounded-full border border-sky-100 bg-sky-50/80 px-3 py-1.5 text-xs font-semibold text-sky-900">
                 <span className="mr-1.5 inline-flex h-2 w-2 rounded-full bg-sky-500"></span>

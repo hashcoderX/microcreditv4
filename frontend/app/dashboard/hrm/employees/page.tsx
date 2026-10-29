@@ -46,7 +46,19 @@ interface Employee {
   tax_relief_eligible?: boolean;
   apit_tax_amount?: number;
   apit_tax_rate?: number;
-  status: 'active' | 'inactive';
+  status: 'active' | 'inactive' | 'resigned';
+  resigned_at?: string | null;
+  resignation_meta?: {
+    resignation_reason?: string;
+    documents_returned?: boolean;
+    handover_documents_submitted?: boolean;
+    equipment_returned?: boolean;
+    returned_documents?: string[];
+    handover_documents?: string[];
+    returned_equipments?: string[];
+    other_return_items?: string[];
+    notes?: string;
+  } | null;
   wallet?: {
     id?: number;
     wallet_no?: string;
@@ -250,7 +262,7 @@ export default function Employees() {
   const [designationTemplateLoading, setDesignationTemplateLoading] = useState(false);
   const [branchId, setBranchId] = useState('');
   const [reportingPerson, setReportingPerson] = useState('');
-  const [status, setStatus] = useState<'active' | 'inactive'>('active');
+  const [status, setStatus] = useState<'active' | 'inactive' | 'resigned'>('active');
   const [createWallet, setCreateWallet] = useState(true);
   const [walletOpeningBalance, setWalletOpeningBalance] = useState('');
 
@@ -303,6 +315,19 @@ export default function Employees() {
   const [openMenuFor, setOpenMenuFor] = useState<number | null>(null);
   const [openAttendanceFor, setOpenAttendanceFor] = useState<number | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const [showResignModal, setShowResignModal] = useState(false);
+  const [resignEmployee, setResignEmployee] = useState<Employee | null>(null);
+  const [resignDate, setResignDate] = useState('');
+  const [resignReason, setResignReason] = useState('');
+  const [documentsReturned, setDocumentsReturned] = useState(true);
+  const [handoverDocumentsSubmitted, setHandoverDocumentsSubmitted] = useState(true);
+  const [equipmentReturned, setEquipmentReturned] = useState(true);
+  const [returnedDocumentsText, setReturnedDocumentsText] = useState('');
+  const [handoverDocumentsText, setHandoverDocumentsText] = useState('');
+  const [returnedEquipmentsText, setReturnedEquipmentsText] = useState('');
+  const [otherReturnItemsText, setOtherReturnItemsText] = useState('');
+  const [resignNotes, setResignNotes] = useState('');
+  const [resigningEmployee, setResigningEmployee] = useState(false);
 
   const filteredEmployees = useMemo(() => {
     const keyword = searchTerm.trim().toLowerCase();
@@ -1105,6 +1130,73 @@ export default function Employees() {
     );
   };
 
+  const openResignEmployeeModal = (employee: Employee) => {
+    const today = new Date().toISOString().slice(0, 10);
+    setResignEmployee(employee);
+    setResignDate(today);
+    setResignReason('');
+    setDocumentsReturned(true);
+    setHandoverDocumentsSubmitted(true);
+    setEquipmentReturned(true);
+    setReturnedDocumentsText('NIC copy\nID card\nBank passbook copy');
+    setHandoverDocumentsText('Project handover note\nPending work list');
+    setReturnedEquipmentsText('Laptop\nAccess card\nOffice keys');
+    setOtherReturnItemsText('');
+    setResignNotes('');
+    setShowResignModal(true);
+  };
+
+  const closeResignEmployeeModal = () => {
+    if (resigningEmployee) return;
+    setShowResignModal(false);
+    setResignEmployee(null);
+  };
+
+  const parseListField = (value: string): string[] => {
+    return value
+      .split(/\r?\n|,/)
+      .map((row) => row.trim())
+      .filter((row) => row !== '');
+  };
+
+  const submitResignEmployee = async () => {
+    if (!token || !resignEmployee) return;
+
+    if (!resignDate.trim()) {
+      showNotice('Validation', 'Please select resignation date.', 'error');
+      return;
+    }
+
+    try {
+      setResigningEmployee(true);
+      await axios.post(
+        `${apiBase}/hr/employees/${resignEmployee.id}/resign`,
+        {
+          resignation_date: resignDate,
+          resignation_reason: resignReason.trim() || undefined,
+          documents_returned: documentsReturned,
+          handover_documents_submitted: handoverDocumentsSubmitted,
+          equipment_returned: equipmentReturned,
+          returned_documents: parseListField(returnedDocumentsText),
+          handover_documents: parseListField(handoverDocumentsText),
+          returned_equipments: parseListField(returnedEquipmentsText),
+          other_return_items: parseListField(otherReturnItemsText),
+          notes: resignNotes.trim() || undefined,
+        },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+
+      await fetchEmployees();
+      closeResignEmployeeModal();
+      showNotice('Success', `${resignEmployee.first_name} ${resignEmployee.last_name} marked as resigned.`, 'success');
+    } catch (error: any) {
+      const message = error?.response?.data?.message || 'Failed to resign employee. Please try again.';
+      showNotice('Error', message, 'error');
+    } finally {
+      setResigningEmployee(false);
+    }
+  };
+
   const openProfile = async (employee: Employee) => {
     try {
       setProfileLoading(true);
@@ -1763,6 +1855,7 @@ export default function Employees() {
                 <option value="all">All Status</option>
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
+                <option value="resigned">Resigned</option>
               </select>
 
               <select
@@ -1925,7 +2018,9 @@ export default function Employees() {
                         <span className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full ${
                           employee.status === 'active'
                             ? 'bg-green-100 text-green-800'
-                            : 'bg-red-100 text-red-800'
+                            : employee.status === 'resigned'
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-red-100 text-red-800'
                         }`}>
                           {employee.status}
                         </span>
@@ -2025,6 +2120,12 @@ export default function Employees() {
                               <span className="w-4 h-4">💲</span>
                               <span>Allowances</span>
                             </button>
+                            {employee.status !== 'resigned' && (
+                              <button role="menuitem" onClick={() => { openResignEmployeeModal(employee); setOpenMenuFor(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-left text-amber-700 hover:bg-amber-50">
+                                <span className="w-4 h-4">📤</span>
+                                <span>Resign Employee</span>
+                              </button>
+                            )}
                             <button role="menuitem" onClick={() => { openLeaveManagement(employee); setOpenMenuFor(null); }} className="w-full flex items-center gap-2 px-3 py-2 text-left text-gray-700 hover:bg-gray-50">
                               <span className="w-4 h-4">📅</span>
                               <span>Leave Management</span>
@@ -2682,11 +2783,12 @@ export default function Employees() {
                   </label>
                   <select
                     value={status}
-                    onChange={(e) => setStatus(e.target.value as 'active' | 'inactive')}
+                    onChange={(e) => setStatus(e.target.value as 'active' | 'inactive' | 'resigned')}
                     className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-gray-900"
                   >
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
+                    <option value="resigned">Resigned</option>
                   </select>
                 </div>
               </div>
@@ -2895,7 +2997,7 @@ export default function Employees() {
                     <div><strong>Designation:</strong> {profileEmployee.designation.name}</div>
                     <div><strong>Branch:</strong> {profileEmployee.branch.name}</div>
                     <div><strong>Status:</strong> 
-                      <span className={`ml-2 px-2 py-1 text-xs rounded-full ${profileEmployee.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                      <span className={`ml-2 px-2 py-1 text-xs rounded-full ${profileEmployee.status === 'active' ? 'bg-green-100 text-green-800' : profileEmployee.status === 'resigned' ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800'}`}>
                         {profileEmployee.status}
                       </span>
                     </div>
@@ -3702,6 +3804,132 @@ export default function Employees() {
                   Save Leave Balances
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Resign Employee Modal */}
+      {showResignModal && resignEmployee && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeResignEmployeeModal} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto text-black">
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">Resign Employee</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Mark <span className="font-semibold">{resignEmployee.first_name} {resignEmployee.last_name}</span> as resigned and capture return handover details.
+                </p>
+              </div>
+              <button onClick={closeResignEmployeeModal} className="text-gray-500 hover:text-gray-700">✕</button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Resignation Date</label>
+                <input
+                  type="date"
+                  value={resignDate}
+                  onChange={(e) => setResignDate(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Reason</label>
+                <input
+                  type="text"
+                  value={resignReason}
+                  onChange={(e) => setResignReason(e.target.value)}
+                  placeholder="Reason for resignation"
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+              <label className="flex items-center justify-between rounded-xl border border-gray-200 px-3 py-2">
+                <span className="text-sm text-gray-700">Documents Returned</span>
+                <input type="checkbox" checked={documentsReturned} onChange={(e) => setDocumentsReturned(e.target.checked)} />
+              </label>
+              <label className="flex items-center justify-between rounded-xl border border-gray-200 px-3 py-2">
+                <span className="text-sm text-gray-700">Handover Documents Submitted</span>
+                <input type="checkbox" checked={handoverDocumentsSubmitted} onChange={(e) => setHandoverDocumentsSubmitted(e.target.checked)} />
+              </label>
+              <label className="flex items-center justify-between rounded-xl border border-gray-200 px-3 py-2">
+                <span className="text-sm text-gray-700">Equipment Returned</span>
+                <input type="checkbox" checked={equipmentReturned} onChange={(e) => setEquipmentReturned(e.target.checked)} />
+              </label>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Returned Documents (one per line)</label>
+                <textarea
+                  value={returnedDocumentsText}
+                  onChange={(e) => setReturnedDocumentsText(e.target.value)}
+                  rows={3}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Handover Related Documents (one per line)</label>
+                <textarea
+                  value={handoverDocumentsText}
+                  onChange={(e) => setHandoverDocumentsText(e.target.value)}
+                  rows={3}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Returned Equipment and Other Assets (one per line)</label>
+                <textarea
+                  value={returnedEquipmentsText}
+                  onChange={(e) => setReturnedEquipmentsText(e.target.value)}
+                  rows={3}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Other Return Items (optional, one per line)</label>
+                <textarea
+                  value={otherReturnItemsText}
+                  onChange={(e) => setOtherReturnItemsText(e.target.value)}
+                  rows={2}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Notes</label>
+                <textarea
+                  value={resignNotes}
+                  onChange={(e) => setResignNotes(e.target.value)}
+                  rows={3}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={closeResignEmployeeModal}
+                disabled={resigningEmployee}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitResignEmployee}
+                disabled={resigningEmployee}
+                className="px-4 py-2 rounded-lg bg-gradient-to-r from-amber-600 to-orange-600 text-white font-medium hover:from-amber-700 hover:to-orange-700 disabled:opacity-60"
+              >
+                {resigningEmployee ? 'Saving...' : 'Mark as Resigned'}
+              </button>
             </div>
           </div>
         </div>

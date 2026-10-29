@@ -34,7 +34,7 @@ import CompanyAccountingPanel from '@/app/components/accounting/CompanyAccountin
 import { resolveStorageAssetUrl } from '@/lib/api';
 import { useWidgetsFixed } from '@/lib/useWidgetsFixed';
 
-type SettingsSection = 'profile' | 'accounting' | 'templates' | 'holidays' | 'penalty' | 'system' | 'sms' | 'whatsapp';
+type SettingsSection = 'profile' | 'accounting' | 'templates' | 'holidays' | 'penalty' | 'transfer_loans' | 'system' | 'sms' | 'whatsapp';
 
 const inputClass =
   'w-full rounded-xl border border-cyan-200/80 bg-white px-3.5 py-2.5 text-sm text-black shadow-sm transition focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-200/80 placeholder:text-slate-400 [color-scheme:light]';
@@ -410,6 +410,7 @@ const SECTION_TABS: { key: SettingsSection; label: string; icon: typeof Building
   { key: 'templates', label: 'Document templates', icon: FileText },
   { key: 'holidays', label: 'Global holidays', icon: CalendarDays },
   { key: 'penalty', label: 'Panelty settings', icon: AlertTriangle },
+  { key: 'transfer_loans', label: 'Transfer loans', icon: RefreshCw },
   { key: 'system', label: 'System admin', icon: Settings },
   { key: 'sms', label: 'SMS gateway', icon: MessageSquare },
   { key: 'whatsapp', label: 'WhatsApp gateway', icon: MessageCircle },
@@ -483,6 +484,29 @@ type MFHoliday = {
   is_active: boolean;
 };
 
+type LoanTransferOfficer = {
+  id: number;
+  employee_code: string;
+  name: string;
+  status: string;
+  designation: string;
+  branch: string;
+};
+
+type LoanTransferBreakdownRow = {
+  key: string;
+  label: string;
+  count?: number;
+  updated_count?: number;
+};
+
+type OptimizeCommandResult = {
+  command: string;
+  ok: boolean;
+  exit_code: number;
+  output: string;
+};
+
 export default function CompanySettingsPage() {
   const router = useRouter();
 
@@ -523,6 +547,9 @@ export default function CompanySettingsPage() {
   const [systemOnline, setSystemOnline] = useState(true);
   const [systemStatusLoading, setSystemStatusLoading] = useState(false);
   const [updatingSystemStatus, setUpdatingSystemStatus] = useState(false);
+  const [optimizingSystem, setOptimizingSystem] = useState(false);
+  const [optimizeResults, setOptimizeResults] = useState<OptimizeCommandResult[]>([]);
+  const [optimizeLastRunAt, setOptimizeLastRunAt] = useState('');
   const [storageLinkLoading, setStorageLinkLoading] = useState(false);
   const [storageLinkCreating, setStorageLinkCreating] = useState(false);
   const [storageLinkReady, setStorageLinkReady] = useState(false);
@@ -617,6 +644,19 @@ export default function CompanySettingsPage() {
   const [bulkPenaltyProgressVisible, setBulkPenaltyProgressVisible] = useState(false);
   const [bulkPenaltyProgress, setBulkPenaltyProgress] = useState(0);
   const [bulkPenaltyProgressState, setBulkPenaltyProgressState] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
+  const [loanTransferOfficers, setLoanTransferOfficers] = useState<LoanTransferOfficer[]>([]);
+  const [loanTransferLoadingOfficers, setLoanTransferLoadingOfficers] = useState(false);
+  const [loanTransferFromEmployeeId, setLoanTransferFromEmployeeId] = useState<number | null>(null);
+  const [loanTransferToEmployeeId, setLoanTransferToEmployeeId] = useState<number | null>(null);
+  const [loanTransferPreviewLoading, setLoanTransferPreviewLoading] = useState(false);
+  const [loanTransferApplying, setLoanTransferApplying] = useState(false);
+  const [loanTransferPreviewTotal, setLoanTransferPreviewTotal] = useState(0);
+  const [loanTransferPreviewBreakdown, setLoanTransferPreviewBreakdown] = useState<LoanTransferBreakdownRow[]>([]);
+  const [loanTransferResultTotal, setLoanTransferResultTotal] = useState(0);
+  const [loanTransferResultBreakdown, setLoanTransferResultBreakdown] = useState<LoanTransferBreakdownRow[]>([]);
+  const [loanTransferProgressVisible, setLoanTransferProgressVisible] = useState(false);
+  const [loanTransferProgress, setLoanTransferProgress] = useState(0);
+  const [loanTransferProgressState, setLoanTransferProgressState] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
   const [activeSection, setActiveSection] = useState<SettingsSection>('profile');
   const [restoreWidgetsModal, setRestoreWidgetsModal] = useState<{
     open: boolean;
@@ -936,8 +976,18 @@ export default function CompanySettingsPage() {
     fetchCustomerProfileCompletionSetting(token);
     fetchSmsGatewayConfig(token);
     fetchWhatsappGatewayConfig(token);
+    fetchLoanTransferOfficers(token);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    if (activeSection !== 'transfer_loans') return;
+    if (loanTransferLoadingOfficers) return;
+    if (loanTransferOfficers.length > 0) return;
+    fetchLoanTransferOfficers(token);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection, token, loanTransferOfficers.length, loanTransferLoadingOfficers]);
 
   const fetchStorageLinkStatus = async (authToken: string) => {
     setStorageLinkLoading(true);
@@ -976,6 +1026,66 @@ export default function CompanySettingsPage() {
       setNotice({ type: 'error', text: error?.response?.data?.message || 'Failed to create storage link.' });
     } finally {
       setStorageLinkCreating(false);
+    }
+  };
+
+  const handleOptimizeSystem = async () => {
+    if (!token) return;
+
+    setOptimizingSystem(true);
+    setNotice(null);
+
+    try {
+      const response = await axios.post(
+        `/api/system/optimize`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const rows = Array.isArray(response.data?.results) ? response.data.results : [];
+      const normalized = rows
+        .filter((row: any) => row && typeof row === 'object')
+        .map((row: any) => ({
+          command: String(row.command || '').trim(),
+          ok: Boolean(row.ok),
+          exit_code: Number(row.exit_code ?? 1),
+          output: String(row.output || '').trim(),
+        }))
+        .filter((row: OptimizeCommandResult) => row.command !== '');
+
+      setOptimizeResults(normalized);
+      setOptimizeLastRunAt(new Date().toISOString());
+
+      const successCount = Number(response.data?.success_count ?? 0);
+      const failureCount = Number(response.data?.failure_count ?? 0);
+      const durationMs = Number(response.data?.duration_ms ?? 0);
+
+      setNotice({
+        type: failureCount > 0 ? 'error' : 'success',
+        text:
+          response.data?.message ||
+          `Optimization finished. Success: ${successCount}, Failed: ${failureCount}, Time: ${durationMs}ms.`,
+      });
+    } catch (error: any) {
+      const rows = Array.isArray(error?.response?.data?.results) ? error.response.data.results : [];
+      const normalized = rows
+        .filter((row: any) => row && typeof row === 'object')
+        .map((row: any) => ({
+          command: String(row.command || '').trim(),
+          ok: Boolean(row.ok),
+          exit_code: Number(row.exit_code ?? 1),
+          output: String(row.output || '').trim(),
+        }))
+        .filter((row: OptimizeCommandResult) => row.command !== '');
+
+      if (normalized.length > 0) {
+        setOptimizeResults(normalized);
+        setOptimizeLastRunAt(new Date().toISOString());
+      }
+
+      setNotice({ type: 'error', text: error?.response?.data?.message || 'Failed to run system optimization.' });
+    } finally {
+      setOptimizingSystem(false);
     }
   };
 
@@ -2162,6 +2272,199 @@ export default function CompanySettingsPage() {
     }
   };
 
+  const fetchLoanTransferOfficers = async (authToken: string) => {
+    setLoanTransferLoadingOfficers(true);
+    let primaryErrorMessage = '';
+
+    const normalizeOfficerRows = (rows: any[]): LoanTransferOfficer[] => {
+      return rows
+        .filter((row: any) => row && typeof row === 'object')
+        .map((row: any) => {
+          const firstName = String(row.first_name || '').trim();
+          const lastName = String(row.last_name || '').trim();
+          const joinedName = `${firstName} ${lastName}`.trim();
+          const designationName =
+            typeof row.designation === 'object'
+              ? String(row.designation?.name || '').trim()
+              : String(row.designation || '').trim();
+          const branchName =
+            typeof row.branch === 'object'
+              ? String(row.branch?.name || '').trim()
+              : String(row.branch || '').trim();
+
+          return {
+            id: Number(row.id || 0),
+            employee_code: String(row.employee_code || '').trim(),
+            name: String(row.name || joinedName).trim(),
+            status: String(row.status || '').trim().toLowerCase(),
+            designation: designationName,
+            branch: branchName,
+          };
+        })
+        .filter((row: LoanTransferOfficer) => row.id > 0);
+    };
+
+    try {
+      const response = await axios.get(`/api/system/loan-officer-transfer/officers`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+
+      const rows = Array.isArray(response.data?.officers)
+        ? response.data.officers
+        : Array.isArray(response.data?.data?.officers)
+          ? response.data.data.officers
+          : Array.isArray(response.data)
+            ? response.data
+            : [];
+
+      let normalized = normalizeOfficerRows(rows);
+
+      // Fallback: use HR employees endpoint when transfer endpoint is unavailable or returns no rows.
+      if (normalized.length === 0) {
+        const fallbackRes = await axios.get('/api/hr/employees', {
+          headers: { Authorization: `Bearer ${authToken}` },
+          params: { per_page: 500 },
+        });
+
+        const fallbackRows = Array.isArray(fallbackRes.data)
+          ? fallbackRes.data
+          : Array.isArray(fallbackRes.data?.data)
+            ? fallbackRes.data.data
+            : [];
+
+        normalized = normalizeOfficerRows(fallbackRows);
+      }
+
+      const uniqueById = new Map<number, LoanTransferOfficer>();
+      normalized.forEach((row) => uniqueById.set(row.id, row));
+      const finalRows = Array.from(uniqueById.values());
+
+      setLoanTransferOfficers(finalRows);
+
+      if (!loanTransferFromEmployeeId && finalRows.length > 0) {
+        setLoanTransferFromEmployeeId(finalRows[0].id);
+      }
+
+      setLoanTransferToEmployeeId((prev) => {
+        if (!prev) return prev;
+        return finalRows.some((item: LoanTransferOfficer) => item.id === prev) ? prev : null;
+      });
+    } catch (error: any) {
+      primaryErrorMessage = String(error?.response?.data?.message || error?.message || '').trim();
+      setLoanTransferOfficers([]);
+      setNotice({ type: 'error', text: primaryErrorMessage || 'Failed to load officers for loan transfer.' });
+    } finally {
+      setLoanTransferLoadingOfficers(false);
+    }
+  };
+
+  const handlePreviewLoanTransfer = async () => {
+    if (!token || !loanTransferFromEmployeeId) return;
+
+    setLoanTransferPreviewLoading(true);
+    setLoanTransferProgressVisible(true);
+    setLoanTransferProgressState('running');
+    setLoanTransferProgress(10);
+    setLoanTransferResultTotal(0);
+    setLoanTransferResultBreakdown([]);
+
+    const progressTimer = window.setInterval(() => {
+      setLoanTransferProgress((prev) => {
+        if (prev >= 85) return prev;
+        const delta = Math.max(2, Math.ceil((85 - prev) / 6));
+        return Math.min(85, prev + delta);
+      });
+    }, 170);
+
+    try {
+      const response = await axios.post(
+        `/api/system/loan-officer-transfer/preview`,
+        {
+          from_employee_id: loanTransferFromEmployeeId,
+          to_employee_id: loanTransferToEmployeeId || undefined,
+        },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+
+      const total = Number(response.data?.total_transferable ?? 0);
+      const breakdown = Array.isArray(response.data?.breakdown) ? response.data.breakdown : [];
+      setLoanTransferPreviewTotal(total);
+      setLoanTransferPreviewBreakdown(breakdown as LoanTransferBreakdownRow[]);
+      setLoanTransferProgress(100);
+      setLoanTransferProgressState('success');
+    } catch (error: any) {
+      setLoanTransferProgress(100);
+      setLoanTransferProgressState('error');
+      setNotice({ type: 'error', text: error?.response?.data?.message || 'Failed to preview loan transfer.' });
+    } finally {
+      window.clearInterval(progressTimer);
+      setLoanTransferPreviewLoading(false);
+      window.setTimeout(() => {
+        setLoanTransferProgressVisible(false);
+        setLoanTransferProgress(0);
+        setLoanTransferProgressState('idle');
+      }, 900);
+    }
+  };
+
+  const handleApplyLoanTransfer = async () => {
+    if (!token || !loanTransferFromEmployeeId || !loanTransferToEmployeeId) {
+      setNotice({ type: 'error', text: 'Please select source and target officers.' });
+      return;
+    }
+
+    if (loanTransferFromEmployeeId === loanTransferToEmployeeId) {
+      setNotice({ type: 'error', text: 'Source and target officers must be different.' });
+      return;
+    }
+
+    setLoanTransferApplying(true);
+    setLoanTransferProgressVisible(true);
+    setLoanTransferProgressState('running');
+    setLoanTransferProgress(8);
+
+    const progressTimer = window.setInterval(() => {
+      setLoanTransferProgress((prev) => {
+        if (prev >= 90) return prev;
+        const delta = Math.max(2, Math.ceil((90 - prev) / 7));
+        return Math.min(90, prev + delta);
+      });
+    }, 170);
+
+    try {
+      const response = await axios.post(
+        `/api/system/loan-officer-transfer/apply`,
+        {
+          from_employee_id: loanTransferFromEmployeeId,
+          to_employee_id: loanTransferToEmployeeId,
+        },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+
+      const totalUpdated = Number(response.data?.total_updated ?? 0);
+      const breakdown = Array.isArray(response.data?.breakdown) ? response.data.breakdown : [];
+      setLoanTransferResultTotal(totalUpdated);
+      setLoanTransferResultBreakdown(breakdown as LoanTransferBreakdownRow[]);
+      setLoanTransferProgress(100);
+      setLoanTransferProgressState('success');
+      setNotice({ type: 'success', text: response.data?.message || `Transferred ${totalUpdated} loan assignments.` });
+
+      await handlePreviewLoanTransfer();
+    } catch (error: any) {
+      setLoanTransferProgress(100);
+      setLoanTransferProgressState('error');
+      setNotice({ type: 'error', text: error?.response?.data?.message || 'Failed to transfer loans.' });
+    } finally {
+      window.clearInterval(progressTimer);
+      setLoanTransferApplying(false);
+      window.setTimeout(() => {
+        setLoanTransferProgressVisible(false);
+        setLoanTransferProgress(0);
+        setLoanTransferProgressState('idle');
+      }, 900);
+    }
+  };
+
   if (!token) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-teal-50 flex items-center justify-center">
@@ -3039,6 +3342,146 @@ export default function CompanySettingsPage() {
                   </div>
                 )}
 
+                {activeSection === 'transfer_loans' && (
+                  <div className="space-y-5">
+                    <div className="rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50/80 to-cyan-50/50 px-4 py-3">
+                      <p className="text-sm font-bold text-slate-900">Transfer loans</p>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Re-assign loans from a resigning credit officer to a new officer in one operation.
+                      </p>
+                    </div>
+
+                    <div className="rounded-2xl border border-cyan-100 bg-white p-5 shadow-sm space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className={labelClass}>Source officer (resigning)</label>
+                          <select
+                            value={loanTransferFromEmployeeId ?? ''}
+                            onChange={(e) => setLoanTransferFromEmployeeId(Number(e.target.value) || null)}
+                            className={inputClass}
+                            disabled={loanTransferLoadingOfficers || loanTransferOfficers.length === 0}
+                          >
+                            {loanTransferOfficers.length === 0 ? (
+                              <option value="">No officers available</option>
+                            ) : (
+                              loanTransferOfficers.map((officer) => (
+                                <option key={officer.id} value={officer.id}>
+                                  {officer.employee_code || 'N/A'} - {officer.name} ({officer.designation || 'No designation'})
+                                </option>
+                              ))
+                            )}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className={labelClass}>Target officer (new)</label>
+                          <select
+                            value={loanTransferToEmployeeId ?? ''}
+                            onChange={(e) => setLoanTransferToEmployeeId(Number(e.target.value) || null)}
+                            className={inputClass}
+                            disabled={loanTransferLoadingOfficers || loanTransferOfficers.length === 0}
+                          >
+                            <option value="">Select target officer</option>
+                            {loanTransferOfficers
+                              .filter((officer) => officer.status === 'active' && officer.id !== loanTransferFromEmployeeId)
+                              .map((officer) => (
+                                <option key={officer.id} value={officer.id}>
+                                  {officer.employee_code || 'N/A'} - {officer.name} ({officer.branch || 'No branch'})
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={handlePreviewLoanTransfer}
+                          disabled={loanTransferPreviewLoading || !loanTransferFromEmployeeId}
+                          className="inline-flex items-center gap-2 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-2.5 text-sm font-bold text-cyan-800 hover:bg-cyan-100 disabled:opacity-60"
+                        >
+                          <Eye className="h-4 w-4" />
+                          {loanTransferPreviewLoading ? 'Previewing…' : 'Preview transfers'}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleApplyLoanTransfer}
+                          disabled={loanTransferApplying || !loanTransferFromEmployeeId || !loanTransferToEmployeeId}
+                          className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-cyan-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          {loanTransferApplying ? 'Transferring…' : 'Transfer now'}
+                        </button>
+
+                        <p className="text-xs text-slate-500">Loan assignments will be moved from selected source to target officer.</p>
+                      </div>
+
+                      {loanTransferProgressVisible && (
+                        <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+                          <div className="mb-1.5 flex items-center justify-between text-[11px] font-semibold text-slate-700">
+                            <span>
+                              {loanTransferProgressState === 'running'
+                                ? (loanTransferApplying ? 'Transferring loans...' : 'Preparing preview...')
+                                : loanTransferProgressState === 'success'
+                                  ? 'Completed'
+                                  : loanTransferProgressState === 'error'
+                                    ? 'Operation failed'
+                                    : 'Preparing...'}
+                            </span>
+                            <span>{Math.round(loanTransferProgress)}%</span>
+                          </div>
+                          <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
+                            <div
+                              className={`h-full rounded-full transition-all duration-200 ${
+                                loanTransferProgressState === 'error'
+                                  ? 'bg-gradient-to-r from-rose-500 to-red-600'
+                                  : loanTransferProgressState === 'success'
+                                    ? 'bg-gradient-to-r from-emerald-500 to-green-600'
+                                    : 'bg-gradient-to-r from-indigo-500 to-cyan-600'
+                              }`}
+                              style={{ width: `${Math.max(0, Math.min(100, loanTransferProgress))}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
+                        <p className="text-xs font-bold uppercase tracking-wide text-indigo-700">Preview result</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">Total transferable loans: {loanTransferPreviewTotal.toLocaleString()}</p>
+
+                        {loanTransferPreviewBreakdown.length > 0 ? (
+                          <ul className="mt-3 space-y-1.5 text-sm text-slate-700">
+                            {loanTransferPreviewBreakdown.map((row) => (
+                              <li key={row.key} className="flex items-center justify-between gap-4">
+                                <span>{row.label}</span>
+                                <span className="font-bold text-slate-900">{Number(row.count || 0).toLocaleString()}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="mt-2 text-xs text-slate-500">Run preview to see transfer counts by module.</p>
+                        )}
+                      </div>
+
+                      {loanTransferResultBreakdown.length > 0 && (
+                        <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
+                          <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">Last transfer result</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-900">Total updated loans: {loanTransferResultTotal.toLocaleString()}</p>
+                          <ul className="mt-3 space-y-1.5 text-sm text-slate-700">
+                            {loanTransferResultBreakdown.map((row) => (
+                              <li key={row.key} className="flex items-center justify-between gap-4">
+                                <span>{row.label}</span>
+                                <span className="font-bold text-slate-900">{Number(row.updated_count || 0).toLocaleString()}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {activeSection === 'system' && (
                   <div className="space-y-5">
                     <div className="rounded-2xl border border-slate-200 bg-gradient-to-r from-slate-50 to-indigo-50/40 px-4 py-3">
@@ -3201,6 +3644,53 @@ export default function CompanySettingsPage() {
                             Recheck
                           </button>
                         </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-indigo-100 bg-white p-5 shadow-sm">
+                        <div className="flex items-center gap-2 mb-3">
+                          <RefreshCw className="h-5 w-5 text-indigo-700" />
+                          <h3 className="font-bold text-slate-900">Project cleanup and optimization</h3>
+                        </div>
+                        <p className="text-sm text-slate-600">
+                          Clears stale caches and rebuilds optimized runtime caches to improve page loading speed.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleOptimizeSystem}
+                          disabled={optimizingSystem}
+                          className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-60"
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          {optimizingSystem ? 'Optimizing…' : 'Run cleanup and optimize'}
+                        </button>
+
+                        {optimizeLastRunAt && (
+                          <p className="mt-2 text-xs text-slate-500">
+                            Last run: {new Date(optimizeLastRunAt).toLocaleString()}
+                          </p>
+                        )}
+
+                        {optimizeResults.length > 0 && (
+                          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+                            {optimizeResults.map((row, index) => (
+                              <div key={`${row.command}_${index}`} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-xs font-bold text-slate-800">{row.command}</p>
+                                  <span
+                                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                      row.ok ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                                    }`}
+                                  >
+                                    {row.ok ? 'OK' : `FAILED (${row.exit_code})`}
+                                  </span>
+                                </div>
+                                {row.output && (
+                                  <p className="mt-1 whitespace-pre-wrap text-[11px] text-slate-600">{row.output}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
 
                       <div className="rounded-2xl border border-emerald-100 bg-white p-5 shadow-sm">

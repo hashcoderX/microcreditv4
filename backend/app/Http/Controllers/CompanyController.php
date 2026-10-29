@@ -9,7 +9,9 @@ use App\Models\CompanyAccount;
 use App\Models\CompanyLeadershipAssignment;
 use App\Models\Department;
 use App\Models\Designation;
+use App\Models\Finance;
 use App\Models\LoanPenaltyRule;
+use App\Models\MicrofinanceLoanRequest;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\SmsGatewayService;
@@ -422,6 +424,61 @@ class CompanyController extends Controller
             ], $linked ? 200 : 422);
         }
 
+        public function optimizeSystem(Request $request)
+        {
+            $user = $request->user();
+            if (!$user || !$user->isSystemAdmin()) {
+                return response()->json([
+                    'message' => 'Only admins can run system optimization.'
+                ], 403);
+            }
+
+            $startedAt = microtime(true);
+            $results = [];
+
+            $commands = [
+                'optimize:clear',
+                'config:cache',
+                'route:cache',
+                'view:cache',
+            ];
+
+            foreach ($commands as $command) {
+                try {
+                    $exitCode = (int) Artisan::call($command);
+                    $output = trim((string) Artisan::output());
+
+                    $results[] = [
+                        'command' => $command,
+                        'ok' => $exitCode === 0,
+                        'exit_code' => $exitCode,
+                        'output' => $output,
+                    ];
+                } catch (Throwable $exception) {
+                    $results[] = [
+                        'command' => $command,
+                        'ok' => false,
+                        'exit_code' => 1,
+                        'output' => $exception->getMessage(),
+                    ];
+                }
+            }
+
+            $successCount = collect($results)->where('ok', true)->count();
+            $failureCount = count($results) - $successCount;
+            $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+
+            return response()->json([
+                'message' => $failureCount > 0
+                    ? 'System optimization completed with some warnings.'
+                    : 'System optimization completed successfully.',
+                'success_count' => $successCount,
+                'failure_count' => $failureCount,
+                'duration_ms' => $durationMs,
+                'results' => $results,
+            ], $failureCount > 0 ? 207 : 200);
+        }
+
         public function getSmsGatewayConfig(Request $request)
         {
             $user = $request->user();
@@ -773,6 +830,375 @@ class CompanyController extends Controller
                     'value_mode' => (string) ($rule->value_mode ?? ''),
                     'amount_or_rate' => (float) ($rule->amount_or_rate ?? 0),
                 ],
+            ]);
+        }
+
+        public function transferLoanOfficerCandidates(Request $request)
+        {
+            $user = $request->user();
+            if (!$user || !$user->isSystemAdmin()) {
+                return response()->json([
+                    'message' => 'Only admins can manage loan transfer settings.',
+                ], 403);
+            }
+
+            $rows = Employee::query()
+                ->with(['designation:id,name', 'branch:id,name'])
+                ->select(['id', 'employee_code', 'first_name', 'last_name', 'status', 'designation_id', 'branch_id'])
+                ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
+                ->orderBy('first_name')
+                ->orderBy('last_name')
+                ->get()
+                ->map(static function ($employee): array {
+                    return [
+                        'id' => (int) $employee->id,
+                        'employee_code' => (string) ($employee->employee_code ?? ''),
+                        'name' => trim((string) ($employee->first_name ?? '') . ' ' . (string) ($employee->last_name ?? '')),
+                        'status' => (string) ($employee->status ?? ''),
+                        'designation' => (string) (optional($employee->designation)->name ?? ''),
+                        'branch' => (string) (optional($employee->branch)->name ?? ''),
+                    ];
+                })
+                ->values()
+                ->all();
+
+            return response()->json([
+                'officers' => $rows,
+            ]);
+        }
+
+        public function previewLoanOfficerTransfer(Request $request)
+        {
+            $user = $request->user();
+            if (!$user || !$user->isSystemAdmin()) {
+                return response()->json([
+                    'message' => 'Only admins can preview loan transfers.',
+                ], 403);
+            }
+
+            $validated = $request->validate([
+                'from_employee_id' => ['required', 'integer', 'exists:employees,id'],
+                'to_employee_id' => ['nullable', 'integer', 'exists:employees,id'],
+            ]);
+
+            $fromEmployeeId = (int) ($validated['from_employee_id'] ?? 0);
+            $toEmployeeId = (int) ($validated['to_employee_id'] ?? 0);
+
+            $fromOfficer = Employee::query()->find($fromEmployeeId);
+            $fromOfficerName = trim((string) ($fromOfficer?->first_name ?? '') . ' ' . (string) ($fromOfficer?->last_name ?? ''));
+            $fromUserIds = User::query()
+                ->where('employee_id', $fromEmployeeId)
+                ->pluck('id')
+                ->map(static fn ($id): int => (int) $id)
+                ->filter(static fn (int $id): bool => $id > 0)
+                ->values()
+                ->all();
+
+            if ($toEmployeeId > 0 && $fromEmployeeId === $toEmployeeId) {
+                return response()->json([
+                    'message' => 'Source and target officers must be different.',
+                ], 422);
+            }
+
+            $breakdown = [];
+            $total = 0;
+            $microfinanceTotal = 0;
+            $financeTotal = 0;
+            $mortgageTotal = 0;
+
+            if (Schema::hasTable('mf_loan_requests')) {
+                if (Schema::hasColumn('mf_loan_requests', 'approval_employee_id')) {
+                    $count = (int) MicrofinanceLoanRequest::query()
+                        ->where('approval_employee_id', $fromEmployeeId)
+                        ->count();
+                    $microfinanceTotal += $count;
+                }
+
+                if (Schema::hasColumn('mf_loan_requests', 'field_officer_id')) {
+                    $count = (int) DB::table('mf_loan_requests')
+                        ->where('field_officer_id', $fromEmployeeId)
+                        ->count();
+                    $microfinanceTotal += $count;
+                }
+
+                if ($fromOfficerName !== '' && Schema::hasColumn('mf_loan_requests', 'field_officer')) {
+                    $count = (int) DB::table('mf_loan_requests')
+                        ->whereRaw('LOWER(TRIM(field_officer)) = ?', [strtolower($fromOfficerName)])
+                        ->count();
+                    $microfinanceTotal += $count;
+                }
+
+                if (!empty($fromUserIds) && Schema::hasColumn('mf_loan_requests', 'created_by')) {
+                    $count = (int) DB::table('mf_loan_requests')
+                        ->whereIn('created_by', $fromUserIds)
+                        ->count();
+                    $microfinanceTotal += $count;
+                }
+            }
+
+            if (Schema::hasTable('finances')) {
+                if (Schema::hasColumn('finances', 'responsible_officer_employee_id')) {
+                    $count = (int) Finance::query()
+                        ->where('responsible_officer_employee_id', $fromEmployeeId)
+                        ->count();
+                    $financeTotal += $count;
+                }
+
+                if (!empty($fromUserIds) && Schema::hasColumn('finances', 'branch_manager_user_id')) {
+                    $count = (int) DB::table('finances')
+                        ->whereIn('branch_manager_user_id', $fromUserIds)
+                        ->count();
+                    $financeTotal += $count;
+                }
+
+                if (!empty($fromUserIds) && Schema::hasColumn('finances', 'created_by')) {
+                    $count = (int) DB::table('finances')
+                        ->whereIn('created_by', $fromUserIds)
+                        ->count();
+                    $financeTotal += $count;
+                }
+            }
+
+            if (Schema::hasTable('mortgages')) {
+                if (!empty($fromUserIds) && Schema::hasColumn('mortgages', 'responsible_manager_user_id')) {
+                    $count = (int) DB::table('mortgages')
+                        ->whereIn('responsible_manager_user_id', $fromUserIds)
+                        ->count();
+                    $mortgageTotal += $count;
+                }
+
+                if (!empty($fromUserIds) && Schema::hasColumn('mortgages', 'created_by')) {
+                    $count = (int) DB::table('mortgages')
+                        ->whereIn('created_by', $fromUserIds)
+                        ->count();
+                    $mortgageTotal += $count;
+                }
+            }
+
+            $breakdown[] = [
+                'key' => 'microfinance_total',
+                'label' => 'Microfinance loans',
+                'count' => $microfinanceTotal,
+            ];
+            $breakdown[] = [
+                'key' => 'finance_total',
+                'label' => 'Finance loans',
+                'count' => $financeTotal,
+            ];
+            $breakdown[] = [
+                'key' => 'mortgage_total',
+                'label' => 'Mortgage loans',
+                'count' => $mortgageTotal,
+            ];
+
+            $total = $microfinanceTotal + $financeTotal + $mortgageTotal;
+
+            return response()->json([
+                'from_employee_id' => $fromEmployeeId,
+                'to_employee_id' => $toEmployeeId > 0 ? $toEmployeeId : null,
+                'total_transferable' => $total,
+                'breakdown' => $breakdown,
+            ]);
+        }
+
+        public function applyLoanOfficerTransfer(Request $request)
+        {
+            $user = $request->user();
+            if (!$user || !$user->isSystemAdmin()) {
+                return response()->json([
+                    'message' => 'Only admins can apply loan transfers.',
+                ], 403);
+            }
+
+            $validated = $request->validate([
+                'from_employee_id' => ['required', 'integer', 'exists:employees,id'],
+                'to_employee_id' => ['required', 'integer', 'exists:employees,id'],
+            ]);
+
+            $fromEmployeeId = (int) ($validated['from_employee_id'] ?? 0);
+            $toEmployeeId = (int) ($validated['to_employee_id'] ?? 0);
+
+            if ($fromEmployeeId === $toEmployeeId) {
+                return response()->json([
+                    'message' => 'Source and target officers must be different.',
+                ], 422);
+            }
+
+            $targetOfficer = Employee::query()->find($toEmployeeId);
+            if (!$targetOfficer) {
+                return response()->json([
+                    'message' => 'Target officer not found.',
+                ], 404);
+            }
+
+            if ((string) ($targetOfficer->status ?? '') !== 'active') {
+                return response()->json([
+                    'message' => 'Target officer must be active for transfer.',
+                ], 422);
+            }
+
+            $fromOfficer = Employee::query()->find($fromEmployeeId);
+            $fromOfficerName = trim((string) ($fromOfficer?->first_name ?? '') . ' ' . (string) ($fromOfficer?->last_name ?? ''));
+            $toOfficerName = trim((string) ($targetOfficer->first_name ?? '') . ' ' . (string) ($targetOfficer->last_name ?? ''));
+
+            $fromUserIds = User::query()
+                ->where('employee_id', $fromEmployeeId)
+                ->pluck('id')
+                ->map(static fn ($id): int => (int) $id)
+                ->filter(static fn (int $id): bool => $id > 0)
+                ->values()
+                ->all();
+
+            $toUserId = (int) (User::query()
+                ->where('employee_id', $toEmployeeId)
+                ->value('id') ?? 0);
+
+            $breakdown = [];
+            $totalUpdated = 0;
+            $microfinanceTotal = 0;
+            $financeTotal = 0;
+            $mortgageTotal = 0;
+
+            DB::transaction(function () use ($fromEmployeeId, $toEmployeeId, $fromOfficerName, $toOfficerName, $fromUserIds, $toUserId, &$breakdown, &$totalUpdated, &$microfinanceTotal, &$financeTotal, &$mortgageTotal): void {
+                if (Schema::hasTable('mf_loan_requests')) {
+                    if (Schema::hasColumn('mf_loan_requests', 'approval_employee_id')) {
+                        $payload = ['approval_employee_id' => $toEmployeeId];
+                        if (Schema::hasColumn('mf_loan_requests', 'updated_at')) {
+                            $payload['updated_at'] = now();
+                        }
+
+                        $updated = (int) DB::table('mf_loan_requests')
+                            ->where('approval_employee_id', $fromEmployeeId)
+                            ->update($payload);
+                        $microfinanceTotal += $updated;
+                    }
+
+                    if (Schema::hasColumn('mf_loan_requests', 'field_officer_id')) {
+                        $payload = ['field_officer_id' => $toEmployeeId];
+                        if (Schema::hasColumn('mf_loan_requests', 'updated_at')) {
+                            $payload['updated_at'] = now();
+                        }
+
+                        $updated = (int) DB::table('mf_loan_requests')
+                            ->where('field_officer_id', $fromEmployeeId)
+                            ->update($payload);
+                        $microfinanceTotal += $updated;
+                    }
+
+                    if ($fromOfficerName !== '' && $toOfficerName !== '' && Schema::hasColumn('mf_loan_requests', 'field_officer')) {
+                        $payload = ['field_officer' => $toOfficerName];
+                        if (Schema::hasColumn('mf_loan_requests', 'updated_at')) {
+                            $payload['updated_at'] = now();
+                        }
+
+                        $updated = (int) DB::table('mf_loan_requests')
+                            ->whereRaw('LOWER(TRIM(field_officer)) = ?', [strtolower($fromOfficerName)])
+                            ->update($payload);
+                        $microfinanceTotal += $updated;
+                    }
+
+                    if (!empty($fromUserIds) && $toUserId > 0 && Schema::hasColumn('mf_loan_requests', 'created_by')) {
+                        $payload = ['created_by' => $toUserId];
+                        if (Schema::hasColumn('mf_loan_requests', 'updated_at')) {
+                            $payload['updated_at'] = now();
+                        }
+
+                        $updated = (int) DB::table('mf_loan_requests')
+                            ->whereIn('created_by', $fromUserIds)
+                            ->update($payload);
+                        $microfinanceTotal += $updated;
+                    }
+                }
+
+                if (Schema::hasTable('finances')) {
+                    if (Schema::hasColumn('finances', 'responsible_officer_employee_id')) {
+                        $payload = ['responsible_officer_employee_id' => $toEmployeeId];
+                        if (Schema::hasColumn('finances', 'updated_at')) {
+                            $payload['updated_at'] = now();
+                        }
+
+                        $updated = (int) DB::table('finances')
+                            ->where('responsible_officer_employee_id', $fromEmployeeId)
+                            ->update($payload);
+                        $financeTotal += $updated;
+                    }
+
+                    if (!empty($fromUserIds) && $toUserId > 0 && Schema::hasColumn('finances', 'branch_manager_user_id')) {
+                        $payload = ['branch_manager_user_id' => $toUserId];
+                        if (Schema::hasColumn('finances', 'updated_at')) {
+                            $payload['updated_at'] = now();
+                        }
+
+                        $updated = (int) DB::table('finances')
+                            ->whereIn('branch_manager_user_id', $fromUserIds)
+                            ->update($payload);
+                        $financeTotal += $updated;
+                    }
+
+                    if (!empty($fromUserIds) && $toUserId > 0 && Schema::hasColumn('finances', 'created_by')) {
+                        $payload = ['created_by' => $toUserId];
+                        if (Schema::hasColumn('finances', 'updated_at')) {
+                            $payload['updated_at'] = now();
+                        }
+
+                        $updated = (int) DB::table('finances')
+                            ->whereIn('created_by', $fromUserIds)
+                            ->update($payload);
+                        $financeTotal += $updated;
+                    }
+                }
+
+                if (Schema::hasTable('mortgages')) {
+                    if (!empty($fromUserIds) && $toUserId > 0 && Schema::hasColumn('mortgages', 'responsible_manager_user_id')) {
+                        $payload = ['responsible_manager_user_id' => $toUserId];
+                        if (Schema::hasColumn('mortgages', 'updated_at')) {
+                            $payload['updated_at'] = now();
+                        }
+
+                        $updated = (int) DB::table('mortgages')
+                            ->whereIn('responsible_manager_user_id', $fromUserIds)
+                            ->update($payload);
+                        $mortgageTotal += $updated;
+                    }
+
+                    if (!empty($fromUserIds) && $toUserId > 0 && Schema::hasColumn('mortgages', 'created_by')) {
+                        $payload = ['created_by' => $toUserId];
+                        if (Schema::hasColumn('mortgages', 'updated_at')) {
+                            $payload['updated_at'] = now();
+                        }
+
+                        $updated = (int) DB::table('mortgages')
+                            ->whereIn('created_by', $fromUserIds)
+                            ->update($payload);
+                        $mortgageTotal += $updated;
+                    }
+                }
+
+                $breakdown[] = [
+                    'key' => 'microfinance_total',
+                    'label' => 'Microfinance loans',
+                    'updated_count' => $microfinanceTotal,
+                ];
+                $breakdown[] = [
+                    'key' => 'finance_total',
+                    'label' => 'Finance loans',
+                    'updated_count' => $financeTotal,
+                ];
+                $breakdown[] = [
+                    'key' => 'mortgage_total',
+                    'label' => 'Mortgage loans',
+                    'updated_count' => $mortgageTotal,
+                ];
+
+                $totalUpdated = $microfinanceTotal + $financeTotal + $mortgageTotal;
+            });
+
+            return response()->json([
+                'message' => 'Loan officer transfer completed successfully.',
+                'from_employee_id' => $fromEmployeeId,
+                'to_employee_id' => $toEmployeeId,
+                'total_updated' => $totalUpdated,
+                'breakdown' => $breakdown,
             ]);
         }
 
@@ -1446,7 +1872,7 @@ class CompanyController extends Controller
         try {
             @set_time_limit(0);
 
-            $preservedDepartments = Department::query()->get()->map(function (Department $department): array {
+            $preservedDepartments = Department::query()->get()->map(function ($department): array {
                 return [
                     'tenant_id' => $department->tenant_id,
                     'branch_id' => $department->branch_id,
@@ -1458,7 +1884,7 @@ class CompanyController extends Controller
                 ];
             })->all();
 
-            $preservedDesignations = Designation::query()->get()->map(function (Designation $designation): array {
+            $preservedDesignations = Designation::query()->get()->map(function ($designation): array {
                 return [
                     'tenant_id' => $designation->tenant_id,
                     'branch_id' => $designation->branch_id,

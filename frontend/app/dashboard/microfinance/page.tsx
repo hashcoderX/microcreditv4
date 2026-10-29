@@ -90,6 +90,8 @@ const MF_DASHBOARD_NOTIFICATION_CACHE_KEY = 'mf_dashboard_notification_count_v1'
 
 export default function MicrofinanceDashboard() {
   const [token, setToken] = useState('');
+  const [openingModulePath, setOpeningModulePath] = useState<string | null>(null);
+  const [openingDashboard, setOpeningDashboard] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [loadingWidgets, setLoadingWidgets] = useState(true);
@@ -385,16 +387,37 @@ export default function MicrofinanceDashboard() {
     router.push('/');
   };
 
+  const goToDashboard = () => {
+    if (openingDashboard) return;
+    setOpeningDashboard(true);
+    router.push('/dashboard');
+  };
+
   const displayName = String(authUser?.name || authUser?.email || 'User').trim();
   const roleName = String(authUser?.designation?.name || authUser?.roles?.[0]?.name || 'Staff').trim();
 
   const microfinanceModules = [
-    { key: 'mf_widget_module_loans', name: 'Loan Management', icon: '💰', color: 'from-green-500 to-emerald-500', bgColor: 'from-green-50 to-emerald-50', description: 'Manage micro loans and applications' },
-    { key: 'mf_widget_module_collections', name: 'Collection Management', icon: '📊', color: 'from-blue-500 to-cyan-500', bgColor: 'from-blue-50 to-cyan-50', description: 'Handle loan collections and repayments' },
-    { key: 'mf_widget_module_payments', name: 'Payments', icon: '💳', color: 'from-purple-500 to-indigo-500', bgColor: 'from-purple-50 to-indigo-50', description: 'Process payments and transactions' },
-    { key: 'mf_widget_module_customers', name: 'Customers', icon: '👤', color: 'from-amber-500 to-orange-500', bgColor: 'from-amber-50 to-orange-50', description: 'View and manage microfinance customers' },
-    { key: 'mf_widget_module_settings', name: 'Settings', icon: '⚙️', color: 'from-gray-500 to-slate-500', bgColor: 'from-gray-50 to-slate-50', description: 'Configure microfinance settings' },
+    { key: 'mf_widget_module_loans', name: 'Loan Management', path: '/dashboard/microfinance/loans', icon: '💰', color: 'from-green-500 to-emerald-500', bgColor: 'from-green-50 to-emerald-50', description: 'Manage micro loans and applications' },
+    { key: 'mf_widget_module_collections', name: 'Collection Management', path: '/dashboard/microfinance/collections', icon: '📊', color: 'from-blue-500 to-cyan-500', bgColor: 'from-blue-50 to-cyan-50', description: 'Handle loan collections and repayments' },
+    { key: 'mf_widget_module_payments', name: 'Payments', path: '/dashboard/microfinance/payments', icon: '💳', color: 'from-purple-500 to-indigo-500', bgColor: 'from-purple-50 to-indigo-50', description: 'Process payments and transactions' },
+    { key: 'mf_widget_module_customers', name: 'Customers', path: '/dashboard/microfinance/customers', icon: '👤', color: 'from-amber-500 to-orange-500', bgColor: 'from-amber-50 to-orange-50', description: 'View and manage microfinance customers' },
+    { key: 'mf_widget_module_settings', name: 'Settings', path: '/dashboard/microfinance/settings', icon: '⚙️', color: 'from-gray-500 to-slate-500', bgColor: 'from-gray-50 to-slate-50', description: 'Configure microfinance settings' },
   ];
+
+  useEffect(() => {
+    microfinanceModules.forEach((module) => {
+      router.prefetch(module.path);
+    });
+    router.prefetch('/dashboard');
+  }, [router]);
+
+  useEffect(() => {
+    if (!openingDashboard) return;
+    const timer = window.setTimeout(() => {
+      setOpeningDashboard(false);
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [openingDashboard]);
 
   const visibleModules = microfinanceModules.filter((module) => {
     if (hiddenWidgetKeys.has(module.key)) {
@@ -1126,10 +1149,12 @@ export default function MicrofinanceDashboard() {
             </div>
             <div className="hidden md:flex items-center space-x-3">
               <button
-                onClick={() => router.push('/dashboard')}
+                onMouseEnter={() => router.prefetch('/dashboard')}
+                onClick={goToDashboard}
+                disabled={openingDashboard}
                 className="text-gray-600 hover:text-gray-900 px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-300"
               >
-                ← Back to Dashboard
+                {openingDashboard ? 'Opening dashboard...' : '← Back to Dashboard'}
               </button>
               <div className="hidden md:flex items-center space-x-2 text-sm text-gray-600">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
@@ -1173,11 +1198,12 @@ export default function MicrofinanceDashboard() {
               <button
                 onClick={() => {
                   setMobileNavOpen(false);
-                  router.push('/dashboard');
+                  goToDashboard();
                 }}
+                disabled={openingDashboard}
                 className="w-full text-left text-gray-700 hover:text-gray-900 px-3 py-2 rounded-lg text-sm font-medium bg-white/70 border border-cyan-100"
               >
-                ← Back to Dashboard
+                {openingDashboard ? 'Opening dashboard...' : '← Back to Dashboard'}
               </button>
               <div className="flex items-center space-x-2 text-sm text-gray-600 px-3 py-2 rounded-lg bg-white/70 border border-cyan-100">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
@@ -1235,18 +1261,10 @@ export default function MicrofinanceDashboard() {
           {visibleModules.map((module) => (
             <div
               key={module.key}
+              onMouseEnter={() => router.prefetch(module.path)}
               onClick={() => {
-                if (module.name === 'Loan Management') {
-                  router.push('/dashboard/microfinance/loans');
-                } else if (module.name === 'Collection Management') {
-                  router.push('/dashboard/microfinance/collections');
-                } else if (module.name === 'Payments') {
-                  router.push('/dashboard/microfinance/payments');
-                } else if (module.name === 'Customers') {
-                  router.push('/dashboard/microfinance/customers');
-                } else if (module.name === 'Settings') {
-                  router.push('/dashboard/microfinance/settings');
-                }
+                setOpeningModulePath(module.path);
+                router.push(module.path);
               }}
               className="group relative bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-500 cursor-pointer border border-white/20 overflow-hidden transform hover:-translate-y-2 hover:scale-105"
             >
@@ -1283,6 +1301,9 @@ export default function MicrofinanceDashboard() {
                   <h3 className="text-lg font-bold text-gray-900 group-hover:text-gray-800 transition-colors duration-300">
                     {module.name}
                   </h3>
+                  {openingModulePath === module.path ? (
+                    <p className="text-xs font-semibold text-cyan-700">Opening...</p>
+                  ) : null}
                   <p className="text-sm text-gray-600 group-hover:text-gray-700 transition-colors duration-300">
                     {module.description}
                   </p>
