@@ -1,0 +1,24 @@
+﻿
+=== MF TODAY ===
+{"branch_id":1,"collected":"600.00","interest":"100.00","penalty":"0.00"}
+
+=== MF LAST30 ===
+{"branch_id":1,"collected":"1582680.00","interest":"311877.07","penalty":"181759.70"}
+MF NULL BRANCH ROWS: 0
+
+=== FIN TODAY ===
+{"branch_id":1,"collected":"8890.00","interest_paid":"8885.50"}
+
+=== FIN LAST30 ===
+{"branch_id":1,"collected":"134649.10","interest_paid":"74230.43"}
+FIN NULL BRANCH ROWS: 0
+
+=== MORT TODAY ===
+{"branch_id":1,"collected":"41333.33","profit":"8000.00"}
+
+=== MORT LAST30 ===
+{"branch_id":1,"collected":"41333.33","profit":"8000.00"}
+MORT NULL BRANCH ROWS: 0
+
+=== RAW TOTALS TODAY ===
+{"mf_today":"600.00","mf_today_interest":"100.00","mf_today_penalty":"0.00","fin_today":"8890.00","fin_today_interest":"8885.50","mort_today":"41333.33","mort_today_profit":"8000.00"}

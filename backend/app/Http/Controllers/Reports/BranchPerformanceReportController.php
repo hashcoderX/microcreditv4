@@ -18,6 +18,7 @@ use App\Models\SavingsAccount;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 
 class BranchPerformanceReportController extends Controller
@@ -781,11 +782,19 @@ class BranchPerformanceReportController extends Controller
     {
         $mapped = [];
         foreach ($rows as $row) {
-            $branchId = (int) ($row->branch_id ?? 0);
+            if ($row instanceof Model) {
+                $payload = $row->getAttributes();
+            } elseif (is_array($row)) {
+                $payload = $row;
+            } else {
+                $payload = (array) $row;
+            }
+
+            $branchId = (int) ($payload['branch_id'] ?? 0);
             if ($branchId <= 0) {
                 continue;
             }
-            $mapped[$branchId] = (array) $row;
+            $mapped[$branchId] = $payload;
         }
 
         return $mapped;

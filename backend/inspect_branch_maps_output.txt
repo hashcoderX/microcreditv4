@@ -1,0 +1,463 @@
+﻿BRANCHES
+1|TD Investment & Micro Credit (Pvt) LTD
+
+BRANCH IDS: [1]
+
+MF COLLECTION MAP
+{
+    "1": {
+        "\u0000*\u0000connection": "mysql",
+        "\u0000*\u0000table": "mf_loan_collections",
+        "\u0000*\u0000primaryKey": "id",
+        "\u0000*\u0000keyType": "int",
+        "incrementing": true,
+        "\u0000*\u0000with": [],
+        "\u0000*\u0000withCount": [],
+        "preventsLazyLoading": false,
+        "\u0000*\u0000perPage": 15,
+        "exists": true,
+        "wasRecentlyCreated": false,
+        "\u0000*\u0000escapeWhenCastingToString": false,
+        "\u0000*\u0000attributes": {
+            "branch_id": 1,
+            "collected": "600.00",
+            "capital": "500.00",
+            "interest": "100.00",
+            "penalty": "0.00",
+            "transactions": 1
+        },
+        "\u0000*\u0000original": {
+            "branch_id": 1,
+            "collected": "600.00",
+            "capital": "500.00",
+            "interest": "100.00",
+            "penalty": "0.00",
+            "transactions": 1
+        },
+        "\u0000*\u0000changes": [],
+        "\u0000*\u0000previous": [],
+        "\u0000*\u0000casts": {
+            "collection_date": "date",
+            "collected_amount": "decimal:2",
+            "capital_amount": "decimal:2",
+            "interest_amount": "decimal:2",
+            "penalty_amount": "decimal:2",
+            "correction_amount": "decimal:2",
+            "payment_type": "string",
+            "payment_reference": "string",
+            "deleted_at": "datetime"
+        },
+        "\u0000*\u0000classCastCache": [],
+        "\u0000*\u0000attributeCastCache": [],
+        "\u0000*\u0000dateFormat": null,
+        "\u0000*\u0000appends": [],
+        "\u0000*\u0000dispatchesEvents": [],
+        "\u0000*\u0000observables": [],
+        "\u0000*\u0000relations": [],
+        "\u0000*\u0000touches": [],
+        "\u0000*\u0000relationAutoloadCallback": null,
+        "\u0000*\u0000relationAutoloadContext": null,
+        "timestamps": true,
+        "usesUniqueIds": false,
+        "\u0000*\u0000hidden": [],
+        "\u0000*\u0000visible": [],
+        "\u0000*\u0000fillable": [
+            "mf_loan_request_id",
+            "collection_date",
+            "collected_amount",
+            "capital_amount",
+            "interest_amount",
+            "penalty_amount",
+            "correction_amount",
+            "payment_type",
+            "payment_reference",
+            "note",
+            "client_reference",
+            "created_by",
+            "deleted_by",
+            "deletion_reason"
+        ],
+        "\u0000*\u0000guarded": [
+            "*"
+        ],
+        "\u0000*\u0000forceDeleting": false
+    }
+}
+
+FIN COLLECTION MAP
+{
+    "1": {
+        "\u0000*\u0000connection": "mysql",
+        "\u0000*\u0000table": "finance_collections",
+        "\u0000*\u0000primaryKey": "id",
+        "\u0000*\u0000keyType": "int",
+        "incrementing": true,
+        "\u0000*\u0000with": [],
+        "\u0000*\u0000withCount": [],
+        "preventsLazyLoading": false,
+        "\u0000*\u0000perPage": 15,
+        "exists": true,
+        "wasRecentlyCreated": false,
+        "\u0000*\u0000escapeWhenCastingToString": false,
+        "\u0000*\u0000attributes": {
+            "branch_id": 1,
+            "collected": "8890.00",
+            "interest_paid": "8885.50",
+            "transactions": 1
+        },
+        "\u0000*\u0000original": {
+            "branch_id": 1,
+            "collected": "8890.00",
+            "interest_paid": "8885.50",
+            "transactions": 1
+        },
+        "\u0000*\u0000changes": [],
+        "\u0000*\u0000previous": [],
+        "\u0000*\u0000casts": {
+            "branch_id": "integer",
+            "collector_id": "integer",
+            "payment_date": "date",
+            "payment_amount": "decimal:2",
+            "refund_amount": "decimal:2",
+            "cheque_date": "date",
+            "interest_charged": "decimal:2",
+            "interest_paid": "decimal:2",
+            "principal_paid": "decimal:2",
+            "arrears": "decimal:2",
+            "remaining_capital": "decimal:2",
+            "meta": "array"
+        },
+        "\u0000*\u0000classCastCache": [],
+        "\u0000*\u0000attributeCastCache": [],
+        "\u0000*\u0000dateFormat": null,
+        "\u0000*\u0000appends": [],
+        "\u0000*\u0000dispatchesEvents": [],
+        "\u0000*\u0000observables": [],
+        "\u0000*\u0000relations": [],
+        "\u0000*\u0000touches": [],
+        "\u0000*\u0000relationAutoloadCallback": null,
+        "\u0000*\u0000relationAutoloadContext": null,
+        "timestamps": true,
+        "usesUniqueIds": false,
+        "\u0000*\u0000hidden": [],
+        "\u0000*\u0000visible": [],
+        "\u0000*\u0000fillable": [
+            "finance_id",
+            "branch_id",
+            "collector_id",
+            "payment_date",
+            "payment_amount",
+            "refund_amount",
+            "pay_type",
+            "reference_no",
+            "cheque_no",
+            "cheque_date",
+            "cheque_bank",
+            "interest_charged",
+            "interest_paid",
+            "principal_paid",
+            "arrears",
+            "remaining_capital",
+            "meta",
+            "created_by"
+        ],
+        "\u0000*\u0000guarded": [
+            "*"
+        ]
+    }
+}
+
+MORT COLLECTION MAP
+{
+    "1": {
+        "\u0000*\u0000connection": "mysql",
+        "\u0000*\u0000table": "mortgage_payments",
+        "\u0000*\u0000primaryKey": "id",
+        "\u0000*\u0000keyType": "int",
+        "incrementing": true,
+        "\u0000*\u0000with": [],
+        "\u0000*\u0000withCount": [],
+        "preventsLazyLoading": false,
+        "\u0000*\u0000perPage": 15,
+        "exists": true,
+        "wasRecentlyCreated": false,
+        "\u0000*\u0000escapeWhenCastingToString": false,
+        "\u0000*\u0000attributes": {
+            "branch_id": 1,
+            "collected": "41333.33",
+            "profit": "8000.00",
+            "transactions": 1
+        },
+        "\u0000*\u0000original": {
+            "branch_id": 1,
+            "collected": "41333.33",
+            "profit": "8000.00",
+            "transactions": 1
+        },
+        "\u0000*\u0000changes": [],
+        "\u0000*\u0000previous": [],
+        "\u0000*\u0000casts": {
+            "paid_date": "date",
+            "amount": "decimal:2",
+            "interest_amount": "decimal:2",
+            "principal_amount": "decimal:2",
+            "profit_amount": "decimal:2",
+            "outstanding_principal_after": "decimal:2"
+        },
+        "\u0000*\u0000classCastCache": [],
+        "\u0000*\u0000attributeCastCache": [],
+        "\u0000*\u0000dateFormat": null,
+        "\u0000*\u0000appends": [],
+        "\u0000*\u0000dispatchesEvents": [],
+        "\u0000*\u0000observables": [],
+        "\u0000*\u0000relations": [],
+        "\u0000*\u0000touches": [],
+        "\u0000*\u0000relationAutoloadCallback": null,
+        "\u0000*\u0000relationAutoloadContext": null,
+        "timestamps": true,
+        "usesUniqueIds": false,
+        "\u0000*\u0000hidden": [],
+        "\u0000*\u0000visible": [],
+        "\u0000*\u0000fillable": [
+            "mortgage_id",
+            "branch_id",
+            "user_id",
+            "schedule_id",
+            "paid_date",
+            "amount",
+            "interest_amount",
+            "principal_amount",
+            "profit_amount",
+            "outstanding_principal_after",
+            "payment_method",
+            "remarks",
+            "collected_by"
+        ],
+        "\u0000*\u0000guarded": [
+            "*"
+        ]
+    }
+}
+
+INST COLLECTION MAP
+[]
+
+MF PORTFOLIO MAP
+{
+    "1": {
+        "branch_id": 1,
+        "active_loans": 182,
+        "arrears": 72214.31,
+        "outstanding": 11257431.099999998
+    }
+}
+
+FIN PORTFOLIO MAP
+{
+    "1": {
+        "\u0000*\u0000connection": "mysql",
+        "\u0000*\u0000table": "finances",
+        "\u0000*\u0000primaryKey": "id",
+        "\u0000*\u0000keyType": "int",
+        "incrementing": true,
+        "\u0000*\u0000with": [],
+        "\u0000*\u0000withCount": [],
+        "preventsLazyLoading": false,
+        "\u0000*\u0000perPage": 15,
+        "exists": true,
+        "wasRecentlyCreated": false,
+        "\u0000*\u0000escapeWhenCastingToString": false,
+        "\u0000*\u0000attributes": {
+            "branch_id": 1,
+            "active_accounts": 62,
+            "arrears": "19829.15",
+            "outstanding": "12297247.36"
+        },
+        "\u0000*\u0000original": {
+            "branch_id": 1,
+            "active_accounts": 62,
+            "arrears": "19829.15",
+            "outstanding": "12297247.36"
+        },
+        "\u0000*\u0000changes": [],
+        "\u0000*\u0000previous": [],
+        "\u0000*\u0000casts": {
+            "amount": "decimal:2",
+            "down_payment": "decimal:2",
+            "financed_amount": "decimal:2",
+            "interest_rate": "decimal:4",
+            "refund_amount": "decimal:2",
+            "total_paid_amount": "decimal:2",
+            "balance_amount": "decimal:2",
+            "due_amount": "decimal:2",
+            "due_capital_amount": "decimal:2",
+            "due_interest_amount": "decimal:2",
+            "arrears": "decimal:2",
+            "penalty": "decimal:2",
+            "tenure_months": "integer",
+            "branch_manager_user_id": "integer",
+            "responsible_officer_employee_id": "integer",
+            "evaluation_payload_version": "integer",
+            "start_date": "date",
+            "due_date": "date",
+            "next_collection_date": "date",
+            "finance_end_date": "date",
+            "vehicle_details": "array",
+            "valuation_details": "array",
+            "guarantor_details": "array",
+            "repayment_plan": "array",
+            "family_financial_details": "array",
+            "evaluation_payload": "array"
+        },
+        "\u0000*\u0000classCastCache": [],
+        "\u0000*\u0000attributeCastCache": [],
+        "\u0000*\u0000dateFormat": null,
+        "\u0000*\u0000appends": [],
+        "\u0000*\u0000dispatchesEvents": [],
+        "\u0000*\u0000observables": [],
+        "\u0000*\u0000relations": [],
+        "\u0000*\u0000touches": [],
+        "\u0000*\u0000relationAutoloadCallback": null,
+        "\u0000*\u0000relationAutoloadContext": null,
+        "timestamps": true,
+        "usesUniqueIds": false,
+        "\u0000*\u0000hidden": [],
+        "\u0000*\u0000visible": [],
+        "\u0000*\u0000fillable": [
+            "tenant_id",
+            "branch_id",
+            "customer_id",
+            "finance_type",
+            "product_type",
+            "asset_reference",
+            "vehicle_details",
+            "valuation_details",
+            "guarantor_details",
+            "repayment_plan",
+            "family_financial_details",
+            "evaluation_payload",
+            "evaluation_payload_version",
+            "amount",
+            "down_payment",
+            "financed_amount",
+            "interest_rate",
+            "interest_type",
+            "tenure_months",
+            "installment_frequency",
+            "installment_amount",
+            "refund_amount",
+            "total_paid_amount",
+            "balance_amount",
+            "due_date",
+            "due_amount",
+            "due_capital_amount",
+            "due_interest_amount",
+            "arrears",
+            "penalty",
+            "penalty_scheme",
+            "next_collection_date",
+            "finance_end_date",
+            "status",
+            "start_date",
+            "branch_manager_user_id",
+            "responsible_officer_employee_id",
+            "created_by"
+        ],
+        "\u0000*\u0000guarded": [
+            "*"
+        ]
+    }
+}
+
+MORT PORTFOLIO MAP
+{
+    "1": {
+        "\u0000*\u0000connection": "mysql",
+        "\u0000*\u0000table": "mortgages",
+        "\u0000*\u0000primaryKey": "id",
+        "\u0000*\u0000keyType": "int",
+        "incrementing": true,
+        "\u0000*\u0000with": [],
+        "\u0000*\u0000withCount": [],
+        "preventsLazyLoading": false,
+        "\u0000*\u0000perPage": 15,
+        "exists": true,
+        "wasRecentlyCreated": false,
+        "\u0000*\u0000escapeWhenCastingToString": false,
+        "\u0000*\u0000attributes": {
+            "branch_id": 1,
+            "active_accounts": 3,
+            "arrears": "0.00"
+        },
+        "\u0000*\u0000original": {
+            "branch_id": 1,
+            "active_accounts": 3,
+            "arrears": "0.00"
+        },
+        "\u0000*\u0000changes": [],
+        "\u0000*\u0000previous": [],
+        "\u0000*\u0000casts": {
+            "approved_at": "datetime",
+            "mortgage_qr_generated_at": "datetime",
+            "start_date": "date",
+            "due_date": "date",
+            "arrears_amount": "decimal:2",
+            "due_amount": "decimal:2",
+            "due_interest_amount": "decimal:2"
+        },
+        "\u0000*\u0000classCastCache": [],
+        "\u0000*\u0000attributeCastCache": [],
+        "\u0000*\u0000dateFormat": null,
+        "\u0000*\u0000appends": [],
+        "\u0000*\u0000dispatchesEvents": [],
+        "\u0000*\u0000observables": [],
+        "\u0000*\u0000relations": [],
+        "\u0000*\u0000touches": [],
+        "\u0000*\u0000relationAutoloadCallback": null,
+        "\u0000*\u0000relationAutoloadContext": null,
+        "timestamps": true,
+        "usesUniqueIds": false,
+        "\u0000*\u0000hidden": [],
+        "\u0000*\u0000visible": [],
+        "\u0000*\u0000fillable": [
+            "tenant_id",
+            "branch_id",
+            "customer_id",
+            "mortgage_type",
+            "requested_amount",
+            "approved_amount",
+            "interest_rate",
+            "interest_type",
+            "tenure_months",
+            "installment_frequency",
+            "interest_calculation_frequency",
+            "installment_amount",
+            "penalty_rate",
+            "penalty_scheme",
+            "processing_fee",
+            "insurance_fee",
+            "start_date",
+            "previous_mortgages",
+            "status",
+            "approved_by",
+            "responsible_manager_user_id",
+            "responsible_manager_name",
+            "mortgage_qr_code",
+            "mortgage_qr_generated_at",
+            "approved_at",
+            "due_date",
+            "arrears_amount",
+            "due_amount",
+            "due_interest_amount",
+            "created_by",
+            "entry_officer_name",
+            "entry_officer_designation"
+        ],
+        "\u0000*\u0000guarded": [
+            "*"
+        ]
+    }
+}
+
+INST PORTFOLIO MAP
+[]
