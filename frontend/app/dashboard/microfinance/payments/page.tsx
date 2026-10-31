@@ -495,6 +495,13 @@ export default function MicrofinancePaymentsPage() {
   }, [token, headers, isAdmin, isManager, isCollectionOfficer, authUser?.id, authUser?.branch_id, authUser?.employee?.id, officerNameCandidates, reloadCounter, canDeletePayments, showDeleted, datasetMode]);
 
   useEffect(() => {
+    const hasLoanOrCustomerFilter = loanIdFilter.trim() !== '' || customerNoFilter.trim() !== '';
+    if (hasLoanOrCustomerFilter && datasetMode === 'fast') {
+      setDatasetMode('full');
+    }
+  }, [loanIdFilter, customerNoFilter, datasetMode]);
+
+  useEffect(() => {
     if (!isSyncingData) return;
 
     const timer = window.setInterval(() => {
@@ -1234,6 +1241,12 @@ export default function MicrofinancePaymentsPage() {
               />
             </div>
           </div>
+
+          {datasetMode === 'full' && (loanIdFilter.trim() !== '' || customerNoFilter.trim() !== '') && (
+            <p className="mt-2 text-xs font-semibold text-cyan-800">
+              Full invoice history loaded for Loan ID / Customer No filtering.
+            </p>
+          )}
 
           {showLoanLookup && (
             <div className="mt-3 rounded-2xl border border-cyan-100 bg-cyan-50/60 p-3">

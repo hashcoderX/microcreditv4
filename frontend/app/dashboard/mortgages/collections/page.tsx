@@ -54,6 +54,7 @@ type MortgageRow = {
   mortgage_type?: string | null;
   requested_amount?: number | string | null;
   approved_amount?: number | string | null;
+  refund_amount?: number | string | null;
   installment_amount?: number | string | null;
   total_paid_amount?: number | string | null;
   installment_frequency?: string | null;
@@ -154,6 +155,23 @@ function statusTone(status: string): 'success' | 'warning' | 'info' | 'default' 
   return 'default';
 }
 
+function getInstallmentCount(tenureMonths: unknown, frequency: unknown): number {
+  const tenure = toNumber(tenureMonths);
+  if (!Number.isFinite(tenure) || tenure <= 0) return 0;
+
+  const perYearMap: Record<string, number> = {
+    daily: 365,
+    weekly: 52,
+    monthly: 12,
+    quarterly: 4,
+    yearly: 1,
+  };
+
+  const perYear = perYearMap[String(frequency || 'monthly').toLowerCase()] ?? 12;
+  const years = tenure / 12;
+  return Math.max(1, Math.round(years * perYear));
+}
+
 function formatPenaltyValue(row: MortgageRow): string {
   const mode = String(row.penalty_value_mode || '').toLowerCase();
   const configured = toNumber(row.penalty_amount_or_rate);
@@ -167,6 +185,46 @@ function formatPenaltyValue(row: MortgageRow): string {
   }
 
   return `${value.toFixed(2)}%`;
+}
+
+function totalOutstandingValue(row: MortgageRow): number {
+  const approved = toNumber(row.approved_amount);
+  const paid = toNumber(row.total_paid_amount);
+
+  if (Number.isFinite(approved)) {
+    const safePaid = Number.isFinite(paid) ? paid : 0;
+    return Math.max(approved - safePaid, 0);
+  }
+
+  const duePrincipal = toNumber(row.due_amount);
+  const dueInterest = toNumber(row.due_interest_amount);
+  const arrears = toNumber(row.arrears_amount);
+
+  const principalPart = Number.isFinite(duePrincipal) ? duePrincipal : 0;
+  const interestPart = Number.isFinite(dueInterest) ? dueInterest : 0;
+  const arrearsPart = Number.isFinite(arrears) ? arrears : 0;
+
+  return Math.max(principalPart + interestPart + arrearsPart, 0);
+}
+
+function refundAmountValue(row: MortgageRow): number {
+  const explicitRefund = toNumber(row.refund_amount);
+  if (Number.isFinite(explicitRefund)) {
+    return Math.max(explicitRefund, 0);
+  }
+
+  const installment = toNumber(row.installment_amount);
+  const count = getInstallmentCount(row.tenure_months, row.installment_frequency);
+  if (Number.isFinite(installment) && count > 0) {
+    return Math.max(installment * count, 0);
+  }
+
+  const approved = toNumber(row.approved_amount);
+  if (Number.isFinite(approved)) {
+    return Math.max(approved, 0);
+  }
+
+  return NaN;
 }
 
 export default function MortgageCollectionsPage() {
@@ -764,7 +822,19 @@ export default function MortgageCollectionsPage() {
         </>
       ),
     },
+    {
+      key: 'refund_amount',
+      label: 'Refund Amount',
+      tdClassName: 'text-sm font-bold text-cyan-700',
+      render: (row) => formatAmount(refundAmountValue(row)),
+    },
     { key: 'paid_amount', label: 'Paid Amount', tdClassName: 'text-sm font-bold text-violet-800', render: (row) => formatAmount(row.total_paid_amount ?? 0) },
+    {
+      key: 'total_outstanding',
+      label: 'Total Outstanding',
+      tdClassName: 'text-sm font-bold text-rose-700',
+      render: (row) => formatAmount(totalOutstandingValue(row)),
+    },
     {
       key: 'penalty',
       label: 'Penalty',

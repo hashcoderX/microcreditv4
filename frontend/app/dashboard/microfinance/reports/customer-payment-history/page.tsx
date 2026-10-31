@@ -27,6 +27,7 @@ type IssuedLoanRow = {
 type CollectionRow = {
   id: number;
   mf_loan_request_id: number | string;
+  invoice_no?: string | null;
   collection_date?: string | null;
   created_at?: string | null;
   collected_amount?: number | string | null;
@@ -72,6 +73,7 @@ type LoanApiRow = {
 type HistoryRow = {
   id: string;
   date: string;
+  invoiceNo: string;
   loanId: number;
   loanCode: string;
   customerNo: string;
@@ -154,10 +156,20 @@ const formatDisplayDate = (value?: string | null) => {
 
 const mapCollectionToHistory = (collection: CollectionRow, loan: IssuedLoanRow): HistoryRow => {
   const loanId = Number(collection.mf_loan_request_id || loan.id);
+  const explicitInvoice = String(collection.invoice_no || '').trim();
+  const reference = String(collection.payment_reference || '-').trim();
+  const fallbackInvoice = Number(collection.id || 0) > 0 ? `INV-MF-${String(collection.id).padStart(6, '0')}` : '-';
+  const invoiceNo =
+    explicitInvoice !== ''
+      ? explicitInvoice
+      : /^inv[-_/\s]?/i.test(reference)
+        ? reference
+        : fallbackInvoice;
 
   return {
     id: `collection-${String(collection.id || loanId)}`,
     date: String(collection.collection_date || collection.created_at || ''),
+    invoiceNo,
     loanId,
     loanCode: loan.loanCode,
     customerNo: loan.customerNo,
@@ -169,7 +181,7 @@ const mapCollectionToHistory = (collection: CollectionRow, loan: IssuedLoanRow):
     penalty: Number(collection.penalty_amount || 0),
     extraCharges: 0,
     paymentType: String(collection.payment_type || '-').replace('_', ' '),
-    reference: String(collection.payment_reference || '-'),
+    reference,
   };
 };
 
@@ -179,6 +191,7 @@ const mapExtraChargeToHistory = (charge: ExtraChargeApiRow, loan: IssuedLoanRow)
   return {
     id: `charge-${String(charge.id || `${loan.id}-${charge.charge_date || ''}`)}`,
     date: String(charge.charge_date || ''),
+    invoiceNo: '-',
     loanId: loan.id,
     loanCode: loan.loanCode,
     customerNo: loan.customerNo,
@@ -537,6 +550,7 @@ export default function CustomerPaymentHistoryReportPage() {
       if (!keyword) return true;
 
       const haystack = [row.customerNo, row.customerName, row.loanCode, row.fieldOfficer, row.reference, row.paymentType]
+        .concat([row.invoiceNo || ''])
         .join(' ')
         .toLowerCase();
 
@@ -581,6 +595,7 @@ export default function CustomerPaymentHistoryReportPage() {
         'Center',
         'Group',
         'Date Time',
+        'Invoice No',
         'Pay Type',
         'Reference',
         'Collected',
@@ -599,6 +614,7 @@ export default function CustomerPaymentHistoryReportPage() {
         selectedLoan.centerName,
         selectedLoan.groupName,
         formatDateTime(row.date),
+        row.invoiceNo || '-',
         row.paymentType,
         row.reference,
         formatMoney(row.collected),
@@ -670,6 +686,7 @@ export default function CustomerPaymentHistoryReportPage() {
         startY: 78,
         head: [[
           'Date & Time',
+          'Invoice No',
           'Pay Type',
           'Reference',
           'Collected',
@@ -680,6 +697,7 @@ export default function CustomerPaymentHistoryReportPage() {
         ]],
         body: filteredHistory.map((row) => [
           formatDateTime(row.date),
+          row.invoiceNo || '-',
           row.paymentType,
           row.reference,
           formatMoney(row.collected),
@@ -692,13 +710,14 @@ export default function CustomerPaymentHistoryReportPage() {
         headStyles: { fillColor: [139, 92, 246] },
         columnStyles: {
           0: { cellWidth: 120 },
-          1: { cellWidth: 70 },
-          2: { cellWidth: 150 },
-          3: { halign: 'right' },
+          1: { cellWidth: 92 },
+          2: { cellWidth: 70 },
+          3: { cellWidth: 130 },
           4: { halign: 'right' },
           5: { halign: 'right' },
           6: { halign: 'right' },
           7: { halign: 'right' },
+          8: { halign: 'right' },
         },
       });
 
@@ -1031,7 +1050,7 @@ export default function CustomerPaymentHistoryReportPage() {
                   <input
                     value={historySearch}
                     onChange={(e) => setHistorySearch(e.target.value)}
-                    placeholder="Reference, pay type, officer"
+                    placeholder="Invoice no, reference, pay type, officer"
                     className="mt-1 w-full rounded-xl border border-fuchsia-100 bg-white px-3 py-2.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-fuchsia-200"
                   />
                 </div>
@@ -1161,6 +1180,7 @@ export default function CustomerPaymentHistoryReportPage() {
                 <thead className="bg-fuchsia-50 text-slate-700">
                   <tr>
                     <th className="px-3 py-2 font-semibold">Date & Time</th>
+                    <th className="px-3 py-2 font-semibold">Invoice No</th>
                     <th className="px-3 py-2 font-semibold">Pay Type</th>
                     <th className="px-3 py-2 font-semibold">Reference</th>
                     <th className="px-3 py-2 font-semibold">Collected</th>
@@ -1174,6 +1194,7 @@ export default function CustomerPaymentHistoryReportPage() {
                   {filteredHistory.map((row) => (
                     <tr key={row.id} className="border-b border-fuchsia-100 last:border-b-0 hover:bg-fuchsia-50/40">
                       <td className="px-3 py-2">{formatDateTime(row.date)}</td>
+                      <td className="px-3 py-2 font-semibold text-cyan-800">{row.invoiceNo || '-'}</td>
                       <td className="px-3 py-2 capitalize">{row.paymentType}</td>
                       <td className="px-3 py-2">{row.reference}</td>
                       <td className="px-3 py-2 text-cyan-700 font-semibold">{formatMoney(row.collected)}</td>

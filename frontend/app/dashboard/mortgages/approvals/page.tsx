@@ -387,14 +387,24 @@ export default function MortgageApprovals() {
 
   const statusOptions = useMemo(() => {
     const values = Array.from(
-      new Set(rows.map((row) => String(row.status || '').toLowerCase()).filter((v) => v !== ''))
+      new Set(
+        rows
+          .filter((row) => canReviewStatus(row.status))
+          .map((row) => String(row.status || '').toLowerCase())
+          .filter((v) => v !== '')
+      )
     );
     return values.sort((a, b) => a.localeCompare(b));
   }, [rows]);
 
   const mortgageTypes = useMemo(() => {
     const values = Array.from(
-      new Set(rows.map((row) => String(row.mortgage_type || '').toLowerCase()).filter((v) => v !== ''))
+      new Set(
+        rows
+          .filter((row) => canReviewStatus(row.status))
+          .map((row) => String(row.mortgage_type || '').toLowerCase())
+          .filter((v) => v !== '')
+      )
     );
     return values.sort((a, b) => a.localeCompare(b));
   }, [rows]);
@@ -403,6 +413,8 @@ export default function MortgageApprovals() {
     const keyword = query.trim().toLowerCase();
 
     return rows.filter((row) => {
+      if (!canReviewStatus(row.status)) return false;
+
       const type = String(row.mortgage_type || '').toLowerCase();
       const status = String(row.status || '').toLowerCase();
       if (typeFilter !== 'all' && type !== typeFilter) return false;
@@ -491,8 +503,12 @@ export default function MortgageApprovals() {
       const nextStatus = String(response.data?.status || (type === 'approve' ? 'approved' : 'rejected'));
       const nextQrCode = String(response.data?.mortgage_qr_code || '').trim() || null;
       const nextQrGeneratedAt = String(response.data?.mortgage_qr_generated_at || '').trim() || null;
-      setRows((prev) =>
-        prev.map((item) =>
+      setRows((prev) => {
+        if (!canReviewStatus(nextStatus)) {
+          return prev.filter((item) => item.id !== row.id);
+        }
+
+        return prev.map((item) =>
           item.id === row.id
             ? {
                 ...item,
@@ -501,8 +517,8 @@ export default function MortgageApprovals() {
                 mortgage_qr_generated_at: nextQrGeneratedAt ?? item.mortgage_qr_generated_at ?? null,
               }
             : item
-        )
-      );
+        );
+      });
       if (detailRow?.id === row.id) {
         setDetailRow((prev) =>
           prev
