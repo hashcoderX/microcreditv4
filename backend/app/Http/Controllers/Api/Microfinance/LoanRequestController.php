@@ -1708,20 +1708,164 @@ class LoanRequestController extends Controller
 
     private function shiftByRefundOption(\DateTimeImmutable $date, string $refundOption, int $steps = 1): \DateTimeImmutable
     {
-        $safeSteps = max($steps, 0);
-        if ($safeSteps === 0) {
+        if ($steps === 0) {
             return $date;
         }
 
+        $safeSteps = abs($steps);
+        $direction = $steps >= 0 ? '+' : '-';
+
         if ($refundOption === 'day') {
-            return $date->modify('+' . $safeSteps . ' days');
+            return $date->modify($direction . $safeSteps . ' days');
         }
 
         if ($refundOption === 'week') {
-            return $date->modify('+' . ($safeSteps * 7) . ' days');
+            return $date->modify($direction . ($safeSteps * 7) . ' days');
         }
 
-        return $date->modify('+' . $safeSteps . ' months');
+        return $date->modify($direction . $safeSteps . ' months');
+    }
+
+    private function resolveArrearsScheduleCursor(MicrofinanceLoanRequest $loan, string $refundOption, int $termCount): ?\DateTimeImmutable
+    {
+        if (!empty($loan->due_date)) {
+            try {
+                return new \DateTimeImmutable((string) $loan->due_date);
+            } catch (\Throwable) {
+                // ignore and continue fallback chain
+            }
+        }
+
+        if (!empty($loan->next_payment_date)) {
+            try {
+                return new \DateTimeImmutable((string) $loan->next_payment_date);
+            } catch (\Throwable) {
+                // ignore and continue fallback chain
+            }
+        }
+
+        if (!empty($loan->loan_request_date)) {
+            try {
+                $startDate = new \DateTimeImmutable((string) $loan->loan_request_date);
+                return $this->shiftByRefundOption($startDate, $refundOption, 1);
+            } catch (\Throwable) {
+                // ignore and continue fallback chain
+            }
+        }
+
+        if (!empty($loan->loan_end_date)) {
+            try {
+                $loanEndDate = new \DateTimeImmutable((string) $loan->loan_end_date);
+                if ($termCount <= 1) {
+                    return $loanEndDate;
+                }
+
+                return $this->shiftByRefundOption($loanEndDate, $refundOption, 0 - ($termCount - 1));
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private function accrueLoanArrearsUpToDate(MicrofinanceLoanRequest $loan, \DateTimeImmutable $asOfDate): bool
+    {
+        if (!in_array((string) ($loan->status ?? ''), ['approved', 'released'], true)) {
+            return false;
+        }
+
+        if (!empty($loan->hold_at) || !empty($loan->closed_at)) {
+            return false;
+        }
+
+        $installmentAmount = (float) ($loan->installment_amount ?? 0);
+        if ($installmentAmount <= 0) {
+            return false;
+        }
+
+        $refundOption = (string) ($loan->refund_option ?: 'month');
+        $termCount = max((int) ($loan->terms_count ?? 1), 1);
+
+        $dueCursor = $this->resolveArrearsScheduleCursor($loan, $refundOption, $termCount);
+        if (!$dueCursor) {
+            return false;
+        }
+
+        $capDate = $asOfDate;
+        if (!empty($loan->loan_end_date)) {
+            try {
+                $endDate = new \DateTimeImmutable((string) $loan->loan_end_date);
+                if ($endDate < $capDate) {
+                    $capDate = $endDate;
+                }
+            } catch (\Throwable) {
+                // keep as-of date cap
+            }
+        }
+
+        $newArrears = (float) ($loan->arrears_balance ?? 0);
+        $accruedInstallments = 0;
+        $graceDays = max((int) ($loan->penalty_grace_days ?? 2), 0);
+
+        while (true) {
+            $graceEnd = $dueCursor->modify('+' . $graceDays . ' days');
+            if ($graceEnd > $capDate) {
+                break;
+            }
+
+            $newArrears += $installmentAmount;
+            $dueCursor = $this->shiftByRefundOption($dueCursor, $refundOption, 1);
+            $accruedInstallments++;
+
+            if ($accruedInstallments > 5000) {
+                break;
+            }
+        }
+
+        $nextDueDate = $dueCursor->format('Y-m-d');
+        $penaltyStartsOn = $dueCursor
+            ->modify('+' . ($graceDays + 1) . ' days')
+            ->format('Y-m-d');
+
+        $shouldPersist = $accruedInstallments > 0
+            || empty($loan->due_date)
+            || empty($loan->next_payment_date)
+            || empty($loan->penalty_starts_on)
+            || (string) ($loan->due_date ?? '') !== $nextDueDate
+            || (string) ($loan->next_payment_date ?? '') !== $nextDueDate;
+
+        if (!$shouldPersist) {
+            return false;
+        }
+
+        $loan->arrears_balance = round($newArrears, 2);
+        $loan->setAttribute('due_date', $nextDueDate);
+        $loan->next_payment_date = $nextDueDate;
+        $loan->penalty_starts_on = $penaltyStartsOn;
+        $loan->save();
+
+        return true;
+    }
+
+    /**
+     * @param \Illuminate\Support\Collection<int, MicrofinanceLoanRequest> $loans
+     */
+    private function applyAutomaticArrearsAccrual($loans): void
+    {
+        if ($loans->isEmpty()) {
+            return;
+        }
+
+        $asOfDate = new \DateTimeImmutable(date('Y-m-d'));
+
+        foreach ($loans as $loan) {
+            if (!$loan instanceof MicrofinanceLoanRequest) {
+                continue;
+            }
+
+            $this->accrueLoanArrearsUpToDate($loan, $asOfDate);
+        }
     }
 
     private function normalizeAccessText(?string $value): string
@@ -2564,6 +2708,7 @@ class LoanRequestController extends Controller
         $branchId = (int)$request->get('branch_id', 0);
         $fieldOfficer = trim((string)$request->get('field_officer', ''));
         $collectionPreview = filter_var($request->get('collection_preview', false), FILTER_VALIDATE_BOOLEAN);
+        $dashboardSummary = filter_var($request->get('dashboard_summary', false), FILTER_VALIDATE_BOOLEAN);
         $compact = filter_var($request->get('compact', false), FILTER_VALIDATE_BOOLEAN);
         $limit = (int) $request->get('limit', 0);
         if ($limit < 0) {
@@ -2605,11 +2750,12 @@ class LoanRequestController extends Controller
             'status_' . (count($statusValuesForKey) > 0 ? implode(',', $statusValuesForKey) : 'all'),
             'branch_filter_' . max($branchId, 0),
             'field_officer_' . md5(mb_strtolower($fieldOfficer)),
+            'dashboard_summary_' . ($dashboardSummary ? '1' : '0'),
             'compact_' . ($compact ? '1' : '0'),
             'limit_' . ($limit > 0 ? $limit : 'all'),
         ]);
 
-        $buildPayload = function () use ($compact, $viewer, $status, $request, $branchId, $fieldOfficer, $limit, $collectionPreview) {
+        $buildPayload = function () use ($compact, $viewer, $status, $request, $branchId, $fieldOfficer, $limit, $collectionPreview, $dashboardSummary) {
             $relations = [
                 'branch:id,name',
                 'approvalEmployee:id,first_name,last_name',
@@ -2692,20 +2838,23 @@ class LoanRequestController extends Controller
                 }
             }
 
-            if (!$collectionPreviewForApproved) {
+            if (!$collectionPreviewForApproved && !$dashboardSummary) {
                 $scopedBranchId = $this->scopedBranchId($request);
                 if ($scopedBranchId !== null) {
                     $query->where('branch_id', $scopedBranchId);
                 } elseif ($branchId > 0) {
                     $query->where('branch_id', $branchId);
                 }
+            } elseif ($dashboardSummary && $branchId > 0) {
+                // In global dashboard-summary mode, keep optional explicit branch filter.
+                $query->where('branch_id', $branchId);
             }
 
             if ($fieldOfficer !== '') {
                 $query->whereRaw('LOWER(TRIM(field_officer)) = ?', [mb_strtolower($fieldOfficer)]);
             }
 
-            if (!$this->isAdminUser($viewer) && !$collectionPreviewForApproved) {
+            if (!$this->isAdminUser($viewer) && !$collectionPreviewForApproved && !$dashboardSummary) {
                 $viewerUserId = (int) ($viewer?->id ?? 0);
                 $viewerEmployeeId = (int) ($viewer?->employee_id ?? 0);
                 $viewerBranchId = $this->resolveUserBranchId($viewer);
@@ -2749,6 +2898,9 @@ class LoanRequestController extends Controller
             }
 
             $loans = $query->get();
+
+            // Fallback daily accrual to keep direct-loan arrears current even if scheduler is delayed.
+            $this->applyAutomaticArrearsAccrual($loans);
 
             $penaltyRuleByType = [];
             $penaltyRuleById = [];
@@ -2828,13 +2980,26 @@ class LoanRequestController extends Controller
                 $penaltyPreviewAmount = 0.0;
                 $dueDateRaw = trim((string) ($loan->due_date ?? ''));
                 $installmentAmount = max((float) ($loan->installment_amount ?? 0), 0);
+                $arrearsBalance = max((float) ($loan->arrears_balance ?? 0), 0);
                 $graceDays = max((int) ($loan->penalty_grace_days ?? 2), 0);
 
                 if ($dueDateRaw !== '' && $installmentAmount > 0 && $amountOrRate > 0) {
                     try {
                         $dueDate = (new \DateTimeImmutable($dueDateRaw))->setTime(0, 0, 0);
+                        $effectiveDueDate = $dueDate;
+
+                        // due_date points to the next schedule cursor; when arrears exists,
+                        // rewind by overdue installment count to estimate the oldest lapsed due.
+                        if ($arrearsBalance > 0 && $installmentAmount > 0) {
+                            $overdueInstallments = (int) floor(($arrearsBalance + 0.000001) / $installmentAmount);
+                            if ($overdueInstallments > 0) {
+                                $refundOption = (string) ($loan->refund_option ?: 'month');
+                                $effectiveDueDate = $this->shiftByRefundOption($dueDate, $refundOption, 0 - $overdueInstallments);
+                            }
+                        }
+
                         $today = new \DateTimeImmutable('today');
-                        $dayDiff = (int) $dueDate->diff($today)->format('%r%a');
+                        $dayDiff = (int) $effectiveDueDate->diff($today)->format('%r%a');
 
                         if ($dayDiff > $graceDays) {
                             $penaltyLapseDays = $dayDiff - $graceDays;

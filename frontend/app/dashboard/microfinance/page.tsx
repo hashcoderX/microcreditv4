@@ -192,23 +192,6 @@ export default function MicrofinanceDashboard() {
     designationName.includes('admin') ||
     roleNames.some((role) => role.includes('admin') || role.includes('managing director') || role.includes('business owner'));
 
-  const hasFullDataAccess =
-    normalizeText(String(authUser?.email || '')) === 'superadmin softcodelk com' ||
-    designationName.includes('managing director') ||
-    designationName.includes('business owner') ||
-    designationName.includes('admin') ||
-    designationName.includes('branch manager') ||
-    designationName.includes('finance manager') ||
-    roleNames.some((role) =>
-      role.includes('admin') ||
-      role.includes('branch manager') ||
-      role.includes('finance manager') ||
-      role.includes('managing director') ||
-      role.includes('business owner')
-    );
-
-  const isScopedUser = !hasFullDataAccess;
-
   const hasMicrofinanceSettingsAccess =
     isAdminUser ||
     hasAnyPermissionToken([
@@ -751,6 +734,7 @@ export default function MicrofinanceDashboard() {
             },
             params: {
               compact: 1,
+              dashboard_summary: 1,
             },
           }),
           axios.get('/api/microfinance/collections', {
@@ -764,32 +748,10 @@ export default function MicrofinanceDashboard() {
         const allLoans: LoanStatRow[] = Array.isArray(loanRes.data) ? loanRes.data : [];
         const allCollections: CollectionStatRow[] = Array.isArray(collectionRes.data) ? collectionRes.data : [];
 
-        const authOfficerId = Number(authUser?.employee?.id || 0);
-        const branchId = Number(authUser?.branch_id || 0);
-
-        const officerNameCandidates = [
-          String(authUser?.name || '').trim().toLowerCase(),
-          [authUser?.employee?.first_name || '', authUser?.employee?.last_name || ''].join(' ').trim().toLowerCase(),
-          String(authUser?.email || '').trim().toLowerCase(),
-          String(authUser?.employee?.email || '').trim().toLowerCase(),
-        ].filter((v, i, arr) => v !== '' && arr.indexOf(v) === i);
-
-        const scopedLoans = !isScopedUser
-          ? allLoans
-          : allLoans.filter((loan) => {
-              const loanBranchId = Number(loan.branch_id || 0);
-              const loanOfficerId = Number(loan.field_officer_id || 0);
-              const loanOfficer = String(loan.field_officer || '').trim().toLowerCase();
-
-              const isBranchMatch = branchId > 0 ? loanBranchId === branchId : true;
-              const isOfficerIdMatch = authOfficerId > 0 && loanOfficerId > 0 ? loanOfficerId === authOfficerId : false;
-              const isOfficerNameMatch = loanOfficer !== '' ? officerNameCandidates.includes(loanOfficer) : false;
-
-              return isBranchMatch && (isOfficerIdMatch || isOfficerNameMatch);
-            });
-
-        const scopedLoanIds = new Set(scopedLoans.map((loan) => Number(loan.id)));
-        const scopedCollections = allCollections.filter((row) => scopedLoanIds.has(Number(row.mf_loan_request_id || 0)));
+        // Backend already applies user/branch access rules. Keep dashboard metrics
+        // aligned across roles by using the returned dataset directly.
+        const scopedLoans = allLoans;
+        const scopedCollections = allCollections;
 
         const paidByLoan = new Map<number, number>();
         const paidTowardRefundableByLoan = new Map<number, number>();
@@ -1026,7 +988,7 @@ export default function MicrofinanceDashboard() {
     };
 
     loadDashboardStats();
-  }, [token, isScopedUser, authUser]);
+  }, [token, authUser]);
 
   const chargeSummaryCards = [
     {

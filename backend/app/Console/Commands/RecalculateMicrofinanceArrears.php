@@ -77,9 +77,15 @@ class RecalculateMicrofinanceArrears extends Command
 
                 $accruedInstallments = 0;
                 $newArrears = (float) ($loan->arrears_balance ?? 0);
+                $graceDays = max((int) ($loan->penalty_grace_days ?? 2), 0);
 
                 // Accrue expected installments for all due cycles reached by as-of date.
-                while ($dueCursor <= $capDate) {
+                while (true) {
+                    $graceEnd = $dueCursor->modify('+' . $graceDays . ' days');
+                    if ($graceEnd > $capDate) {
+                        break;
+                    }
+
                     $newArrears += $installmentAmount;
                     $dueCursor = $this->shiftDateByRefundOption($dueCursor, $refundOption);
                     $accruedInstallments++;
@@ -90,16 +96,23 @@ class RecalculateMicrofinanceArrears extends Command
                     }
                 }
 
-                if ($accruedInstallments <= 0) {
+                $nextDueDate = $dueCursor->format('Y-m-d');
+                $penaltyStartsOn = $dueCursor->modify('+' . ($graceDays + 1) . ' days')->format('Y-m-d');
+
+                $needsScheduleSync = (string) ($loan->due_date ?? '') !== $nextDueDate
+                    || (string) ($loan->next_payment_date ?? '') !== $nextDueDate
+                    || (string) ($loan->penalty_starts_on ?? '') !== $penaltyStartsOn;
+
+                if ($accruedInstallments <= 0 && !$needsScheduleSync) {
                     continue;
                 }
 
-                $graceDays = max((int) ($loan->penalty_grace_days ?? 2), 0);
-                $penaltyStartsOn = $dueCursor->modify('+' . ($graceDays + 1) . ' days')->format('Y-m-d');
-
                 if (!$dryRun) {
-                    $loan->arrears_balance = round($newArrears, 2);
-                    $loan->due_date = $dueCursor->format('Y-m-d');
+                    if ($accruedInstallments > 0) {
+                        $loan->arrears_balance = round($newArrears, 2);
+                    }
+                    $loan->due_date = $nextDueDate;
+                    $loan->next_payment_date = $nextDueDate;
                     $loan->penalty_starts_on = $penaltyStartsOn;
                     $loan->save();
                 }
@@ -161,6 +174,15 @@ class RecalculateMicrofinanceArrears extends Command
         if (!empty($loan->next_payment_date)) {
             try {
                 return new \DateTimeImmutable((string) $loan->next_payment_date);
+            } catch (\Throwable) {
+                // fallthrough
+            }
+        }
+
+        if (!empty($loan->loan_request_date)) {
+            try {
+                $startDate = new \DateTimeImmutable((string) $loan->loan_request_date);
+                return $this->shiftDateByRefundOption($startDate, $refundOption, 1);
             } catch (\Throwable) {
                 // fallthrough
             }

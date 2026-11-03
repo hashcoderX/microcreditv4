@@ -190,6 +190,7 @@ Route::middleware(['auth:sanctum', 'system.online'])->group(function () {
     Route::post('system/loan-officer-transfer/apply', [CompanyController::class, 'applyLoanOfficerTransfer']);
     Route::get('system/savings-deposits-settings', [SavingsDepositsSettingsController::class, 'show']);
     Route::post('system/savings-deposits-settings', [SavingsDepositsSettingsController::class, 'update']);
+    Route::post('system/savings-deposits-settings/apply-interest-manual', [SavingsDepositsSettingsController::class, 'applyInterestManual']);
     Route::post('system/reset', [CompanyController::class, 'resetSystem']);
     Route::post('system/reset-full', [CompanyController::class, 'resetSystemFull']);
     Route::get('manager-candidates', [CompanyController::class, 'managerCandidates']);

@@ -811,6 +811,8 @@ class FinanceController extends Controller
 
         $data = $query->paginate($perPage);
         $data->getCollection()->transform(function (Finance $finance) use ($viewerUser) {
+            $this->applyAutomaticFinanceArrearsAccrual($finance);
+
             if ($finance->relationLoaded('customer') && $finance->customer) {
                 $finance->setRelation('customer', $this->normalizeFinanceCustomer($finance->customer));
             }
@@ -830,6 +832,8 @@ class FinanceController extends Controller
         }, 'collections' => function ($query) {
             $query->orderByDesc('payment_date')->orderByDesc('id');
         }]);
+
+        $this->applyAutomaticFinanceArrearsAccrual($finance);
 
         if ($finance->relationLoaded('customer') && $finance->customer) {
             $finance->setRelation('customer', $this->normalizeFinanceCustomer($finance->customer));
@@ -876,6 +880,11 @@ class FinanceController extends Controller
             'family_financial_details' => ['nullable', 'array'],
             'evaluation_payload_version' => ['nullable', 'integer', 'min:1', 'max:10'],
             'evaluation_payload' => ['nullable', 'array'],
+            'document_charges' => ['nullable', 'numeric', 'min:0'],
+            'insurance_charges' => ['nullable', 'numeric', 'min:0'],
+            'stamp_charges' => ['nullable', 'numeric', 'min:0'],
+            'processing_fee' => ['nullable', 'numeric', 'min:0'],
+            'other_charges' => ['nullable', 'numeric', 'min:0'],
             'repayment_plan' => ['nullable', 'array'],
             'repayment_plan.installments' => ['nullable', 'array'],
             'repayment_plan.installments.*.installment_no' => ['nullable', 'integer', 'min:1'],
@@ -907,7 +916,12 @@ class FinanceController extends Controller
             || array_key_exists('guarantor_details', $validated)
             || array_key_exists('family_financial_details', $validated)
             || array_key_exists('evaluation_payload_version', $validated)
-            || array_key_exists('evaluation_payload', $validated);
+            || array_key_exists('evaluation_payload', $validated)
+            || array_key_exists('document_charges', $validated)
+            || array_key_exists('insurance_charges', $validated)
+            || array_key_exists('stamp_charges', $validated)
+            || array_key_exists('processing_fee', $validated)
+            || array_key_exists('other_charges', $validated);
 
         if (!$hasUpdateFields) {
             return response()->json([
@@ -1010,6 +1024,26 @@ class FinanceController extends Controller
 
         if (array_key_exists('evaluation_payload', $validated)) {
             $finance->evaluation_payload = is_array($validated['evaluation_payload']) ? $validated['evaluation_payload'] : null;
+        }
+
+        if (array_key_exists('document_charges', $validated)) {
+            $finance->setAttribute('document_charges', number_format((float) ($validated['document_charges'] ?? 0), 2, '.', ''));
+        }
+
+        if (array_key_exists('insurance_charges', $validated)) {
+            $finance->setAttribute('insurance_charges', number_format((float) ($validated['insurance_charges'] ?? 0), 2, '.', ''));
+        }
+
+        if (array_key_exists('stamp_charges', $validated)) {
+            $finance->setAttribute('stamp_charges', number_format((float) ($validated['stamp_charges'] ?? 0), 2, '.', ''));
+        }
+
+        if (array_key_exists('processing_fee', $validated)) {
+            $finance->setAttribute('processing_fee', number_format((float) ($validated['processing_fee'] ?? 0), 2, '.', ''));
+        }
+
+        if (array_key_exists('other_charges', $validated)) {
+            $finance->setAttribute('other_charges', number_format((float) ($validated['other_charges'] ?? 0), 2, '.', ''));
         }
 
         $amount = array_key_exists('amount', $validated)
@@ -2369,6 +2403,11 @@ class FinanceController extends Controller
             'family_financial_details' => ['nullable', 'array'],
             'evaluation_payload_version' => ['nullable', 'integer', 'min:1', 'max:10'],
             'evaluation_payload' => ['nullable', 'array'],
+            'document_charges' => ['nullable', 'numeric', 'min:0'],
+            'insurance_charges' => ['nullable', 'numeric', 'min:0'],
+            'stamp_charges' => ['nullable', 'numeric', 'min:0'],
+            'processing_fee' => ['nullable', 'numeric', 'min:0'],
+            'other_charges' => ['nullable', 'numeric', 'min:0'],
             'repayment_plan' => ['nullable', 'array'],
             'repayment_plan.installments' => ['nullable', 'array'],
             'repayment_plan.installments.*.installment_no' => ['nullable', 'integer', 'min:1'],
@@ -2502,6 +2541,11 @@ class FinanceController extends Controller
                 'family_financial_details' => $validated['family_financial_details'] ?? null,
                 'evaluation_payload' => $validated['evaluation_payload'] ?? null,
                 'evaluation_payload_version' => $validated['evaluation_payload_version'] ?? null,
+                'document_charges' => round((float) ($validated['document_charges'] ?? 0), 2),
+                'insurance_charges' => round((float) ($validated['insurance_charges'] ?? 0), 2),
+                'stamp_charges' => round((float) ($validated['stamp_charges'] ?? 0), 2),
+                'processing_fee' => round((float) ($validated['processing_fee'] ?? 0), 2),
+                'other_charges' => round((float) ($validated['other_charges'] ?? 0), 2),
                 'repayment_plan' => !empty($repaymentPlan) ? $repaymentPlan : null,
                 'amount' => $validated['amount'],
                 'down_payment' => $validated['down_payment'] ?? 0,
@@ -3887,6 +3931,26 @@ class FinanceController extends Controller
         return round((float) $finance->installment_amount * $count, 2);
     }
 
+    private function resolveFinanceRefundAmount(Finance $finance): float
+    {
+        $currentRefund = round(max((float) ($finance->refund_amount ?? 0), 0), 2);
+        $derivedFromOutstanding = round(
+            max((float) ($finance->balance_amount ?? 0), 0) + max((float) ($finance->total_paid_amount ?? 0), 0),
+            2
+        );
+        $computedPayable = round(max($this->computeTotalPayableAmount($finance), 0), 2);
+
+        if ($derivedFromOutstanding > 0) {
+            return $derivedFromOutstanding;
+        }
+
+        if ($computedPayable > 0) {
+            return $computedPayable;
+        }
+
+        return $currentRefund;
+    }
+
     /**
      * @param mixed $repaymentPlan
      * @return array<int, array{installment_no:int,payment_date:string,amount:float}>
@@ -3935,6 +3999,203 @@ class FinanceController extends Controller
         return round(((float) $finance->financed_amount) / $tenureMonths, 2);
     }
 
+    private function applyAutomaticFinanceArrearsAccrual(Finance $finance, ?Carbon $asOfDate = null): void
+    {
+        if (self::isDraftLoanProductType((string) ($finance->product_type ?? ''))) {
+            return;
+        }
+
+        if (in_array((string) ($finance->status ?? ''), ['settled', 'pending_approval', 'rejected'], true)) {
+            return;
+        }
+
+        $asOf = $asOfDate ? $asOfDate->copy()->startOfDay() : Carbon::today();
+        $scheduleEndDate = $this->resolveFinanceScheduleEndDate($finance);
+        $repaymentPlan = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
+        $planRows = $this->extractInstallmentPlanRows($repaymentPlan);
+        $graceDays = max(0, (int) ($repaymentPlan['grace_period_days'] ?? 0));
+        $runningArrears = round(max((float) ($finance->arrears ?? 0), 0), 2);
+        $updated = false;
+        $refundAmount = $this->resolveFinanceRefundAmount($finance);
+        $currentRefundAmount = round(max((float) ($finance->refund_amount ?? 0), 0), 2);
+
+        if (abs($refundAmount - $currentRefundAmount) > 0.009) {
+            $finance->forceFill([
+                'refund_amount' => number_format($refundAmount, 2, '.', ''),
+            ]);
+            $updated = true;
+        }
+
+        if (!empty($planRows)) {
+            $nextInstallmentIndex = max(0, (int) ($repaymentPlan['next_installment_index'] ?? 0));
+            $initialInstallmentIndex = $nextInstallmentIndex;
+            $accrued = 0;
+            $safeIterations = 0;
+
+            while (isset($planRows[$nextInstallmentIndex]) && $safeIterations < 5000) {
+                $row = $planRows[$nextInstallmentIndex];
+                $dueRaw = (string) ($row['payment_date'] ?? '');
+                $dueAmount = round(max((float) ($row['amount'] ?? 0), 0), 2);
+
+                if ($dueRaw === '' || $dueAmount <= 0) {
+                    $nextInstallmentIndex++;
+                    $safeIterations++;
+                    continue;
+                }
+
+                $dueDate = Carbon::parse($dueRaw)->startOfDay();
+                $graceEnd = (clone $dueDate)->addDays($graceDays);
+
+                if (!$asOf->gt($graceEnd)) {
+                    break;
+                }
+
+                $runningArrears = round($runningArrears + $dueAmount, 2);
+                $nextInstallmentIndex++;
+                $accrued++;
+                $safeIterations++;
+            }
+
+            $nextDueDate = isset($planRows[$nextInstallmentIndex])
+                ? Carbon::parse((string) $planRows[$nextInstallmentIndex]['payment_date'])->toDateString()
+                : ($finance->due_date ? Carbon::parse((string) $finance->due_date)->toDateString() : null);
+
+            if ($scheduleEndDate && $nextDueDate) {
+                $nextDueAsCarbon = Carbon::parse($nextDueDate)->startOfDay();
+                if ($nextDueAsCarbon->gt($scheduleEndDate)) {
+                    $nextDueDate = $scheduleEndDate->toDateString();
+                }
+            }
+
+            $dueDateChanged = (string) ($finance->due_date ?? '') !== (string) ($nextDueDate ?? '');
+            $nextCollectionChanged = (string) ($finance->next_collection_date ?? '') !== (string) ($nextDueDate ?? '');
+            $indexChanged = $nextInstallmentIndex !== $initialInstallmentIndex;
+
+            if ($accrued > 0 || $dueDateChanged || $nextCollectionChanged || $indexChanged) {
+                $repaymentPlan['next_installment_index'] = $nextInstallmentIndex;
+                $finance->forceFill([
+                    'arrears' => number_format($runningArrears, 2, '.', ''),
+                    'due_date' => $nextDueDate,
+                    'next_collection_date' => $nextDueDate,
+                    'repayment_plan' => !empty($repaymentPlan) ? $repaymentPlan : null,
+                ]);
+                $updated = true;
+            }
+        } else {
+            $latestPaymentDateRaw = FinanceCollection::query()
+                ->where('finance_id', $finance->id)
+                ->orderByDesc('payment_date')
+                ->orderByDesc('id')
+                ->value('payment_date');
+
+            $frequency = (string) $finance->installment_frequency;
+            $dueBase = '';
+
+            if (!empty($latestPaymentDateRaw)) {
+                try {
+                    $dueBase = $this->computeNextDueDate(Carbon::parse((string) $latestPaymentDateRaw), $frequency)->toDateString();
+                } catch (\Throwable) {
+                    $dueBase = '';
+                }
+            }
+
+            if ($dueBase === '') {
+                $dueBase = trim((string) ($finance->due_date ?: $finance->next_collection_date ?: ''));
+            }
+
+            if ($dueBase === '') {
+                if ($updated) {
+                    $finance->save();
+                }
+                return;
+            }
+
+            $dueCursor = Carbon::parse($dueBase)->startOfDay();
+            $installmentAmount = round(
+                max(
+                    (float) ($finance->due_amount ?? 0),
+                    (float) ($finance->installment_amount ?? 0),
+                    0
+                ),
+                2
+            );
+
+            if ($installmentAmount <= 0) {
+                if ($updated) {
+                    $finance->save();
+                }
+                return;
+            }
+
+            $accrued = 0;
+            $safeIterations = 0;
+
+            while ($safeIterations < 5000) {
+                $graceEnd = (clone $dueCursor)->addDays($graceDays);
+                if (!$asOf->gt($graceEnd)) {
+                    break;
+                }
+
+                $runningArrears = round($runningArrears + $installmentAmount, 2);
+                $dueCursor = $this->computeNextDueDate($dueCursor, $frequency);
+
+                if ($scheduleEndDate && $dueCursor->gt($scheduleEndDate)) {
+                    $dueCursor = $scheduleEndDate->copy();
+                    $accrued++;
+                    $safeIterations++;
+                    break;
+                }
+
+                $accrued++;
+                $safeIterations++;
+            }
+
+            $nextDueDate = $dueCursor->toDateString();
+            if ($scheduleEndDate && Carbon::parse($nextDueDate)->gt($scheduleEndDate)) {
+                $nextDueDate = $scheduleEndDate->toDateString();
+            }
+            $dueDateChanged = (string) ($finance->due_date ?? '') !== $nextDueDate;
+            $nextCollectionChanged = (string) ($finance->next_collection_date ?? '') !== $nextDueDate;
+
+            if ($accrued > 0 || $dueDateChanged || $nextCollectionChanged) {
+                $finance->forceFill([
+                    'arrears' => number_format($runningArrears, 2, '.', ''),
+                    'due_date' => $nextDueDate,
+                    'next_collection_date' => $nextDueDate,
+                ]);
+                $updated = true;
+            }
+        }
+
+        if ($updated) {
+            $finance->save();
+        }
+    }
+
+    private function resolveFinanceScheduleEndDate(Finance $finance): ?Carbon
+    {
+        $explicitEnd = trim((string) ($finance->finance_end_date ?? ''));
+        if ($explicitEnd !== '') {
+            try {
+                return Carbon::parse($explicitEnd)->startOfDay();
+            } catch (\Throwable) {
+                // fall through to computed end date
+            }
+        }
+
+        $startDateRaw = trim((string) ($finance->start_date ?? ''));
+        $tenureMonths = (int) ($finance->tenure_months ?? 0);
+        if ($startDateRaw === '' || $tenureMonths <= 0) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($startDateRaw)->startOfDay()->addMonthsNoOverflow($tenureMonths);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     public function collections(Request $request, int $id): JsonResponse
     {
         $finance = $this->resolveFinanceOrFail($request, $id);
@@ -3962,6 +4223,7 @@ class FinanceController extends Controller
         ]);
 
         $finance = $this->resolveFinanceOrFail($request, $id);
+        $this->applyAutomaticFinanceArrearsAccrual($finance);
         $user = $request->user();
 
         $latest = FinanceCollection::where('finance_id', $finance->id)
@@ -4029,9 +4291,10 @@ class FinanceController extends Controller
         $newBalance = $isSpeedDraft
             ? round((float) $calculation['new_capital'], 2)
             : round(max($openingOutstanding - $paidTowardOutstanding, 0), 2);
-        $newRefundTotal = $newBalance;
+        $contractRefundTotal = $this->resolveFinanceRefundAmount($finance);
 
         $planRows = $this->extractInstallmentPlanRows($finance->repayment_plan);
+        $usesScheduleCredit = !$isSpeedDraft && !empty($planRows);
         $planState = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
         $currentInstallmentIndex = max(0, (int) ($planState['next_installment_index'] ?? 0));
         $currentPlanRow = $planRows[$currentInstallmentIndex] ?? null;
@@ -4086,13 +4349,16 @@ class FinanceController extends Controller
             }
         }
 
-        $scheduleRawOutstanding = round(($currentArrears + $accruedScheduleAmount) - $previousScheduleCredit - $paymentAmount, 2);
+        $effectivePreviousScheduleCredit = $usesScheduleCredit ? $previousScheduleCredit : 0.0;
+        $scheduleRawOutstanding = round(($currentArrears + $accruedScheduleAmount) - $effectivePreviousScheduleCredit - $paymentAmount, 2);
         $scheduleArrears = ($isSpeedDraft)
             ? 0.0
             : round(max($scheduleRawOutstanding, 0), 2);
-        $scheduleCredit = ($isSpeedDraft)
+        $scheduleCredit = (!$usesScheduleCredit)
             ? 0.0
-            : round(max(-$scheduleRawOutstanding, 0), 2);
+            : (($isSpeedDraft)
+            ? 0.0
+            : round(max(-$scheduleRawOutstanding, 0), 2));
         $finalArrears = $isSpeedDraft
             ? round((float) $calculation['new_arrears'], 2)
             : $scheduleArrears;
@@ -4102,9 +4368,26 @@ class FinanceController extends Controller
         $currentPlanDueDate = clone $currentDueDate;
         $standardDueDateAfterCoverage = clone $currentDueDate;
 
+        $scheduleCoverageBudget = $usesScheduleCredit
+            ? round(max(($paymentAmount + $previousScheduleCredit) - max($currentArrears, 0), 0), 2)
+            : 0.0;
+
+        if ($isSpeedDraft) {
+            $scheduleCoverageBudget = 0.0;
+        }
+
+        $fallbackNextDueDateFromPayment = (!$isSpeedDraft && empty($planRows))
+            ? $this->computeNextDueDate($paymentDate, (string) $finance->installment_frequency)
+            : null;
+
+        $scheduleEndDate = $this->resolveFinanceScheduleEndDate($finance);
+        if ($fallbackNextDueDateFromPayment && $scheduleEndDate && $fallbackNextDueDateFromPayment->gt($scheduleEndDate)) {
+            $fallbackNextDueDateFromPayment = $scheduleEndDate->copy();
+        }
+
         $scheduleCoverageBudget = $isSpeedDraft
             ? 0.0
-            : round(max(($paymentAmount + $previousScheduleCredit) - max($currentArrears, 0), 0), 2);
+            : $scheduleCoverageBudget;
 
         if (!$isSpeedDraft && !empty($planRows)) {
             $scanIndex = $currentInstallmentIndex;
@@ -4130,7 +4413,7 @@ class FinanceController extends Controller
             }
         }
 
-        $collection = DB::transaction(function () use ($finance, $validated, $paymentAmount, $txnOverPayment, $calculation, $currentCapital, $currentArrears, $previousScheduleCredit, $scheduleCredit, $user, $newTotalPaid, $newBalance, $newRefundTotal, $nextDueDate, $nextDueInterest, $dueCapitalAmount, $periodRatePercent, $planState, $planRows, $updatedInstallmentIndex, $nextPlanRow, $currentPlanRow, $currentDueAmount, $currentPlanDueDate, $standardDueDateAfterCoverage, $finalArrears, $isSpeedDraft, $paidInterestInPeriod) {
+        $collection = DB::transaction(function () use ($finance, $validated, $paymentAmount, $txnOverPayment, $calculation, $currentCapital, $currentArrears, $previousScheduleCredit, $effectivePreviousScheduleCredit, $scheduleCredit, $user, $newTotalPaid, $newBalance, $contractRefundTotal, $nextDueDate, $nextDueInterest, $dueCapitalAmount, $periodRatePercent, $planState, $planRows, $updatedInstallmentIndex, $nextPlanRow, $currentPlanRow, $currentDueAmount, $currentPlanDueDate, $standardDueDateAfterCoverage, $fallbackNextDueDateFromPayment, $finalArrears, $isSpeedDraft, $paidInterestInPeriod) {
             /** @var \App\Models\FinanceCollection $created */
             $created = FinanceCollection::create([
                 'finance_id' => $finance->id,
@@ -4153,7 +4436,7 @@ class FinanceController extends Controller
                     'model' => $isSpeedDraft ? 'speed_draft_interest_first' : 'standard_interest_first',
                     'opening_capital' => round($currentCapital, 2),
                     'opening_arrears' => round($currentArrears, 2),
-                    'opening_schedule_credit' => round($previousScheduleCredit, 2),
+                    'opening_schedule_credit' => round($effectivePreviousScheduleCredit, 2),
                     'schedule_credit' => $scheduleCredit,
                     'interest_rate_period' => round($periodRatePercent, 4),
                     'interest_paid_in_period_before' => round($paidInterestInPeriod, 2),
@@ -4170,7 +4453,7 @@ class FinanceController extends Controller
             if ($calculation['new_capital'] <= 0.0 && $calculation['new_arrears'] <= 0.0) {
                 $finance->forceFill([
                     'status' => 'settled',
-                    'refund_amount' => $newRefundTotal,
+                    'refund_amount' => round($contractRefundTotal, 2),
                     'total_paid_amount' => $newTotalPaid,
                     'balance_amount' => 0.00,
                     'installment_amount' => $isSpeedDraft ? 0.00 : $finance->installment_amount,
@@ -4184,7 +4467,7 @@ class FinanceController extends Controller
                 ]);
             } else {
                 $finance->forceFill([
-                    'refund_amount' => $newRefundTotal,
+                    'refund_amount' => round($contractRefundTotal, 2),
                     'total_paid_amount' => $newTotalPaid,
                     'balance_amount' => $newBalance,
                     'installment_amount' => $isSpeedDraft ? $nextDueInterest : $finance->installment_amount,
@@ -4204,14 +4487,18 @@ class FinanceController extends Controller
                             ? Carbon::parse((string) $nextPlanRow['payment_date'])->toDateString()
                             : (!empty($planRows)
                                 ? $currentPlanDueDate->toDateString()
-                                : $standardDueDateAfterCoverage->toDateString())),
+                                : ($fallbackNextDueDateFromPayment
+                                    ? $fallbackNextDueDateFromPayment->toDateString()
+                                    : $standardDueDateAfterCoverage->toDateString()))),
                     'next_collection_date' => $isSpeedDraft
                         ? $nextDueDate->toDateString()
                         : ($nextPlanRow
                             ? Carbon::parse((string) $nextPlanRow['payment_date'])->toDateString()
                             : (!empty($planRows)
                                 ? $currentPlanDueDate->toDateString()
-                                : $standardDueDateAfterCoverage->toDateString())),
+                                : ($fallbackNextDueDateFromPayment
+                                    ? $fallbackNextDueDateFromPayment->toDateString()
+                                    : $standardDueDateAfterCoverage->toDateString()))),
                     'repayment_plan' => !empty($plan) ? $plan : null,
                 ]);
             }
@@ -4363,6 +4650,8 @@ class FinanceController extends Controller
         $periodRateDecimal = $periodRatePercent / 100;
 
         $planState = is_array($finance->repayment_plan) ? $finance->repayment_plan : [];
+        $usesScheduleCredit = !$isSpeedDraft && !empty($planRows);
+        $contractRefundTotal = $this->resolveFinanceRefundAmount($finance);
         $currentInstallmentIndex = 0;
         $openingOutstanding = (float) $finance->balance_amount;
         $runningTotalPaid = 0.0;
@@ -4456,13 +4745,16 @@ class FinanceController extends Controller
                 }
             }
 
-            $scheduleRawOutstanding = round(($runningArrears + $accruedScheduleAmount) - $runningScheduleCredit - $paymentAmount, 2);
+            $effectiveRunningScheduleCredit = $usesScheduleCredit ? $runningScheduleCredit : 0.0;
+            $scheduleRawOutstanding = round(($runningArrears + $accruedScheduleAmount) - $effectiveRunningScheduleCredit - $paymentAmount, 2);
             $scheduleArrears = ($isSpeedDraft)
                 ? 0.0
                 : round(max($scheduleRawOutstanding, 0), 2);
-            $scheduleCredit = ($isSpeedDraft)
+            $scheduleCredit = (!$usesScheduleCredit)
                 ? 0.0
-                : round(max(-$scheduleRawOutstanding, 0), 2);
+                : (($isSpeedDraft)
+                ? 0.0
+                : round(max(-$scheduleRawOutstanding, 0), 2));
             $finalArrears = $isSpeedDraft
                 ? round((float) $calculation['new_arrears'], 2)
                 : $scheduleArrears;
@@ -4474,7 +4766,18 @@ class FinanceController extends Controller
 
             $scheduleCoverageBudget = $isSpeedDraft
                 ? 0.0
-                : round(max(($paymentAmount + $runningScheduleCredit) - max($runningArrears, 0), 0), 2);
+                : ($usesScheduleCredit
+                    ? round(max(($paymentAmount + $runningScheduleCredit) - max($runningArrears, 0), 0), 2)
+                    : 0.0);
+
+            $fallbackNextDueDateFromPayment = (!$isSpeedDraft && empty($planRows))
+                ? $this->computeNextDueDate($paymentDate, (string) $finance->installment_frequency)
+                : null;
+
+            $scheduleEndDate = $this->resolveFinanceScheduleEndDate($finance);
+            if ($fallbackNextDueDateFromPayment && $scheduleEndDate && $fallbackNextDueDateFromPayment->gt($scheduleEndDate)) {
+                $fallbackNextDueDateFromPayment = $scheduleEndDate->copy();
+            }
 
             if (!$isSpeedDraft && !empty($planRows)) {
                 $scanIndex = $currentInstallmentIndex;
@@ -4512,7 +4815,7 @@ class FinanceController extends Controller
                     'model' => $isSpeedDraft ? 'speed_draft_interest_first' : 'standard_interest_first',
                     'opening_capital' => round($runningCapital, 2),
                     'opening_arrears' => round($runningArrears, 2),
-                    'opening_schedule_credit' => round($runningScheduleCredit, 2),
+                    'opening_schedule_credit' => round($effectiveRunningScheduleCredit, 2),
                     'schedule_credit' => $scheduleCredit,
                     'interest_rate_period' => round($periodRatePercent, 4),
                     'interest_paid_in_period_before' => round($paidInterestInPeriod, 2),
@@ -4524,7 +4827,7 @@ class FinanceController extends Controller
             if ($calculation['new_capital'] <= 0.0 && $calculation['new_arrears'] <= 0.0) {
                 $finance->forceFill([
                     'status' => 'settled',
-                    'refund_amount' => $newBalance,
+                    'refund_amount' => round($contractRefundTotal, 2),
                     'total_paid_amount' => $newTotalPaid,
                     'balance_amount' => 0.00,
                     'installment_amount' => $isSpeedDraft ? 0.00 : $finance->installment_amount,
@@ -4541,7 +4844,7 @@ class FinanceController extends Controller
                     'status' => in_array((string) $finance->status, ['pending_approval', 'rejected'], true)
                         ? $finance->status
                         : 'active',
-                    'refund_amount' => $newBalance,
+                    'refund_amount' => round($contractRefundTotal, 2),
                     'total_paid_amount' => $newTotalPaid,
                     'balance_amount' => $newBalance,
                     'installment_amount' => $isSpeedDraft ? $nextDueInterest : $finance->installment_amount,
@@ -4561,14 +4864,18 @@ class FinanceController extends Controller
                             ? Carbon::parse((string) $nextPlanRow['payment_date'])->toDateString()
                             : (!empty($planRows)
                                 ? $currentPlanDueDate->toDateString()
-                                : $standardDueDateAfterCoverage->toDateString())),
+                                : ($fallbackNextDueDateFromPayment
+                                    ? $fallbackNextDueDateFromPayment->toDateString()
+                                    : $standardDueDateAfterCoverage->toDateString()))),
                     'next_collection_date' => $isSpeedDraft
                         ? $nextDueDate->toDateString()
                         : ($nextPlanRow
                             ? Carbon::parse((string) $nextPlanRow['payment_date'])->toDateString()
                             : (!empty($planRows)
                                 ? $currentPlanDueDate->toDateString()
-                                : $standardDueDateAfterCoverage->toDateString())),
+                                : ($fallbackNextDueDateFromPayment
+                                    ? $fallbackNextDueDateFromPayment->toDateString()
+                                    : $standardDueDateAfterCoverage->toDateString()))),
                     'repayment_plan' => !empty($planState) ? $planState : null,
                 ]);
             }

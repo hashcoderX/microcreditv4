@@ -188,11 +188,17 @@ function formatPenaltyValue(row: MortgageRow): string {
 }
 
 function totalOutstandingValue(row: MortgageRow): number {
-  const approved = toNumber(row.approved_amount);
+  const refundAmount = refundAmountValue(row);
   const paid = toNumber(row.total_paid_amount);
+  const safePaid = Number.isFinite(paid) ? paid : 0;
+
+  if (Number.isFinite(refundAmount)) {
+    return Math.max(refundAmount - safePaid, 0);
+  }
+
+  const approved = toNumber(row.approved_amount);
 
   if (Number.isFinite(approved)) {
-    const safePaid = Number.isFinite(paid) ? paid : 0;
     return Math.max(approved - safePaid, 0);
   }
 
@@ -865,8 +871,6 @@ export default function MortgageCollectionsPage() {
       },
     },
     { key: 'arrears', label: 'Arrears', tdClassName: 'text-sm font-bold text-rose-700', render: (row) => formatAmount(row.arrears_amount ?? 0) },
-    { key: 'due_principal', label: 'Due Principal', tdClassName: 'text-sm font-bold text-slate-800', render: (row) => formatAmount(row.due_amount ?? 0) },
-    { key: 'due_interest', label: 'Due Interest', tdClassName: 'text-sm font-bold text-amber-700', render: (row) => formatAmount(row.due_interest_amount ?? 0) },
     { key: 'status', label: 'Status', render: (row) => <Badge label={String(row.status || '—')} variant={statusTone(String(row.status || ''))} /> },
     { key: 'actions', label: 'Actions', render: (row) => renderRowActions(row) },
   ];

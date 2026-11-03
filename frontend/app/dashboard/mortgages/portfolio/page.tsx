@@ -50,6 +50,8 @@ interface Mortgage {
   id: number;
   start_date?: string | null;
   due_date?: string | null;
+  last_paid_date?: string | null;
+  total_paid_amount?: number | string | null;
   arrears_amount?: number | string | null;
   due_amount?: number | string | null;
   due_interest_amount?: number | string | null;
@@ -65,6 +67,9 @@ interface Mortgage {
   interest_calculation_frequency?: 'daily' | 'weekly' | 'monthly' | 'yearly' | null;
   penalty_rate: number | string;
   processing_fee: number | string;
+  document_charges?: number | string | null;
+  stamp_charges?: number | string | null;
+  additional_charges?: number | string | null;
   status: 'draft' | 'submitted' | 'approved' | 'active' | 'arrears' | 'settled' | 'released';
   created_at: string;
   customer?: {
@@ -146,6 +151,20 @@ function daysOverdue(dueDate: string | null | undefined): number | null {
   today.setHours(0, 0, 0, 0);
   const diff = Math.floor((today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
   return diff > 0 ? diff : 0;
+}
+
+function mortgageEndDate(mortgage: Mortgage): string {
+  const start = parseDateValue(mortgage.start_date);
+  const tenureMonths = Math.max(0, Math.round(toNumber(mortgage.tenure_months)));
+
+  if (!start || !Number.isFinite(tenureMonths) || tenureMonths <= 0) {
+    return '—';
+  }
+
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + tenureMonths);
+
+  return formatDate(end);
 }
 
 function mortgageTypeMeta(type: string) {
@@ -280,6 +299,42 @@ export default function Mortgages() {
     return { totalAccounts, totalApprovedAmount, averageInstallment, averageRate, overdueCount, totalArrears };
   }, [mortgages]);
 
+  const chargePreview = useMemo(() => {
+    const totalProcessingCharges = mortgages.reduce((sum, mortgage) => {
+      const value = toNumber(mortgage.processing_fee);
+      return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+
+    const totalDocumentCharges = mortgages.reduce((sum, mortgage) => {
+      const value = toNumber(mortgage.document_charges);
+      return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+
+    const totalStampCharges = mortgages.reduce((sum, mortgage) => {
+      const value = toNumber(mortgage.stamp_charges);
+      return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+
+    const totalOtherCharges = mortgages.reduce((sum, mortgage) => {
+      const value = toNumber(mortgage.additional_charges);
+      return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+
+    const totalChargeAmount =
+      totalProcessingCharges +
+      totalDocumentCharges +
+      totalStampCharges +
+      totalOtherCharges;
+
+    return {
+      totalProcessingCharges,
+      totalDocumentCharges,
+      totalStampCharges,
+      totalOtherCharges,
+      totalChargeAmount,
+    };
+  }, [mortgages]);
+
   useEffect(() => {
     const t = localStorage.getItem('token');
     if (!t) {
@@ -357,6 +412,7 @@ export default function Mortgages() {
       if (searchMobile) params.mobile = searchMobile;
       if (searchVehicle) params.vehicle_no = searchVehicle;
       if (searchDeed) params.deed_no = searchDeed;
+      params.with_payment_totals = 1;
 
       const res = await axios.get(`${getApiBaseUrl()}/mortgages`, {
         headers: { Authorization: `Bearer ${authToken}` },
@@ -590,9 +646,38 @@ export default function Mortgages() {
         );
       },
     },
+    {
+      key: 'end_date',
+      label: 'End Date',
+      tdClassName: 'text-sm text-slate-800 font-semibold',
+      render: (m) => mortgageEndDate(m),
+    },
+    {
+      key: 'last_pay_date',
+      label: 'Last Pay Date',
+      tdClassName: 'text-sm text-slate-800 font-semibold',
+      render: (m) => formatDate(m.last_paid_date),
+    },
+    {
+      key: 'total_paid_amount',
+      label: 'Total Paid',
+      tdClassName: 'text-sm font-semibold text-emerald-700',
+      render: (m) => formatAmount(m.total_paid_amount ?? 0),
+    },
     { key: 'arrears', label: 'Arrears', tdClassName: 'text-sm font-semibold text-rose-700', render: (m) => formatAmount(m.arrears_amount ?? 0) },
     { key: 'due_principal', label: 'Due Principal', tdClassName: 'text-sm font-semibold text-slate-800', render: (m) => formatAmount(m.due_amount ?? 0) },
     { key: 'due_interest', label: 'Due Interest', tdClassName: 'text-sm font-semibold text-slate-800', render: (m) => formatAmount(m.due_interest_amount ?? 0) },
+    {
+      key: 'outstanding_amount',
+      label: 'Outstanding Amount',
+      tdClassName: 'text-sm font-semibold text-cyan-800',
+      render: (m) => {
+        const duePrincipal = toNumber(m.due_amount);
+        const dueInterest = toNumber(m.due_interest_amount);
+        const outstanding = (Number.isFinite(duePrincipal) ? duePrincipal : 0) + (Number.isFinite(dueInterest) ? dueInterest : 0);
+        return formatAmount(outstanding);
+      },
+    },
     {
       key: 'installment',
       label: 'Installment',
@@ -615,11 +700,13 @@ export default function Mortgages() {
   const showHeroWidget = !hiddenWidgetKeys.has(`${widgetPrefix}hero`);
   const showStatsWidget = !hiddenWidgetKeys.has(`${widgetPrefix}stats`);
   const showFiltersWidget = !hiddenWidgetKeys.has(`${widgetPrefix}filters`);
+  const showChargePreviewWidget = !hiddenWidgetKeys.has(`${widgetPrefix}charge_preview`);
   const showPortfolioWidget = !hiddenWidgetKeys.has(`${widgetPrefix}portfolio_list`);
   const showAnyWidget =
     showHeroWidget ||
     (showStatsWidget && visibleStatsCards.length > 0) ||
     showFiltersWidget ||
+    showChargePreviewWidget ||
     showPortfolioWidget;
 
   const pageFallback = (
@@ -899,6 +986,52 @@ export default function Mortgages() {
                 </div>
               </div>
             )}
+          </section>
+          ) : null}
+
+          {showChargePreviewWidget ? (
+          <section className="relative overflow-hidden rounded-3xl border border-white/90 bg-white/95 shadow-[0_22px_55px_-34px_rgba(14,116,144,0.45)] backdrop-blur-xl">
+            <WidgetCloseGate>
+              <button
+                type="button"
+                onClick={() => void hideWidget(`${widgetPrefix}charge_preview`)}
+                className="absolute right-3 top-3 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-xs font-bold text-slate-700 shadow-sm hover:bg-rose-50 hover:text-rose-700"
+                aria-label="Hide charge preview widget"
+              >
+                ×
+              </button>
+            </WidgetCloseGate>
+            <div className="border-b border-slate-100 px-5 py-4">
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-700">Charge Preview</p>
+              <p className="mt-1 text-sm text-slate-600">
+                Processing, document, stamp, and other charges preview based on applied filters.
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Current page: {currentPage} • Filtered rows in view: {mortgages.length}
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="rounded-2xl border border-cyan-100 bg-cyan-50/60 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-700">Processing Charges</p>
+                <p className="mt-2 text-xl font-black text-cyan-900">{formatAmount(chargePreview.totalProcessingCharges)}</p>
+              </div>
+              <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-blue-700">Document Charges</p>
+                <p className="mt-2 text-xl font-black text-blue-900">{formatAmount(chargePreview.totalDocumentCharges)}</p>
+              </div>
+              <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-indigo-700">Stamp Charges</p>
+                <p className="mt-2 text-xl font-black text-indigo-900">{formatAmount(chargePreview.totalStampCharges)}</p>
+              </div>
+              <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-amber-700">Other Charges</p>
+                <p className="mt-2 text-xl font-black text-amber-900">{formatAmount(chargePreview.totalOtherCharges)}</p>
+              </div>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-emerald-700">Total Charges</p>
+                <p className="mt-2 text-xl font-black text-emerald-900">{formatAmount(chargePreview.totalChargeAmount)}</p>
+              </div>
+            </div>
           </section>
           ) : null}
 

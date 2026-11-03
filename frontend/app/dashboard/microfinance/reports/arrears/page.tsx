@@ -79,6 +79,7 @@ export default function ArrearsReportPage() {
               Accept: 'application/json',
             },
             params: {
+              dashboard_summary: 1,
               branch_id: branchId,
             },
           }),

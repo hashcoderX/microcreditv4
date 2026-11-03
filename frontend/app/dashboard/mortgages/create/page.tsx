@@ -299,6 +299,9 @@ export default function CreateMortgage() {
     "daily" | "weekly" | "monthly" | "yearly"
   >("monthly");
   const [processingFee, setProcessingFee] = useState("");
+  const [documentCharges, setDocumentCharges] = useState("");
+  const [stampCharges, setStampCharges] = useState("");
+  const [additionalCharges, setAdditionalCharges] = useState("");
   const [insuranceFee, setInsuranceFee] = useState("");
   const [penaltyScheme, setPenaltyScheme] = useState("");
   const [penaltySchemeOptions, setPenaltySchemeOptions] = useState<PenaltySchemeOption[]>([]);
@@ -889,6 +892,9 @@ export default function CreateMortgage() {
         installment_frequency: installmentFrequency,
         interest_calculation_frequency: interestCalculationFrequency,
         processing_fee: parseFloat(processingFee || "0"),
+        document_charges: parseFloat(documentCharges || "0"),
+        stamp_charges: parseFloat(stampCharges || "0"),
+        additional_charges: parseFloat(additionalCharges || "0"),
         insurance_fee: parseFloat(insuranceFee || "0"),
         penalty_scheme: penaltyScheme || undefined,
         penalty_rate: Number(selectedPenaltyScheme?.amount_or_rate ?? 0),
@@ -1072,8 +1078,11 @@ export default function CreateMortgage() {
       : 0;
 
     const processing = Math.max(parseNumericInput(processingFee), 0);
+    const document = Math.max(parseNumericInput(documentCharges), 0);
+    const stamp = Math.max(parseNumericInput(stampCharges), 0);
+    const additional = Math.max(parseNumericInput(additionalCharges), 0);
     const insurance = Math.max(parseNumericInput(insuranceFee), 0);
-    const charges = processing + insurance;
+    const charges = processing + document + stamp + additional + insurance;
 
     let loanOnlyInterest = 0;
     let loanOnlyRepayable = principal;
@@ -1126,6 +1135,9 @@ export default function CreateMortgage() {
       tenure,
       totalInstallments,
       processing,
+      document,
+      stamp,
+      additional,
       insurance,
       charges,
       loanOnlyInterest,
@@ -1145,6 +1157,9 @@ export default function CreateMortgage() {
     interestCalculationFrequency,
     interestType,
     processingFee,
+    documentCharges,
+    stampCharges,
+    additionalCharges,
     insuranceFee,
     startDate,
     previousMortgages,
@@ -1922,6 +1937,36 @@ export default function CreateMortgage() {
               </div>
               <div>
                 <label className={labelClass}>
+                  Document Charges
+                </label>
+                <input
+                  value={documentCharges}
+                  onChange={(e) => setDocumentCharges(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>
+                  Stamp Charges
+                </label>
+                <input
+                  value={stampCharges}
+                  onChange={(e) => setStampCharges(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>
+                  Additional Charges
+                </label>
+                <input
+                  value={additionalCharges}
+                  onChange={(e) => setAdditionalCharges(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className={labelClass}>
                   Insurance Fee
                 </label>
                 <input
@@ -2037,6 +2082,24 @@ export default function CreateMortgage() {
                       <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Processing Fee</p>
                       <p className="mt-0.5 text-sm font-semibold text-slate-900">{formatMoney(loanPreview.processing)}</p>
                     </div>
+                    <div className="rounded-xl border border-white/80 bg-white/90 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Document Charges</p>
+                      <p className="mt-0.5 text-sm font-semibold text-slate-900">{formatMoney(loanPreview.document)}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-white/80 bg-white/90 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Additional Charges</p>
+                      <p className="mt-0.5 text-sm font-semibold text-slate-900">{formatMoney(loanPreview.additional)}</p>
+                    </div>
+                    <div className="rounded-xl border border-white/80 bg-white/90 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Stamp Charges</p>
+                      <p className="mt-0.5 text-sm font-semibold text-slate-900">{formatMoney(loanPreview.stamp)}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
                     <div className="rounded-xl border border-white/80 bg-white/90 px-3 py-2">
                       <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Insurance Fee</p>
                       <p className="mt-0.5 text-sm font-semibold text-slate-900">{formatMoney(loanPreview.insurance)}</p>

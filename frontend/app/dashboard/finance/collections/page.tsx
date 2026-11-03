@@ -170,6 +170,26 @@ function roundCurrency(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+function dueDateCountLabel(v: unknown): string {
+  if (!v) return '-';
+
+  const raw = String(v).trim();
+  if (!raw) return '-';
+
+  const datePart = raw.includes('T') ? raw.split('T')[0] : raw;
+  const dueDate = new Date(`${datePart}T00:00:00`);
+  if (Number.isNaN(dueDate.getTime())) return '-';
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  dueDate.setHours(0, 0, 0, 0);
+
+  const diffDays = Math.floor((today.getTime() - dueDate.getTime()) / (24 * 60 * 60 * 1000));
+  if (diffDays > 0) return `${diffDays}d overdue`;
+  if (diffDays < 0) return `${Math.abs(diffDays)}d left`;
+  return 'Today';
+}
+
 type CustomerLike = {
   customer_code?: string | null;
   nic_passport?: string | null;
@@ -699,6 +719,8 @@ export default function FinanceCollectionsPage() {
     { key: 'installment', label: 'Installment' },
     { key: 'terms', label: 'Terms' },
     { key: 'start_date', label: 'Start Date' },
+    { key: 'due_date', label: 'Due Date' },
+    { key: 'due_date_count', label: 'Due Date Count' },
     { key: 'status', label: 'Status' },
     { key: 'action', label: 'Action' },
   ];
@@ -720,10 +742,9 @@ export default function FinanceCollectionsPage() {
   const openingOutstandingAmount = useMemo(() => {
     if (!selectedRecord) return 0;
 
-    const balance = toNumber(selectedRecord.balance_amount);
-    const totalPaid = toNumber(selectedRecord.total_paid_amount);
-    if (Number.isFinite(balance) && Number.isFinite(totalPaid)) {
-      return roundCurrency(Math.max(balance + totalPaid, 0));
+    const outstanding = toNumber(selectedRecord.balance_amount);
+    if (Number.isFinite(outstanding)) {
+      return roundCurrency(Math.max(outstanding, 0));
     }
 
     const refundable = toNumber(selectedRecord.refund_amount);
@@ -1401,6 +1422,8 @@ export default function FinanceCollectionsPage() {
                           if (column.key === 'installment') return <td key={column.key} className="px-3 py-2">{formatAmount(row.installment_amount)}</td>;
                           if (column.key === 'terms') return <td key={column.key} className="px-3 py-2">{Number.isFinite(toNumber(row.interest_rate)) ? `${toNumber(row.interest_rate).toFixed(2)}%` : '-'} / {row.tenure_months || '-'} mo</td>;
                           if (column.key === 'start_date') return <td key={column.key} className="px-3 py-2">{formatDate(row.start_date)}</td>;
+                          if (column.key === 'due_date') return <td key={column.key} className="px-3 py-2">{formatDate(row.due_date)}</td>;
+                          if (column.key === 'due_date_count') return <td key={column.key} className="px-3 py-2">{dueDateCountLabel(row.due_date)}</td>;
                           if (column.key === 'status') {
                             return (
                               <td key={column.key} className="px-3 py-2">
@@ -1541,7 +1564,7 @@ export default function FinanceCollectionsPage() {
                       <div><span className="text-slate-500">Next Collection Date: </span><span className="font-semibold text-slate-900">{formatDate(selectedRecord.next_collection_date)}</span></div>
                       <div><span className="text-slate-500">Interest: </span><span className="font-semibold text-slate-900">{Number.isFinite(toNumber(selectedRecord.interest_rate)) ? `${toNumber(selectedRecord.interest_rate).toFixed(2)}%` : '-'}</span></div>
                       <div><span className="text-slate-500">Interest Type: </span><span className="font-semibold text-slate-900 capitalize">{selectedRecord.interest_type || '-'}</span></div>
-                      <div><span className="text-slate-500">{isSelectedRecordDraft ? 'Opening Draft Value: ' : 'Opening Balance: '}</span><span className="font-semibold text-slate-900">{formatAmount(openingOutstandingAmount)}</span></div>
+                      <div><span className="text-slate-500">{isSelectedRecordDraft ? 'Opening Draft Value: ' : 'Outstanding Balance: '}</span><span className="font-semibold text-slate-900">{formatAmount(openingOutstandingAmount)}</span></div>
                       <div><span className="text-slate-500">Total Paid: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.total_paid_amount)}</span></div>
                       <div><span className="text-slate-500">Balance: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.balance_amount)}</span></div>
                       <div><span className="text-slate-500">Refund: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.refund_amount)}</span></div>

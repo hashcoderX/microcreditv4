@@ -15,6 +15,7 @@ use App\Models\MicrofinanceLoanRequest;
 use App\Models\Mortgage;
 use App\Models\MortgagePayment;
 use App\Models\SavingsAccount;
+use App\Models\SavingsAccountTransaction;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -266,8 +267,13 @@ class BranchPerformanceReportController extends Controller
         $financePortfolio = $this->financePortfolioByBranch($branchIds);
         $mortgagePortfolio = $this->mortgagePortfolioByBranch($branchIds);
         $instantPortfolio = $this->instantLoanPortfolioByBranch($branchIds);
+        $mfCharges = $this->mfChargesByBranch($branchIds);
+        $financeCharges = $this->financeChargesByBranch($branchIds);
+        $mortgageCharges = $this->mortgageChargesByBranch($branchIds);
+        $savingsDeposits = $this->savingsDepositsByBranch($branchIds, $fromDate, $toDate);
         $savingsCounts = $this->savingsCountByBranch($branchIds);
         $employeeCounts = $this->employeeCountByBranch($branchIds);
+        $expensesByBranch = $this->expensesByBranch($branchIds, $fromDate, $toDate);
 
         $rows = [];
         foreach ($branches as $branch) {
@@ -280,6 +286,11 @@ class BranchPerformanceReportController extends Controller
             $finPort = $financePortfolio[$id] ?? [];
             $mortPort = $mortgagePortfolio[$id] ?? [];
             $instPort = $instantPortfolio[$id] ?? [];
+            $mfCharge = $mfCharges[$id] ?? [];
+            $finCharge = $financeCharges[$id] ?? [];
+            $mortCharge = $mortgageCharges[$id] ?? [];
+            $savDeposit = $savingsDeposits[$id] ?? [];
+            $expense = $expensesByBranch[$id] ?? [];
 
             $periodCollected = round(
                 (float) ($mfCol['collected'] ?? 0)
@@ -297,6 +308,8 @@ class BranchPerformanceReportController extends Controller
                 2
             );
 
+            $periodExpenses = round((float) ($expense['period_expenses'] ?? 0), 2);
+
             $rows[] = [
                 'branch_id' => $id,
                 'branch_name' => $branch->name,
@@ -304,6 +317,15 @@ class BranchPerformanceReportController extends Controller
                 'opening_asset' => (float) ($branch->opening_asset ?? 0),
                 'employee_count' => (int) ($employeeCounts[$id] ?? 0),
                 'savings_accounts' => (int) ($savingsCounts[$id] ?? 0),
+                'savings_deposits' => (float) ($savDeposit['savings_deposits'] ?? 0),
+                'fixed_deposit_deposits' => (float) ($savDeposit['fixed_deposit_deposits'] ?? 0),
+                'investment_deposits' => (float) ($savDeposit['investment_deposits'] ?? 0),
+                'savings_period_deposits' => (float) ($savDeposit['savings_period_deposits'] ?? 0),
+                'fixed_deposit_period_deposits' => (float) ($savDeposit['fixed_deposit_period_deposits'] ?? 0),
+                'investment_period_deposits' => (float) ($savDeposit['investment_period_deposits'] ?? 0),
+                'savings_interest_expense' => (float) ($savDeposit['savings_interest_expense'] ?? 0),
+                'fixed_deposit_interest_expense' => (float) ($savDeposit['fixed_deposit_interest_expense'] ?? 0),
+                'investment_interest_expense' => (float) ($savDeposit['investment_interest_expense'] ?? 0),
                 'mf_active_loans' => (int) ($mfPort['active_loans'] ?? 0),
                 'mf_arrears' => (float) ($mfPort['arrears'] ?? 0),
                 'mf_outstanding' => (float) ($mfPort['outstanding'] ?? 0),
@@ -312,23 +334,37 @@ class BranchPerformanceReportController extends Controller
                 'mf_interest' => (float) ($mfCol['interest'] ?? 0),
                 'mf_penalty' => (float) ($mfCol['penalty'] ?? 0),
                 'mf_transactions' => (int) ($mfCol['transactions'] ?? 0),
+                'mf_document_charges' => (float) ($mfCharge['document_charges'] ?? 0),
+                'mf_stamp_charges' => (float) ($mfCharge['stamp_charges'] ?? 0),
+                'mf_insurance_charges' => (float) ($mfCharge['insurance_charges'] ?? 0),
+                'mf_other_charges' => (float) ($mfCharge['other_charges'] ?? 0),
                 'finance_active' => (int) ($finPort['active_accounts'] ?? 0),
                 'finance_arrears' => (float) ($finPort['arrears'] ?? 0),
                 'finance_outstanding' => (float) ($finPort['outstanding'] ?? 0),
                 'finance_collected' => (float) ($finCol['collected'] ?? 0),
                 'finance_interest' => (float) ($finCol['interest_paid'] ?? 0),
                 'finance_transactions' => (int) ($finCol['transactions'] ?? 0),
+                'finance_document_charges' => (float) ($finCharge['document_charges'] ?? 0),
+                'finance_stamp_charges' => (float) ($finCharge['stamp_charges'] ?? 0),
+                'finance_insurance_charges' => (float) ($finCharge['insurance_charges'] ?? 0),
+                'finance_other_charges' => (float) ($finCharge['other_charges'] ?? 0),
                 'mortgage_active' => (int) ($mortPort['active_accounts'] ?? 0),
                 'mortgage_arrears' => (float) ($mortPort['arrears'] ?? 0),
                 'mortgage_collected' => (float) ($mortCol['collected'] ?? 0),
                 'mortgage_profit' => (float) ($mortCol['profit'] ?? 0),
                 'mortgage_transactions' => (int) ($mortCol['transactions'] ?? 0),
+                'mortgage_document_charges' => (float) ($mortCharge['document_charges'] ?? 0),
+                'mortgage_stamp_charges' => (float) ($mortCharge['stamp_charges'] ?? 0),
+                'mortgage_insurance_charges' => (float) ($mortCharge['insurance_charges'] ?? 0),
+                'mortgage_other_charges' => (float) ($mortCharge['other_charges'] ?? 0),
                 'instant_active' => (int) ($instPort['active_loans'] ?? 0),
                 'instant_outstanding' => (float) ($instPort['outstanding'] ?? 0),
                 'instant_collected' => (float) ($instCol['collected'] ?? 0),
                 'instant_transactions' => (int) ($instCol['transactions'] ?? 0),
                 'period_collected' => $periodCollected,
                 'period_profit' => $periodProfit,
+                'period_expenses' => $periodExpenses,
+                'net_profit_after_expenses' => round($periodProfit - $periodExpenses, 2),
                 'total_arrears' => round(
                     (float) ($mfPort['arrears'] ?? 0)
                     + (float) ($finPort['arrears'] ?? 0)
@@ -576,6 +612,93 @@ class BranchPerformanceReportController extends Controller
      * @param  array<int, int>  $branchIds
      * @return array<int, array<string, float|int>>
      */
+    private function mfChargesByBranch(array $branchIds): array
+    {
+        if (!DB::getSchemaBuilder()->hasTable('mf_loan_requests')) {
+            return [];
+        }
+
+        $hasDocumentCharges = DB::getSchemaBuilder()->hasColumn('mf_loan_requests', 'document_charges');
+        $hasStampCharges = DB::getSchemaBuilder()->hasColumn('mf_loan_requests', 'stamp_charges');
+        $hasInsuranceCharges = DB::getSchemaBuilder()->hasColumn('mf_loan_requests', 'insurance_charges');
+        $hasOtherCharges = DB::getSchemaBuilder()->hasColumn('mf_loan_requests', 'extra_document_charges');
+
+        $rows = MicrofinanceLoanRequest::query()
+            ->whereIn('branch_id', $branchIds)
+            ->whereIn('status', ['approved', 'released'])
+            ->groupBy('branch_id')
+            ->selectRaw('branch_id')
+            ->selectRaw($hasDocumentCharges ? 'COALESCE(SUM(document_charges), 0) as document_charges' : '0 as document_charges')
+            ->selectRaw($hasStampCharges ? 'COALESCE(SUM(stamp_charges), 0) as stamp_charges' : '0 as stamp_charges')
+            ->selectRaw($hasInsuranceCharges ? 'COALESCE(SUM(insurance_charges), 0) as insurance_charges' : '0 as insurance_charges')
+            ->selectRaw($hasOtherCharges ? 'COALESCE(SUM(extra_document_charges), 0) as other_charges' : '0 as other_charges')
+            ->get();
+
+        return $this->mapByBranchId($rows);
+    }
+
+    /**
+     * @param  array<int, int>  $branchIds
+     * @return array<int, array<string, float|int>>
+     */
+    private function financeChargesByBranch(array $branchIds): array
+    {
+        if (!DB::getSchemaBuilder()->hasTable('finances')) {
+            return [];
+        }
+
+        $hasDocumentCharges = DB::getSchemaBuilder()->hasColumn('finances', 'document_charges');
+        $hasStampCharges = DB::getSchemaBuilder()->hasColumn('finances', 'stamp_charges');
+        $hasInsuranceCharges = DB::getSchemaBuilder()->hasColumn('finances', 'insurance_charges');
+        $hasOtherCharges = DB::getSchemaBuilder()->hasColumn('finances', 'other_charges');
+
+        $rows = Finance::query()
+            ->whereIn('branch_id', $branchIds)
+            ->where('status', 'active')
+            ->groupBy('branch_id')
+            ->selectRaw('branch_id')
+            ->selectRaw($hasDocumentCharges ? 'COALESCE(SUM(document_charges), 0) as document_charges' : '0 as document_charges')
+            ->selectRaw($hasStampCharges ? 'COALESCE(SUM(stamp_charges), 0) as stamp_charges' : '0 as stamp_charges')
+            ->selectRaw($hasInsuranceCharges ? 'COALESCE(SUM(insurance_charges), 0) as insurance_charges' : '0 as insurance_charges')
+            ->selectRaw($hasOtherCharges ? 'COALESCE(SUM(other_charges), 0) as other_charges' : '0 as other_charges')
+            ->get();
+
+        return $this->mapByBranchId($rows);
+    }
+
+    /**
+     * @param  array<int, int>  $branchIds
+     * @return array<int, array<string, float|int>>
+     */
+    private function mortgageChargesByBranch(array $branchIds): array
+    {
+        if (!DB::getSchemaBuilder()->hasTable('mortgages')) {
+            return [];
+        }
+
+        $hasDocumentCharges = DB::getSchemaBuilder()->hasColumn('mortgages', 'document_charges');
+        $hasStampCharges = DB::getSchemaBuilder()->hasColumn('mortgages', 'stamp_charges');
+        $hasInsuranceCharges = DB::getSchemaBuilder()->hasColumn('mortgages', 'insurance_fee');
+        $hasOtherCharges = DB::getSchemaBuilder()->hasColumn('mortgages', 'additional_charges');
+
+        $rows = Mortgage::query()
+            ->whereIn('branch_id', $branchIds)
+            ->whereIn('status', ['approved', 'active', 'arrears', 'released'])
+            ->groupBy('branch_id')
+            ->selectRaw('branch_id')
+            ->selectRaw($hasDocumentCharges ? 'COALESCE(SUM(document_charges), 0) as document_charges' : '0 as document_charges')
+            ->selectRaw($hasStampCharges ? 'COALESCE(SUM(stamp_charges), 0) as stamp_charges' : '0 as stamp_charges')
+            ->selectRaw($hasInsuranceCharges ? 'COALESCE(SUM(insurance_fee), 0) as insurance_charges' : '0 as insurance_charges')
+            ->selectRaw($hasOtherCharges ? 'COALESCE(SUM(additional_charges), 0) as other_charges' : '0 as other_charges')
+            ->get();
+
+        return $this->mapByBranchId($rows);
+    }
+
+    /**
+     * @param  array<int, int>  $branchIds
+     * @return array<int, array<string, float|int>>
+     */
     private function financeCollectionsByBranch(array $branchIds, string $fromDate, string $toDate): array
     {
         $branchExpr = 'COALESCE(finance_collections.branch_id, finances.branch_id, customers.branch_id)';
@@ -742,6 +865,28 @@ class BranchPerformanceReportController extends Controller
 
     /**
      * @param  array<int, int>  $branchIds
+     * @return array<int, array<string, float|int>>
+     */
+    private function expensesByBranch(array $branchIds, string $fromDate, string $toDate): array
+    {
+        if (!DB::getSchemaBuilder()->hasTable('accounting_expenses')) {
+            return [];
+        }
+
+        $rows = AccountingExpense::query()
+            ->whereIn('company_id', $branchIds)
+            ->whereDate('expense_date', '>=', $fromDate)
+            ->whereDate('expense_date', '<=', $toDate)
+            ->groupBy('company_id')
+            ->selectRaw('company_id as branch_id')
+            ->selectRaw('COALESCE(SUM(amount), 0) as period_expenses')
+            ->get();
+
+        return $this->mapByBranchId($rows);
+    }
+
+    /**
+     * @param  array<int, int>  $branchIds
      * @return array<int, int>
      */
     private function savingsCountByBranch(array $branchIds): array
@@ -757,6 +902,66 @@ class BranchPerformanceReportController extends Controller
             ->pluck('total', 'branch_id')
             ->map(fn ($v) => (int) $v)
             ->all();
+    }
+
+    /**
+     * @param  array<int, int>  $branchIds
+     * @return array<int, array<string, float|int>>
+     */
+    private function savingsDepositsByBranch(array $branchIds, string $fromDate, string $toDate): array
+    {
+        if (!DB::getSchemaBuilder()->hasTable('savings_accounts') || !DB::getSchemaBuilder()->hasTable('savings_account_transactions')) {
+            return [];
+        }
+
+        $accountRows = SavingsAccount::query()
+            ->whereIn('branch_id', $branchIds)
+            ->groupBy('branch_id')
+            ->selectRaw('branch_id')
+            ->selectRaw("COALESCE(SUM(CASE WHEN account_type IN ('savings', 'current') THEN balance ELSE 0 END), 0) as savings_deposits")
+            ->selectRaw("COALESCE(SUM(CASE WHEN account_type = 'fixed_deposit' THEN balance ELSE 0 END), 0) as fixed_deposit_deposits")
+            ->selectRaw("COALESCE(SUM(CASE WHEN account_type = 'investment' THEN balance ELSE 0 END), 0) as investment_deposits")
+            ->get();
+
+        $periodRows = SavingsAccountTransaction::query()
+            ->join('savings_accounts', 'savings_accounts.id', '=', 'savings_account_transactions.savings_account_id')
+            ->whereIn('savings_accounts.branch_id', $branchIds)
+            ->whereIn('savings_account_transactions.transaction_type', ['deposit', 'interest_credit'])
+            ->whereRaw('DATE(COALESCE(savings_account_transactions.transaction_date, savings_account_transactions.created_at)) >= ?', [$fromDate])
+            ->whereRaw('DATE(COALESCE(savings_account_transactions.transaction_date, savings_account_transactions.created_at)) <= ?', [$toDate])
+            ->groupBy('savings_accounts.branch_id')
+            ->selectRaw('savings_accounts.branch_id as branch_id')
+            ->selectRaw("COALESCE(SUM(CASE WHEN savings_accounts.account_type IN ('savings', 'current') THEN savings_account_transactions.amount ELSE 0 END), 0) as savings_period_deposits")
+            ->selectRaw("COALESCE(SUM(CASE WHEN savings_accounts.account_type = 'fixed_deposit' THEN savings_account_transactions.amount ELSE 0 END), 0) as fixed_deposit_period_deposits")
+            ->selectRaw("COALESCE(SUM(CASE WHEN savings_accounts.account_type = 'investment' THEN savings_account_transactions.amount ELSE 0 END), 0) as investment_period_deposits")
+            ->selectRaw("COALESCE(SUM(CASE WHEN savings_accounts.account_type IN ('savings', 'current') AND savings_account_transactions.transaction_type = 'interest_credit' THEN savings_account_transactions.amount ELSE 0 END), 0) as savings_interest_expense")
+            ->selectRaw("COALESCE(SUM(CASE WHEN savings_accounts.account_type = 'fixed_deposit' AND savings_account_transactions.transaction_type = 'interest_credit' THEN savings_account_transactions.amount ELSE 0 END), 0) as fixed_deposit_interest_expense")
+            ->selectRaw("COALESCE(SUM(CASE WHEN savings_accounts.account_type = 'investment' AND savings_account_transactions.transaction_type = 'interest_credit' THEN savings_account_transactions.amount ELSE 0 END), 0) as investment_interest_expense")
+            ->get();
+
+        $accountMap = $this->mapByBranchId($accountRows);
+        $periodMap = $this->mapByBranchId($periodRows);
+
+        $merged = [];
+        foreach ($branchIds as $branchId) {
+            $book = $accountMap[$branchId] ?? [];
+            $period = $periodMap[$branchId] ?? [];
+
+            $merged[$branchId] = [
+                'branch_id' => $branchId,
+                'savings_deposits' => (float) ($book['savings_deposits'] ?? 0),
+                'fixed_deposit_deposits' => (float) ($book['fixed_deposit_deposits'] ?? 0),
+                'investment_deposits' => (float) ($book['investment_deposits'] ?? 0),
+                'savings_period_deposits' => (float) ($period['savings_period_deposits'] ?? 0),
+                'fixed_deposit_period_deposits' => (float) ($period['fixed_deposit_period_deposits'] ?? 0),
+                'investment_period_deposits' => (float) ($period['investment_period_deposits'] ?? 0),
+                'savings_interest_expense' => (float) ($period['savings_interest_expense'] ?? 0),
+                'fixed_deposit_interest_expense' => (float) ($period['fixed_deposit_interest_expense'] ?? 0),
+                'investment_interest_expense' => (float) ($period['investment_interest_expense'] ?? 0),
+            ];
+        }
+
+        return $merged;
     }
 
     /**
@@ -811,6 +1016,8 @@ class BranchPerformanceReportController extends Controller
             $summary['branch_count']++;
             $summary['period_collected'] += (float) ($row['period_collected'] ?? 0);
             $summary['period_profit'] += (float) ($row['period_profit'] ?? 0);
+            $summary['period_expenses'] += (float) ($row['period_expenses'] ?? 0);
+            $summary['net_profit_after_expenses'] += (float) ($row['net_profit_after_expenses'] ?? 0);
             $summary['total_arrears'] += (float) ($row['total_arrears'] ?? 0);
             $summary['total_outstanding'] += (float) ($row['total_outstanding'] ?? 0);
             $summary['mf_collected'] += (float) ($row['mf_collected'] ?? 0);
@@ -823,7 +1030,7 @@ class BranchPerformanceReportController extends Controller
             $summary['instant_active'] += (int) ($row['instant_active'] ?? 0);
         }
 
-        foreach (['period_collected', 'period_profit', 'total_arrears', 'total_outstanding', 'mf_collected', 'finance_collected', 'mortgage_collected', 'instant_collected'] as $key) {
+        foreach (['period_collected', 'period_profit', 'period_expenses', 'net_profit_after_expenses', 'total_arrears', 'total_outstanding', 'mf_collected', 'finance_collected', 'mortgage_collected', 'instant_collected'] as $key) {
             $summary[$key] = round((float) $summary[$key], 2);
         }
 
@@ -839,6 +1046,8 @@ class BranchPerformanceReportController extends Controller
             'branch_count' => 0,
             'period_collected' => 0.0,
             'period_profit' => 0.0,
+            'period_expenses' => 0.0,
+            'net_profit_after_expenses' => 0.0,
             'total_arrears' => 0.0,
             'total_outstanding' => 0.0,
             'mf_collected' => 0.0,

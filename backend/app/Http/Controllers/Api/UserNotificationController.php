@@ -334,7 +334,7 @@ class UserNotificationController extends Controller
         return $allowed;
     }
 
-    private function scopedActionCenterWorkflowQuery(Request $request): Builder
+    private function scopedActionCenterWorkflowQuery(Request $request, bool $forceAll = false): Builder
     {
         $user = $request->user();
         $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
@@ -343,7 +343,7 @@ class UserNotificationController extends Controller
             ->whereIn('status', ['requested', 'hold', 'approved'])
             ->whereNotNull('workflow_step');
 
-        if (!$this->hasAdministrativeNotificationAccess($user)) {
+        if (!$forceAll && !$this->hasAdministrativeNotificationAccess($user)) {
             $viewerUserId = (int) ($user?->id ?? 0);
             $viewerEmployeeId = $this->resolveViewerEmployeeId($user);
             $viewerBranchId = $this->resolveViewerBranchId($user);
@@ -382,7 +382,7 @@ class UserNotificationController extends Controller
         return "CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(repayment_plan, '$.approval_workflow.current_step')), '1') AS UNSIGNED)";
     }
 
-    private function scopedFinanceActionCenterWorkflowQuery(Request $request): Builder
+    private function scopedFinanceActionCenterWorkflowQuery(Request $request, bool $forceAll = false): Builder
     {
         $user = $request->user();
         $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
@@ -392,7 +392,7 @@ class UserNotificationController extends Controller
             ->whereIn('status', ['pending_approval'])
             ->whereRaw("{$stepSql} BETWEEN 1 AND 14");
 
-        if (!$this->hasAdministrativeNotificationAccess($user)) {
+        if (!$forceAll && !$this->hasAdministrativeNotificationAccess($user)) {
             $viewerUserId = (int) ($user?->id ?? 0);
             $viewerEmployeeId = $this->resolveViewerEmployeeId($user);
             $viewerBranchId = $this->resolveViewerBranchId($user);
@@ -426,7 +426,7 @@ class UserNotificationController extends Controller
         return $query;
     }
 
-    private function scopedLoanActionCenterWorkflowQuery(Request $request): Builder
+    private function scopedLoanActionCenterWorkflowQuery(Request $request, bool $forceAll = false): Builder
     {
         $user = $request->user();
         $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
@@ -435,7 +435,7 @@ class UserNotificationController extends Controller
             ->where('status', 'pending_approval')
             ->whereBetween('approval_level', [1, 14]);
 
-        if (!$this->hasAdministrativeNotificationAccess($user)) {
+        if (!$forceAll && !$this->hasAdministrativeNotificationAccess($user)) {
             $viewerUserId = (int) ($user?->id ?? 0);
             $viewerBranchId = $this->resolveViewerBranchId($user);
             $hasBranchWorkflowScope = $viewerBranchId > 0 && count($allowedBranchSteps) > 0;
@@ -462,7 +462,7 @@ class UserNotificationController extends Controller
         return $query;
     }
 
-    private function scopedMicrofinanceGrantWorkflowQuery(Request $request): Builder
+    private function scopedMicrofinanceGrantWorkflowQuery(Request $request, bool $forceAll = false): Builder
     {
         $user = $request->user();
         $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
@@ -470,7 +470,7 @@ class UserNotificationController extends Controller
         $query = MicrofinanceLoanRequest::query()
             ->where('status', 'released');
 
-        if (!$this->hasAdministrativeNotificationAccess($user)) {
+        if (!$forceAll && !$this->hasAdministrativeNotificationAccess($user)) {
             $viewerUserId = (int) ($user?->id ?? 0);
             $viewerEmployeeId = $this->resolveViewerEmployeeId($user);
             $viewerBranchId = $this->resolveViewerBranchId($user);
@@ -500,7 +500,7 @@ class UserNotificationController extends Controller
         return $query;
     }
 
-    private function scopedFinanceGrantWorkflowQuery(Request $request): Builder
+    private function scopedFinanceGrantWorkflowQuery(Request $request, bool $forceAll = false): Builder
     {
         $user = $request->user();
         $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
@@ -510,7 +510,7 @@ class UserNotificationController extends Controller
             ->whereIn('status', ['active'])
             ->whereRaw("{$stepSql} = 14");
 
-        if (!$this->hasAdministrativeNotificationAccess($user)) {
+        if (!$forceAll && !$this->hasAdministrativeNotificationAccess($user)) {
             $viewerUserId = (int) ($user?->id ?? 0);
             $viewerEmployeeId = $this->resolveViewerEmployeeId($user);
             $viewerBranchId = $this->resolveViewerBranchId($user);
@@ -540,7 +540,7 @@ class UserNotificationController extends Controller
         return $query;
     }
 
-    private function scopedLoanGrantWorkflowQuery(Request $request): Builder
+    private function scopedLoanGrantWorkflowQuery(Request $request, bool $forceAll = false): Builder
     {
         $user = $request->user();
         $allowedBranchSteps = $this->allowedActionCenterStepsForUser($user);
@@ -548,7 +548,7 @@ class UserNotificationController extends Controller
         $query = LoanRequest::query()
             ->whereIn('status', ['approved', 'closed']);
 
-        if (!$this->hasAdministrativeNotificationAccess($user)) {
+        if (!$forceAll && !$this->hasAdministrativeNotificationAccess($user)) {
             $viewerUserId = (int) ($user?->id ?? 0);
             $viewerBranchId = $this->resolveViewerBranchId($user);
             $hasGrantBranchScope = $viewerBranchId > 0 && in_array(14, $allowedBranchSteps, true);
@@ -574,9 +574,9 @@ class UserNotificationController extends Controller
     /**
      * @return array<string, int>
      */
-    private function actionCenterWorkflowTypeCounts(Request $request): array
+    private function actionCenterWorkflowTypeCounts(Request $request, bool $forceAll = false): array
     {
-        $query = $this->scopedActionCenterWorkflowQuery($request)
+        $query = $this->scopedActionCenterWorkflowQuery($request, $forceAll)
             ->selectRaw('workflow_step, COUNT(*) as aggregate_count')
             ->groupBy('workflow_step');
 
@@ -593,7 +593,7 @@ class UserNotificationController extends Controller
         }
 
         $stepSql = $this->financeWorkflowStepSql();
-        $financeSteps = $this->scopedFinanceActionCenterWorkflowQuery($request)
+        $financeSteps = $this->scopedFinanceActionCenterWorkflowQuery($request, $forceAll)
             ->selectRaw("{$stepSql} as workflow_step")
             ->pluck('workflow_step')
             ->all();
@@ -608,7 +608,7 @@ class UserNotificationController extends Controller
             $counts[$key] = (int) ($counts[$key] ?? 0) + 1;
         }
 
-        $loanRows = $this->scopedLoanActionCenterWorkflowQuery($request)
+        $loanRows = $this->scopedLoanActionCenterWorkflowQuery($request, $forceAll)
             ->selectRaw('approval_level as workflow_step, COUNT(*) as aggregate_count')
             ->groupBy('approval_level')
             ->get();
@@ -624,9 +624,9 @@ class UserNotificationController extends Controller
         }
 
         $counts['step_14'] = (int) ($counts['step_14'] ?? 0)
-            + $this->scopedMicrofinanceGrantWorkflowQuery($request)->count()
-            + $this->scopedFinanceGrantWorkflowQuery($request)->count()
-            + $this->scopedLoanGrantWorkflowQuery($request)->count();
+            + $this->scopedMicrofinanceGrantWorkflowQuery($request, $forceAll)->count()
+            + $this->scopedFinanceGrantWorkflowQuery($request, $forceAll)->count()
+            + $this->scopedLoanGrantWorkflowQuery($request, $forceAll)->count();
 
         return $counts;
     }
@@ -634,9 +634,9 @@ class UserNotificationController extends Controller
     /**
      * @return array<int, array<string, mixed>>
      */
-    private function actionCenterWorkflowItems(Request $request, int $limit): array
+    private function actionCenterWorkflowItems(Request $request, int $limit, bool $forceAll = false): array
     {
-        $rows = $this->scopedActionCenterWorkflowQuery($request)
+        $rows = $this->scopedActionCenterWorkflowQuery($request, $forceAll)
             ->select([
                 'id',
                 'customer_name',
@@ -653,7 +653,7 @@ class UserNotificationController extends Controller
             ->limit(max(1, min($limit * 3, 20)))
             ->get();
 
-        $mfItems = $rows->map(function (MicrofinanceLoanRequest $loan) {
+        $mfItems = $rows->map(function ($loan) {
             return [
                 'loan_request_id' => (int) $loan->id,
                 'customer_name' => (string) ($loan->customer_name ?? ''),
@@ -668,7 +668,7 @@ class UserNotificationController extends Controller
         })->values()->all();
 
         $stepSql = $this->financeWorkflowStepSql();
-        $financeRows = $this->scopedFinanceActionCenterWorkflowQuery($request)
+        $financeRows = $this->scopedFinanceActionCenterWorkflowQuery($request, $forceAll)
             ->with(['customer:id,first_name,last_name'])
             ->select([
                 'id',
@@ -683,7 +683,7 @@ class UserNotificationController extends Controller
             ->limit(max(1, min($limit * 3, 20)))
             ->get();
 
-        $financeItems = $financeRows->map(function (Finance $finance) {
+        $financeItems = $financeRows->map(function ($finance) {
             $customerName = trim(
                 ((string) ($finance->customer?->first_name ?? '')) . ' ' .
                 ((string) ($finance->customer?->last_name ?? ''))
@@ -702,7 +702,7 @@ class UserNotificationController extends Controller
             ];
         })->values()->all();
 
-        $loanRows = $this->scopedLoanActionCenterWorkflowQuery($request)
+        $loanRows = $this->scopedLoanActionCenterWorkflowQuery($request, $forceAll)
             ->select([
                 'id',
                 'request_no',
@@ -718,7 +718,7 @@ class UserNotificationController extends Controller
             ->limit(max(1, min($limit * 3, 20)))
             ->get();
 
-        $loanItems = $loanRows->map(function (LoanRequest $loan) {
+        $loanItems = $loanRows->map(function ($loan) {
             return [
                 'loan_request_id' => 2000000000 + (int) $loan->id,
                 'customer_name' => (string) ($loan->customer_full_name ?? ''),
@@ -881,13 +881,13 @@ class UserNotificationController extends Controller
         }
 
         // Step widgets must reflect current workflow queue for creator/assignee/admin scope.
-        $workflowTypeCounts = $this->actionCenterWorkflowTypeCounts($request);
+        $workflowTypeCounts = $this->actionCenterWorkflowTypeCounts($request, true);
         foreach ($workflowTypeCounts as $typeKey => $count) {
             $typeCounts[$typeKey] = $count;
         }
 
         $workflowTotal = (int) array_sum($workflowTypeCounts);
-        $workflowItems = $this->actionCenterWorkflowItems($request, $limit);
+        $workflowItems = $this->actionCenterWorkflowItems($request, $limit, true);
 
         $groupedCounts = [
             'loan_requests' => (int) ($typeCounts['microfinance_loan_request'] ?? 0),

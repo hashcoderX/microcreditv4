@@ -1014,6 +1014,28 @@ export default function CollectionManagementPage() {
     return alignToMeetingDay(next, meetingDay);
   };
 
+  const shiftDateBackByRefundOption = (date: Date, refundOption: string, steps: number, meetingDay?: string | null) => {
+    const safeSteps = Math.max(steps, 0);
+    const prev = new Date(date);
+
+    if (safeSteps === 0) {
+      return prev;
+    }
+
+    if (refundOption === 'day') {
+      prev.setDate(prev.getDate() - safeSteps);
+      return prev;
+    }
+
+    if (refundOption === 'week') {
+      prev.setDate(prev.getDate() - (safeSteps * 7));
+      return alignToMeetingDay(prev, meetingDay);
+    }
+
+    prev.setMonth(prev.getMonth() - safeSteps);
+    return alignToMeetingDay(prev, meetingDay);
+  };
+
   const parseLoanDate = (value?: string | null): Date | null => {
     const raw = String(value || '').trim();
     if (!raw) return null;
@@ -1033,42 +1055,12 @@ export default function CollectionManagementPage() {
   };
 
   const getProjectedArrearsBalance = (loan: LoanRow) => {
-    let balance = Number(loan.arrears_balance || 0);
-    const installmentAmount = Number(loan.installment_amount || 0);
-    if (installmentAmount <= 0) return balance;
-
-    const dueDate = parseLoanDate(loan.due_date);
-    if (!dueDate) return balance;
-
-    const mode = String(loan.refund_option || 'month');
-
-    let dueCursor = new Date(dueDate);
-    if (mode !== 'day') {
-      dueCursor = alignToMeetingDay(dueCursor, loan.center?.meeting_day);
+    const balance = Number(loan.arrears_balance || 0);
+    if (!Number.isFinite(balance)) {
+      return 0;
     }
 
-    if (Number.isNaN(dueCursor.getTime())) return balance;
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const graceDays = resolveGraceDays(loan.penalty_grace_days);
-    let safeIterations = 0;
-
-    while (safeIterations < 1200) {
-      const graceEnd = new Date(dueCursor);
-      graceEnd.setDate(graceEnd.getDate() + graceDays);
-      graceEnd.setHours(0, 0, 0, 0);
-
-      if (today <= graceEnd) {
-        break;
-      }
-
-      balance += installmentAmount;
-      dueCursor = shiftDateByRefundOption(dueCursor, mode, loan.center?.meeting_day);
-      safeIterations += 1;
-    }
-
+    // Arrears are now recalculated and persisted server-side; avoid client-side double accrual.
     return balance;
   };
 
@@ -1099,8 +1091,40 @@ export default function CollectionManagementPage() {
     const apiLateDays = Number(loan.penalty_lapse_days ?? NaN);
     const apiPenaltyAmount = Number(loan.penalty_preview_amount ?? NaN);
     if (Number.isFinite(apiLateDays) && Number.isFinite(apiPenaltyAmount)) {
+      const apiLateSafe = Math.max(Math.trunc(apiLateDays), 0);
+      if (apiLateSafe > 0 || Number(loan.arrears_balance || 0) <= 0) {
+        return {
+          lateDays: apiLateSafe,
+          amount: Math.max(apiPenaltyAmount, 0),
+        };
+      }
+
+      // Fallback: when arrears exists but API late days is zero, estimate from oldest overdue cycle.
+      const dueDate = parseLoanDate(loan.due_date);
+      const installment = Number(loan.installment_amount || 0);
+      const arrears = Number(loan.arrears_balance || 0);
+      if (dueDate && installment > 0 && arrears > 0) {
+        const refundMode = String(loan.refund_option || 'month');
+        const overdueInstallments = Math.floor((arrears + 0.000001) / installment);
+        if (overdueInstallments > 0) {
+          const effectiveDueDate = shiftDateBackByRefundOption(dueDate, refundMode, overdueInstallments, loan.center?.meeting_day);
+          const graceDays = resolveGraceDays(loan.penalty_grace_days);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const msPerDay = 1000 * 60 * 60 * 24;
+          const dayDiff = Math.floor((today.getTime() - effectiveDueDate.getTime()) / msPerDay);
+          if (dayDiff > graceDays) {
+            const lateDays = dayDiff - graceDays;
+            return {
+              lateDays,
+              amount: Math.max(apiPenaltyAmount, 0),
+            };
+          }
+        }
+      }
+
       return {
-        lateDays: Math.max(Math.trunc(apiLateDays), 0),
+        lateDays: apiLateSafe,
         amount: Math.max(apiPenaltyAmount, 0),
       };
     }
@@ -1167,7 +1191,8 @@ export default function CollectionManagementPage() {
 
   const getArrearsAmount = (loan: LoanRow) => {
     const projectedBalance = getProjectedArrearsBalance(loan);
-    return Math.max(projectedBalance, 0);
+    const outstanding = getOutstandingBalance(loan);
+    return Math.min(Math.max(projectedBalance, 0), outstanding);
   };
 
   const getTodayCollected = (loanId: number) => todayCollectedByLoan.get(loanId) || 0;
@@ -3722,6 +3747,7 @@ export default function CollectionManagementPage() {
                           {isColumnVisible('main_extra_payment') && renderColumnHeader('main_extra_payment', 'Extra Payment')}
                           {isColumnVisible('main_today_col') && renderColumnHeader('main_today_col', 'Today Col')}
                           {isColumnVisible('main_due_date') && renderColumnHeader('main_due_date', 'Due Date')}
+                          {isColumnVisible('main_last_pay_date') && renderColumnHeader('main_last_pay_date', 'Last Pay Date')}
                           {isColumnVisible('main_next_payment') && renderColumnHeader('main_next_payment', 'Next Payment')}
                           {isColumnVisible('main_action') && renderColumnHeader('main_action', 'Action')}
                         </tr>
@@ -3785,6 +3811,7 @@ export default function CollectionManagementPage() {
                                 <td className="px-3 py-2 text-cyan-700 font-semibold">{getTodayCollected(loan.id).toFixed(2)}</td>
                               )}
                               {isColumnVisible('main_due_date') && <td className="px-3 py-2">{formatDateDisplay(loan.due_date)}</td>}
+                              {isColumnVisible('main_last_pay_date') && <td className="px-3 py-2">{formatDateDisplay(getLastPayDate(loan))}</td>}
                               {isColumnVisible('main_next_payment') && <td className="px-3 py-2">{formatDateDisplay(loan.next_payment_date)}</td>}
                               {isColumnVisible('main_action') && (
                                 <td className="px-3 py-2">
@@ -3895,6 +3922,7 @@ export default function CollectionManagementPage() {
                           {isColumnVisible('route_extra_payment') && renderColumnHeader('route_extra_payment', 'Extra Payment')}
                           {isColumnVisible('route_today_col') && renderColumnHeader('route_today_col', 'Today Col')}
                           {isColumnVisible('route_due_date') && renderColumnHeader('route_due_date', 'Due Date')}
+                          {isColumnVisible('route_last_pay_date') && renderColumnHeader('route_last_pay_date', 'Last Pay Date')}
                           {isColumnVisible('route_next_payment') && renderColumnHeader('route_next_payment', 'Next Payment')}
                           {isColumnVisible('route_action') && renderColumnHeader('route_action', 'Action')}
                         </tr>
@@ -3948,6 +3976,7 @@ export default function CollectionManagementPage() {
                                 <td className="px-3 py-2 text-cyan-700 font-semibold">{getTodayCollected(loan.id).toFixed(2)}</td>
                               )}
                               {isColumnVisible('route_due_date') && <td className="px-3 py-2">{formatDateDisplay(loan.due_date)}</td>}
+                              {isColumnVisible('route_last_pay_date') && <td className="px-3 py-2">{formatDateDisplay(getLastPayDate(loan))}</td>}
                               {isColumnVisible('route_next_payment') && <td className="px-3 py-2">{formatDateDisplay(loan.next_payment_date)}</td>}
                               {isColumnVisible('route_action') && (
                                 <td className="px-3 py-2">
@@ -4019,6 +4048,7 @@ export default function CollectionManagementPage() {
                         {isColumnVisible('office_extra_payment') && renderColumnHeader('office_extra_payment', 'Extra Payment')}
                         {isColumnVisible('office_today_col') && renderColumnHeader('office_today_col', 'Today Col')}
                         {isColumnVisible('office_due_date') && renderColumnHeader('office_due_date', 'Due Date')}
+                        {isColumnVisible('office_last_pay_date') && renderColumnHeader('office_last_pay_date', 'Last Pay Date')}
                         {isColumnVisible('office_next_payment') && renderColumnHeader('office_next_payment', 'Next Payment')}
                         {isColumnVisible('office_status') && renderColumnHeader('office_status', 'Status')}
                       </tr>
@@ -4063,6 +4093,7 @@ export default function CollectionManagementPage() {
                             <td className="px-3 py-2 text-cyan-700 font-semibold">{getTodayCollected(loan.id).toFixed(2)}</td>
                           )}
                           {isColumnVisible('office_due_date') && <td className="px-3 py-2">{formatDateDisplay(loan.due_date)}</td>}
+                          {isColumnVisible('office_last_pay_date') && <td className="px-3 py-2">{formatDateDisplay(getLastPayDate(loan))}</td>}
                           {isColumnVisible('office_next_payment') && <td className="px-3 py-2">{formatDateDisplay(loan.next_payment_date)}</td>}
                           {isColumnVisible('office_status') && (
                             <td className="px-3 py-2 capitalize">

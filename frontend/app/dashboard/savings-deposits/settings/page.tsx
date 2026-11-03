@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import axios from 'axios';
-import { ArrowLeft, Save, ShieldCheck, SlidersHorizontal } from 'lucide-react';
+import { ArrowLeft, Save, ShieldCheck, SlidersHorizontal, Zap } from 'lucide-react';
 import {
   SAVINGS_ACCOUNT_TYPES,
   SAVINGS_INTEREST_TYPES,
@@ -104,7 +104,11 @@ export default function SavingsSettingsPage() {
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [applyingInterest, setApplyingInterest] = useState(false);
   const [form, setForm] = useState<SavingsSettingsFormState>(DEFAULT_FORM);
+  const [manualInterestDate, setManualInterestDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [manualApplySavings, setManualApplySavings] = useState(true);
+  const [manualApplyInvestment, setManualApplyInvestment] = useState(true);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
@@ -228,6 +232,56 @@ export default function SavingsSettingsPage() {
       });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const applyInterestManual = async () => {
+    if (!token || applyingInterest) return;
+
+    const accountTypes: string[] = [];
+    if (manualApplySavings) accountTypes.push('savings');
+    if (manualApplyInvestment) accountTypes.push('investment');
+
+    if (accountTypes.length === 0) {
+      setNotice({ type: 'error', text: 'Select at least one account type (Savings or Investment).' });
+      return;
+    }
+
+    setApplyingInterest(true);
+    setNotice(null);
+
+    try {
+      const response = await axios.post(
+        '/api/system/savings-deposits-settings/apply-interest-manual',
+        {
+          date: manualInterestDate || undefined,
+          account_types: accountTypes,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json',
+          },
+        }
+      );
+
+      const baseMessage = String(response.data?.message || 'Manual interest posting completed.');
+      const runDate = String(response.data?.run_date || manualInterestDate || '').trim();
+      const types = Array.isArray(response.data?.account_types)
+        ? (response.data.account_types as string[]).join(', ')
+        : accountTypes.join(', ');
+
+      setNotice({
+        type: 'success',
+        text: `${baseMessage}${runDate ? ` Date: ${runDate}.` : ''} Types: ${types}.`,
+      });
+    } catch (error: any) {
+      setNotice({
+        type: 'error',
+        text: error?.response?.data?.message || 'Failed to run manual interest posting.',
+      });
+    } finally {
+      setApplyingInterest(false);
     }
   };
 
@@ -447,6 +501,60 @@ export default function SavingsSettingsPage() {
                 </div>
               </div>
             ))}
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-amber-100 bg-white/90 p-5">
+          <h2 className="text-lg font-bold text-slate-900 inline-flex items-center gap-2">
+            <Zap className="h-5 w-5 text-amber-600" />
+            Manual Interest Posting
+          </h2>
+          <p className="text-sm text-slate-600 mt-1">
+            Run month-end style interest posting manually when automatic schedule did not run.
+          </p>
+
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-1">Run Date</label>
+              <input
+                type="date"
+                value={manualInterestDate}
+                onChange={(e) => setManualInterestDate(e.target.value)}
+                className={inputClass}
+              />
+            </div>
+
+            <label className="flex items-center justify-between rounded-xl border border-amber-100 bg-amber-50/60 px-3 py-2">
+              <span className="text-sm font-medium text-slate-800">Apply for Savings</span>
+              <input
+                type="checkbox"
+                checked={manualApplySavings}
+                onChange={(e) => setManualApplySavings(e.target.checked)}
+                className="h-4 w-4"
+              />
+            </label>
+
+            <label className="flex items-center justify-between rounded-xl border border-amber-100 bg-amber-50/60 px-3 py-2">
+              <span className="text-sm font-medium text-slate-800">Apply for Investment</span>
+              <input
+                type="checkbox"
+                checked={manualApplyInvestment}
+                onChange={(e) => setManualApplyInvestment(e.target.checked)}
+                className="h-4 w-4"
+              />
+            </label>
+          </div>
+
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={() => void applyInterestManual()}
+              disabled={applyingInterest}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white text-sm font-semibold inline-flex items-center gap-2 disabled:opacity-70"
+            >
+              <Zap className="h-4 w-4" />
+              {applyingInterest ? 'Applying Interest...' : 'Apply Interest Now'}
+            </button>
           </div>
         </section>
       </div>

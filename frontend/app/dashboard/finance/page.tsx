@@ -19,6 +19,11 @@ type FinanceRow = {
   interest_rate?: number | string | null;
   interest_type?: string | null;
   tenure_months?: number | string | null;
+  document_charges?: number | string | null;
+  insurance_charges?: number | string | null;
+  stamp_charges?: number | string | null;
+  processing_fee?: number | string | null;
+  other_charges?: number | string | null;
   status?: string | null;
   created_at?: string | null;
   customer?: {
@@ -85,6 +90,11 @@ export default function FinanceManagementPage() {
   const [actionCenterTotalCount, setActionCenterTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<FinanceRow[]>([]);
+  const [chargeSearch, setChargeSearch] = useState('');
+  const [chargeStatusFilter, setChargeStatusFilter] = useState('all');
+  const [chargeProductFilter, setChargeProductFilter] = useState('all');
+  const [chargeFromDate, setChargeFromDate] = useState('');
+  const [chargeToDate, setChargeToDate] = useState('');
   const [productTypes, setProductTypes] = useState<ProductTypeRow[]>([]);
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<string[]>([]);
   const [widgetNotice, setWidgetNotice] = useState('');
@@ -347,6 +357,89 @@ export default function FinanceManagementPage() {
     return [] as FinanceRow[]; // arrears for finance can be implemented later
   }, [rows]);
 
+  const chargeStatusOptions = useMemo(() => {
+    const discovered = Array.from(
+      new Set(rows.map((row) => String(row.status || '').trim().toLowerCase()).filter((status) => status !== ''))
+    ).sort();
+
+    return ['all', ...discovered];
+  }, [rows]);
+
+  const chargeProductOptions = useMemo(() => {
+    const discovered = Array.from(
+      new Set(rows.map((row) => String(row.product_type || '').trim()).filter((product) => product !== ''))
+    ).sort((a, b) => a.localeCompare(b));
+
+    return ['all', ...discovered];
+  }, [rows]);
+
+  const filteredChargeRows = useMemo(() => {
+    const query = chargeSearch.trim().toLowerCase();
+
+    return rows.filter((row) => {
+      if (chargeStatusFilter !== 'all' && String(row.status || '').toLowerCase() !== chargeStatusFilter) {
+        return false;
+      }
+
+      if (chargeProductFilter !== 'all' && String(row.product_type || '') !== chargeProductFilter) {
+        return false;
+      }
+
+      const created = row.created_at ? new Date(String(row.created_at)) : null;
+      if (chargeFromDate) {
+        const from = new Date(`${chargeFromDate}T00:00:00`);
+        if (!created || Number.isNaN(created.getTime()) || created < from) return false;
+      }
+      if (chargeToDate) {
+        const to = new Date(`${chargeToDate}T23:59:59`);
+        if (!created || Number.isNaN(created.getTime()) || created > to) return false;
+      }
+
+      if (!query) return true;
+
+      const customerName = `${row.customer?.first_name || ''} ${row.customer?.last_name || ''}`.trim().toLowerCase();
+      const haystack = [
+        String(row.id || ''),
+        String(row.finance_type || ''),
+        String(row.product_type || ''),
+        String(row.asset_reference || ''),
+        String(row.status || ''),
+        customerName,
+      ].join(' ').toLowerCase();
+
+      return haystack.includes(query);
+    });
+  }, [rows, chargeSearch, chargeStatusFilter, chargeProductFilter, chargeFromDate, chargeToDate]);
+
+  const chargePreview = useMemo(() => {
+    const totals = filteredChargeRows.reduce((acc, row) => {
+      const document = toNumber(row.document_charges);
+      const insurance = toNumber(row.insurance_charges);
+      const stamp = toNumber(row.stamp_charges);
+      const processing = toNumber(row.processing_fee);
+      const other = toNumber(row.other_charges);
+
+      acc.document += Number.isFinite(document) ? document : 0;
+      acc.insurance += Number.isFinite(insurance) ? insurance : 0;
+      acc.stamp += Number.isFinite(stamp) ? stamp : 0;
+      acc.processing += Number.isFinite(processing) ? processing : 0;
+      acc.other += Number.isFinite(other) ? other : 0;
+      return acc;
+    }, {
+      document: 0,
+      insurance: 0,
+      stamp: 0,
+      processing: 0,
+      other: 0,
+    });
+
+    return {
+      ...totals,
+      total: totals.document + totals.insurance + totals.stamp + totals.processing + totals.other,
+      rows: filteredChargeRows.length,
+    };
+  }, [filteredChargeRows]);
+
   const wizardSteps = [
     { id: 1, label: 'Basic', hint: 'Customer and product setup' },
     { id: 2, label: 'Vehicle', hint: 'Vehicle and valuation details' },
@@ -599,6 +692,7 @@ export default function FinanceManagementPage() {
   ];
   const showHeaderWidget = !hiddenWidgetKeys.includes(`${widgetPrefix}header`);
   const showOperationsWidget = !hiddenWidgetKeys.includes(`${widgetPrefix}operations`);
+  const showChargePreviewWidget = !hiddenWidgetKeys.includes(`${widgetPrefix}charge_preview`);
   const showInsightsWidget = !hiddenWidgetKeys.includes(`${widgetPrefix}insights`);
   const visibleOperationItems = operationItems.filter(
     (item) => !hiddenWidgetKeys.includes(`${widgetPrefix}operation_${item.key}`)
@@ -606,7 +700,7 @@ export default function FinanceManagementPage() {
   const visibleInsightCards = insightCards.filter(
     (item) => !hiddenWidgetKeys.includes(`${widgetPrefix}insight_${item.key}`)
   );
-  const showAnyWidget = showHeaderWidget || showOperationsWidget || showInsightsWidget;
+  const showAnyWidget = showHeaderWidget || showOperationsWidget || showChargePreviewWidget || showInsightsWidget;
 
   if (!token || loading) {
     return (
@@ -797,6 +891,97 @@ export default function FinanceManagementPage() {
               All finance operation widgets are hidden.
             </div>
           )}
+        </div>
+        ) : null}
+
+        {showChargePreviewWidget ? (
+        <div className="relative bg-white/86 backdrop-blur-xl rounded-3xl border border-cyan-100 shadow-[0_18px_40px_-24px_rgba(14,116,144,0.5)] p-5 space-y-4">
+          <WidgetCloseGate>
+            <button
+              type="button"
+              onClick={() => void hideWidget(`${widgetPrefix}charge_preview`)}
+              className="absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-full border border-cyan-200 bg-white text-cyan-700 hover:bg-cyan-50"
+              aria-label="Hide finance charge preview widget"
+            >
+              ×
+            </button>
+          </WidgetCloseGate>
+
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">Finance Charge Preview</h2>
+            <p className="text-xs text-slate-600 mt-1">Review document, insurance, stamp, processing, and other charges with key filters.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <input
+              value={chargeSearch}
+              onChange={(e) => setChargeSearch(e.target.value)}
+              placeholder="Search by ID, customer, type, product"
+              className="rounded-xl border border-cyan-100 bg-white px-3 py-2 text-sm text-slate-900"
+            />
+            <select
+              value={chargeStatusFilter}
+              onChange={(e) => setChargeStatusFilter(e.target.value)}
+              className="rounded-xl border border-cyan-100 bg-white px-3 py-2 text-sm text-slate-900"
+            >
+              {chargeStatusOptions.map((status) => (
+                <option key={`status-${status}`} value={status}>
+                  {status === 'all' ? 'All statuses' : status}
+                </option>
+              ))}
+            </select>
+            <select
+              value={chargeProductFilter}
+              onChange={(e) => setChargeProductFilter(e.target.value)}
+              className="rounded-xl border border-cyan-100 bg-white px-3 py-2 text-sm text-slate-900"
+            >
+              {chargeProductOptions.map((product) => (
+                <option key={`product-${product}`} value={product}>
+                  {product === 'all' ? 'All products' : product}
+                </option>
+              ))}
+            </select>
+            <input
+              type="date"
+              value={chargeFromDate}
+              onChange={(e) => setChargeFromDate(e.target.value)}
+              className="rounded-xl border border-cyan-100 bg-white px-3 py-2 text-sm text-slate-900"
+            />
+            <input
+              type="date"
+              value={chargeToDate}
+              onChange={(e) => setChargeToDate(e.target.value)}
+              className="rounded-xl border border-cyan-100 bg-white px-3 py-2 text-sm text-slate-900"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3">
+            <div className="rounded-xl border border-cyan-100 bg-cyan-50/50 p-3">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-700">Rows</p>
+              <p className="mt-1 text-lg font-extrabold text-slate-900">{chargePreview.rows}</p>
+            </div>
+            <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-3">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700">Document</p>
+              <p className="mt-1 text-lg font-extrabold text-slate-900">{formatAmount(chargePreview.document)}</p>
+            </div>
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-700">Insurance</p>
+              <p className="mt-1 text-lg font-extrabold text-slate-900">{formatAmount(chargePreview.insurance)}</p>
+            </div>
+            <div className="rounded-xl border border-violet-100 bg-violet-50/50 p-3">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-violet-700">Stamp</p>
+              <p className="mt-1 text-lg font-extrabold text-slate-900">{formatAmount(chargePreview.stamp)}</p>
+            </div>
+            <div className="rounded-xl border border-amber-100 bg-amber-50/50 p-3">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-amber-700">Processing + Other</p>
+              <p className="mt-1 text-lg font-extrabold text-slate-900">{formatAmount(chargePreview.processing + chargePreview.other)}</p>
+            </div>
+            <div className="rounded-xl border border-rose-100 bg-rose-50/50 p-3">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-rose-700">Total Charges</p>
+              <p className="mt-1 text-lg font-extrabold text-slate-900">{formatAmount(chargePreview.total)}</p>
+            </div>
+          </div>
+
         </div>
         ) : null}
 

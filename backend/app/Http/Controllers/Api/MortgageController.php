@@ -390,6 +390,108 @@ class MortgageController extends Controller
         return $query->findOrFail($id);
     }
 
+    private function resolveMortgageGraceDays(Mortgage $mortgage): int
+    {
+        static $hasGraceDaysColumn = null;
+
+        if ($hasGraceDaysColumn === null) {
+            $hasGraceDaysColumn = Schema::hasColumn('mortgages', 'penalty_grace_days');
+        }
+
+        if ($hasGraceDaysColumn) {
+            return max(0, (int) ($mortgage->getAttribute('penalty_grace_days') ?? 0));
+        }
+
+        return 0;
+    }
+
+    private function computeMortgageArrearsByDate(Mortgage $mortgage, Carbon $asOfDate): float
+    {
+        $graceDays = $this->resolveMortgageGraceDays($mortgage);
+
+        $scheduleRows = MortgageSchedule::query()
+            ->where('mortgage_id', $mortgage->id)
+            ->get(['due_date', 'total_amount', 'paid_amount']);
+
+        if ($scheduleRows->isNotEmpty()) {
+            $totalArrears = 0.0;
+
+            foreach ($scheduleRows as $schedule) {
+                $dueRaw = trim((string) ($schedule->due_date ?? ''));
+                if ($dueRaw === '') {
+                    continue;
+                }
+
+                try {
+                    $graceEnd = Carbon::parse($dueRaw)->startOfDay()->addDays($graceDays);
+                } catch (\Throwable) {
+                    continue;
+                }
+
+                if (!$asOfDate->gt($graceEnd)) {
+                    continue;
+                }
+
+                $remaining = round(max((float) ($schedule->total_amount ?? 0) - (float) ($schedule->paid_amount ?? 0), 0), 2);
+                $totalArrears += $remaining;
+            }
+
+            if ($totalArrears <= 0.009) {
+                $dueDateRaw = trim((string) ($mortgage->due_date ?? ''));
+                if ($dueDateRaw !== '') {
+                    try {
+                        $graceEnd = Carbon::parse($dueDateRaw)->startOfDay()->addDays($graceDays);
+                        if ($asOfDate->gt($graceEnd)) {
+                            $fallbackArrears = round(max((float) ($mortgage->due_amount ?? 0) + (float) ($mortgage->due_interest_amount ?? 0), 0), 2);
+                            if ($fallbackArrears > 0) {
+                                return $fallbackArrears;
+                            }
+                        }
+                    } catch (\Throwable) {
+                        // keep schedule-derived arrears
+                    }
+                }
+            }
+
+            return round(max($totalArrears, 0), 2);
+        }
+
+        $dueDateRaw = trim((string) ($mortgage->due_date ?? ''));
+        if ($dueDateRaw === '') {
+            return 0.0;
+        }
+
+        try {
+            $graceEnd = Carbon::parse($dueDateRaw)->startOfDay()->addDays($graceDays);
+        } catch (\Throwable) {
+            return 0.0;
+        }
+
+        if (!$asOfDate->gt($graceEnd)) {
+            return 0.0;
+        }
+
+        return round(max((float) ($mortgage->due_amount ?? 0) + (float) ($mortgage->due_interest_amount ?? 0), 0), 2);
+    }
+
+    private function applyAutomaticMortgageArrearsAccrual(Mortgage $mortgage, ?Carbon $asOfDate = null): void
+    {
+        if (in_array((string) ($mortgage->status ?? ''), ['draft', 'submitted', 'rejected', 'settled'], true)) {
+            return;
+        }
+
+        $asOf = $asOfDate ? $asOfDate->copy()->startOfDay() : Carbon::today();
+        $computedArrears = $this->computeMortgageArrearsByDate($mortgage, $asOf);
+        $currentArrears = round(max((float) ($mortgage->arrears_amount ?? 0), 0), 2);
+
+        if (abs($computedArrears - $currentArrears) <= 0.009) {
+            return;
+        }
+
+        $mortgage->setAttribute('arrears_amount', $computedArrears);
+        $mortgage->save();
+    }
+
     // List mortgages
     public function index(Request $request): JsonResponse
     {
@@ -450,9 +552,13 @@ class MortgageController extends Controller
             $query->withSum('payments as total_paid_amount', 'amount');
         }
 
+        $query->withMax('payments as last_paid_date', 'paid_date');
+
         $data = $query->paginate($perPage);
 
         $data->getCollection()->transform(function (Mortgage $mortgage) {
+            $this->applyAutomaticMortgageArrearsAccrual($mortgage);
+
             $rule = $this->resolveMortgagePenaltyRule((string) ($mortgage->penalty_scheme ?? ''));
             if ($rule) {
                 $mortgage->setAttribute('penalty_scheme_type', (string) ($rule['scheme_type'] ?? ''));
@@ -537,6 +643,9 @@ class MortgageController extends Controller
                     : null,
                 'penalty_rate' => $validated['penalty_rate'] ?? 0,
                 'processing_fee' => $validated['processing_fee'] ?? 0,
+                'document_charges' => $validated['document_charges'] ?? 0,
+                'stamp_charges' => $validated['stamp_charges'] ?? 0,
+                'additional_charges' => $validated['additional_charges'] ?? 0,
                 'insurance_fee' => $validated['insurance_fee'] ?? 0,
                 'start_date' => $validated['start_date'] ?? null,
                 'previous_mortgages' => isset($validated['previous_mortgages'])
@@ -693,6 +802,7 @@ class MortgageController extends Controller
     {
         $mortgage = $this->resolveMortgageOrFail($request, $id, ['asset', 'valuation', 'guarantors']);
         $mortgage->loadSum('payments as total_paid_amount', 'amount');
+        $this->applyAutomaticMortgageArrearsAccrual($mortgage);
 
         $rule = $this->resolveMortgagePenaltyRule((string) ($mortgage->penalty_scheme ?? ''));
         if ($rule) {

@@ -13,7 +13,7 @@ class ApplyMonthlySavingsInterest extends Command
 {
     private const SAVINGS_SETTINGS_KEY = 'savings_deposits_settings';
 
-    protected $signature = 'savings:apply-monthly-interest {--date=} {--force : Run even if date is not month-end}';
+    protected $signature = 'savings:apply-monthly-interest {--date=} {--force : Run even if date is not month-end} {--types= : Comma-separated account types (savings,current,fixed_deposit,investment)}';
 
     protected $description = 'Apply monthly interest to savings/fixed deposit accounts on month end';
 
@@ -58,6 +58,30 @@ class ApplyMonthlySavingsInterest extends Command
         return $defaults;
     }
 
+    /**
+     * @return list<string>
+     */
+    private function resolveSelectedAccountTypes(): array
+    {
+        $allowed = ['savings', 'current', 'fixed_deposit', 'investment'];
+        $raw = strtolower(trim((string) ($this->option('types') ?? '')));
+        if ($raw === '') {
+            return $allowed;
+        }
+
+        $parts = array_values(array_unique(array_filter(array_map(
+            static fn (string $value): string => strtolower(trim($value)),
+            explode(',', $raw)
+        ))));
+
+        $selected = array_values(array_filter($parts, static fn (string $value): bool => in_array($value, $allowed, true)));
+        if (count($selected) === 0) {
+            return $allowed;
+        }
+
+        return $selected;
+    }
+
     public function handle(): int
     {
         $asOfDate = $this->option('date')
@@ -73,10 +97,11 @@ class ApplyMonthlySavingsInterest extends Command
         $periodKey = $asOfDate->format('Ym');
         $transactionDate = $asOfDate->toDateString();
         $defaultRates = $this->defaultInterestRates();
+        $selectedAccountTypes = $this->resolveSelectedAccountTypes();
 
         $eligibleAccounts = SavingsAccount::query()
             ->where('status', 'active')
-            ->whereIn('account_type', ['savings', 'current', 'fixed_deposit', 'investment'])
+            ->whereIn('account_type', $selectedAccountTypes)
             ->where('balance', '>', 0)
             ->orderBy('id')
             ->get();
@@ -135,7 +160,8 @@ class ApplyMonthlySavingsInterest extends Command
             $credited++;
         }
 
-        $this->info("Monthly interest process completed. Credited: {$credited}, Skipped: {$skipped}");
+        $typesLabel = implode(', ', $selectedAccountTypes);
+        $this->info("Monthly interest process completed. Types: {$typesLabel}. Credited: {$credited}, Skipped: {$skipped}");
 
         return self::SUCCESS;
     }

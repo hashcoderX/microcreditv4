@@ -369,6 +369,157 @@ class OfficeCollectionController extends Controller
         }
     }
 
+    private function shiftMicrofinanceDueDate(Carbon $date, string $refundOption, int $steps = 1): Carbon
+    {
+        if ($steps === 0) {
+            return $date->copy();
+        }
+
+        $cursor = $date->copy();
+        $iterations = abs($steps);
+
+        for ($i = 0; $i < $iterations; $i++) {
+            if ($steps > 0) {
+                if ($refundOption === 'day') {
+                    $cursor->addDay();
+                } elseif ($refundOption === 'week') {
+                    $cursor->addDays(7);
+                } else {
+                    $cursor->addMonthNoOverflow();
+                }
+            } else {
+                if ($refundOption === 'day') {
+                    $cursor->subDay();
+                } elseif ($refundOption === 'week') {
+                    $cursor->subDays(7);
+                } else {
+                    $cursor->subMonthNoOverflow();
+                }
+            }
+        }
+
+        return $cursor;
+    }
+
+    private function resolveMicrofinanceScheduleCursor(MicrofinanceLoanRequest $loan, string $refundOption, int $termCount): ?Carbon
+    {
+        if (!empty($loan->due_date)) {
+            try {
+                return Carbon::parse((string) $loan->due_date)->startOfDay();
+            } catch (\Throwable) {
+                // fallthrough
+            }
+        }
+
+        if (!empty($loan->next_payment_date)) {
+            try {
+                return Carbon::parse((string) $loan->next_payment_date)->startOfDay();
+            } catch (\Throwable) {
+                // fallthrough
+            }
+        }
+
+        if (!empty($loan->loan_request_date)) {
+            try {
+                $startDate = Carbon::parse((string) $loan->loan_request_date)->startOfDay();
+                return $this->shiftMicrofinanceDueDate($startDate, $refundOption, 1);
+            } catch (\Throwable) {
+                // fallthrough
+            }
+        }
+
+        if (!empty($loan->loan_end_date)) {
+            try {
+                $loanEndDate = Carbon::parse((string) $loan->loan_end_date)->startOfDay();
+                if ($termCount <= 1) {
+                    return $loanEndDate;
+                }
+
+                return $this->shiftMicrofinanceDueDate($loanEndDate, $refundOption, 0 - ($termCount - 1));
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private function applyAutomaticMicrofinanceArrearsAccrual(MicrofinanceLoanRequest $loan, ?Carbon $asOfDate = null): void
+    {
+        if (!in_array((string) ($loan->status ?? ''), ['approved', 'released'], true)) {
+            return;
+        }
+
+        if (!empty($loan->hold_at) || !empty($loan->closed_at)) {
+            return;
+        }
+
+        $installmentAmount = (float) ($loan->installment_amount ?? 0);
+        if ($installmentAmount <= 0) {
+            return;
+        }
+
+        $asOf = $asOfDate ? $asOfDate->copy()->startOfDay() : Carbon::today();
+        $refundOption = (string) ($loan->refund_option ?: 'month');
+        $termCount = max((int) ($loan->terms_count ?? 1), 1);
+
+        $dueCursor = $this->resolveMicrofinanceScheduleCursor($loan, $refundOption, $termCount);
+        if (!$dueCursor) {
+            return;
+        }
+
+        $capDate = $asOf->copy();
+        if (!empty($loan->loan_end_date)) {
+            try {
+                $loanEndDate = Carbon::parse((string) $loan->loan_end_date)->startOfDay();
+                if ($loanEndDate->lt($capDate)) {
+                    $capDate = $loanEndDate;
+                }
+            } catch (\Throwable) {
+                // keep current cap
+            }
+        }
+
+        $newArrears = max((float) ($loan->arrears_balance ?? 0), 0);
+        $accruedInstallments = 0;
+        $graceDays = max((int) ($loan->penalty_grace_days ?? 2), 0);
+
+        while (true) {
+            $graceEnd = $dueCursor->copy()->addDays($graceDays);
+            if ($graceEnd->gt($capDate)) {
+                break;
+            }
+
+            $newArrears += $installmentAmount;
+            $dueCursor = $this->shiftMicrofinanceDueDate($dueCursor, $refundOption, 1);
+            $accruedInstallments++;
+
+            if ($accruedInstallments > 5000) {
+                break;
+            }
+        }
+
+        $nextDueDate = $dueCursor->toDateString();
+        $penaltyStartsOn = $dueCursor->copy()->addDays($graceDays + 1)->toDateString();
+
+        $shouldPersist = $accruedInstallments > 0
+            || empty($loan->due_date)
+            || empty($loan->next_payment_date)
+            || empty($loan->penalty_starts_on)
+            || (string) ($loan->due_date ?? '') !== $nextDueDate
+            || (string) ($loan->next_payment_date ?? '') !== $nextDueDate;
+
+        if (!$shouldPersist) {
+            return;
+        }
+
+        $loan->arrears_balance = round($newArrears, 2);
+        $loan->setAttribute('due_date', $nextDueDate);
+        $loan->next_payment_date = $nextDueDate;
+        $loan->penalty_starts_on = $penaltyStartsOn;
+        $loan->save();
+    }
+
     /**
      * @return array<int, array<string, mixed>>
      */
@@ -517,6 +668,10 @@ class OfficeCollectionController extends Controller
         ]);
 
         return $mfQuery->get()->map(function ($loan) {
+            if ($loan instanceof MicrofinanceLoanRequest) {
+                $this->applyAutomaticMicrofinanceArrearsAccrual($loan);
+            }
+
             $refundable = (float) ($loan->refundable_amount ?? 0);
             $collected = (float) ($loan->total_collected_sum ?? 0);
             $balance = max($refundable - $collected, 0);
@@ -527,6 +682,20 @@ class OfficeCollectionController extends Controller
             $graceDays = max((int) ($loan->penalty_grace_days ?? 2), 0);
             $lapseDays = $this->calculateLapseDays($dueDate, $graceDays);
             $installmentAmount = (float) ($loan->installment_amount ?? 0);
+
+            if ($lapseDays <= 0 && $arrearsOutstanding > 0 && $installmentAmount > 0 && $dueDate) {
+                try {
+                    $overdueInstallments = (int) floor(($arrearsOutstanding + 0.000001) / $installmentAmount);
+                    if ($overdueInstallments > 0) {
+                        $refundOption = (string) ($loan->refund_option ?: 'month');
+                        $cursor = $this->shiftMicrofinanceDueDate(Carbon::parse($dueDate)->startOfDay(), $refundOption, 0 - $overdueInstallments);
+                        $lapseDays = $this->calculateLapseDays($cursor->toDateString(), $graceDays);
+                    }
+                } catch (\Throwable) {
+                    // keep default lapse days
+                }
+            }
+
             $penaltyPreview = $this->calculateMicrofinancePenaltyPreview(
                 $dueDate,
                 $graceDays,

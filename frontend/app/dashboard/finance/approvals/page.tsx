@@ -16,6 +16,11 @@ type FinanceApprovalRow = {
   amount?: number | string | null;
   down_payment?: number | string | null;
   financed_amount?: number | string | null;
+  document_charges?: number | string | null;
+  insurance_charges?: number | string | null;
+  stamp_charges?: number | string | null;
+  processing_fee?: number | string | null;
+  other_charges?: number | string | null;
   interest_rate?: number | string | null;
   interest_type?: string | null;
   tenure_months?: number | string | null;
@@ -714,6 +719,7 @@ export default function FinanceApprovalsPage() {
     | 'asset'
     | 'guarantor'
     | 'repayment'
+    | 'charges'
     | 'family_financial'
     | 'residence_images'
     | 'evaluation'
@@ -1520,6 +1526,25 @@ export default function FinanceApprovalsPage() {
     () => getRefundPreviewAmount(selectedFinance),
     [selectedFinance],
   );
+
+  const chargesPreview = useMemo(() => {
+    const documentCharges = Number.isFinite(toNumber(selectedFinance?.document_charges)) ? toNumber(selectedFinance?.document_charges) : 0;
+    const insuranceCharges = Number.isFinite(toNumber(selectedFinance?.insurance_charges)) ? toNumber(selectedFinance?.insurance_charges) : 0;
+    const stampCharges = Number.isFinite(toNumber(selectedFinance?.stamp_charges)) ? toNumber(selectedFinance?.stamp_charges) : 0;
+    const processingFee = Number.isFinite(toNumber(selectedFinance?.processing_fee)) ? toNumber(selectedFinance?.processing_fee) : 0;
+    const otherCharges = Number.isFinite(toNumber(selectedFinance?.other_charges)) ? toNumber(selectedFinance?.other_charges) : 0;
+    const totalCharges = documentCharges + insuranceCharges + stampCharges + processingFee + otherCharges;
+
+    return {
+      documentCharges,
+      insuranceCharges,
+      stampCharges,
+      processingFee,
+      otherCharges,
+      totalCharges,
+      hasAnyCharge: totalCharges > 0,
+    };
+  }, [selectedFinance]);
 
   const applyAutoBalanceHelper = () => {
     if (!autoBalanceSuggestion.canApply) {
@@ -2580,6 +2605,7 @@ export default function FinanceApprovalsPage() {
     { key: 'asset', label: 'Chosen Asset Details' },
     { key: 'guarantor', label: 'Guarantor' },
     { key: 'repayment', label: 'Repayment' },
+    { key: 'charges', label: 'Charges' },
     { key: 'family_financial', label: 'Family & Financial' },
     { key: 'residence_images', label: 'Residence Images' },
     { key: 'evaluation', label: 'Evaluation' },
@@ -3195,6 +3221,43 @@ export default function FinanceApprovalsPage() {
                         </div>
                       )}
 
+                      {activeReviewSection === 'charges' && (
+                        <div className="space-y-3 text-sm">
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div className="rounded-lg border border-cyan-100 bg-white px-3 py-2">
+                              <p className="text-[11px] uppercase font-bold tracking-wide text-slate-500">Document Charges</p>
+                              <p className="mt-1 text-base font-extrabold text-slate-900">{formatAmount(chargesPreview.documentCharges)}</p>
+                            </div>
+                            <div className="rounded-lg border border-cyan-100 bg-white px-3 py-2">
+                              <p className="text-[11px] uppercase font-bold tracking-wide text-slate-500">Insurance Charges</p>
+                              <p className="mt-1 text-base font-extrabold text-slate-900">{formatAmount(chargesPreview.insuranceCharges)}</p>
+                            </div>
+                            <div className="rounded-lg border border-cyan-100 bg-white px-3 py-2">
+                              <p className="text-[11px] uppercase font-bold tracking-wide text-slate-500">Stamp Charges</p>
+                              <p className="mt-1 text-base font-extrabold text-slate-900">{formatAmount(chargesPreview.stampCharges)}</p>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div className="rounded-lg border border-cyan-100 bg-white px-3 py-2">
+                              <p className="text-[11px] uppercase font-bold tracking-wide text-slate-500">Processing Fee</p>
+                              <p className="mt-1 text-base font-extrabold text-slate-900">{formatAmount(chargesPreview.processingFee)}</p>
+                            </div>
+                            <div className="rounded-lg border border-cyan-100 bg-white px-3 py-2">
+                              <p className="text-[11px] uppercase font-bold tracking-wide text-slate-500">Other Charges</p>
+                              <p className="mt-1 text-base font-extrabold text-slate-900">{formatAmount(chargesPreview.otherCharges)}</p>
+                            </div>
+                            <div className="rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2">
+                              <p className="text-[11px] uppercase font-bold tracking-wide text-cyan-700">Total Charges</p>
+                              <p className="mt-1 text-base font-extrabold text-cyan-900">{formatAmount(chargesPreview.totalCharges)}</p>
+                            </div>
+                          </div>
+
+                          {!chargesPreview.hasAnyCharge ? (
+                            <p className="text-xs text-slate-500">No charges are recorded yet for this finance request.</p>
+                          ) : null}
+                        </div>
+                      )}
+
                       {activeReviewSection === 'family_financial' && (
                         <div className="space-y-2 text-sm">
                           {familyFinancialEntries.length > 0 ? (
@@ -3422,6 +3485,12 @@ export default function FinanceApprovalsPage() {
                       <div><span className="text-slate-500">Balance: </span><span className="font-semibold text-slate-900">{formatAmount(selectedFinance.balance_amount)}</span></div>
                       <div><span className="text-slate-500">Penalty Rate: </span><span className="font-semibold text-slate-900">{getPenaltyRatePreview(selectedFinance, financePenaltyRuleByScheme)}</span></div>
                       <div><span className="text-slate-500">Refund: </span><span className="font-semibold text-slate-900">{formatAmount(refundPreviewAmount)}</span></div>
+                      <div><span className="text-slate-500">Document Charges: </span><span className="font-semibold text-slate-900">{formatAmount(chargesPreview.documentCharges)}</span></div>
+                      <div><span className="text-slate-500">Insurance Charges: </span><span className="font-semibold text-slate-900">{formatAmount(chargesPreview.insuranceCharges)}</span></div>
+                      <div><span className="text-slate-500">Stamp Charges: </span><span className="font-semibold text-slate-900">{formatAmount(chargesPreview.stampCharges)}</span></div>
+                      <div><span className="text-slate-500">Processing Fee: </span><span className="font-semibold text-slate-900">{formatAmount(chargesPreview.processingFee)}</span></div>
+                      <div><span className="text-slate-500">Other Charges: </span><span className="font-semibold text-slate-900">{formatAmount(chargesPreview.otherCharges)}</span></div>
+                      <div><span className="text-slate-500">Total Charges: </span><span className="font-semibold text-slate-900">{formatAmount(chargesPreview.totalCharges)}</span></div>
                     </div>
                   </div>
 

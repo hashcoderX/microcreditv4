@@ -40,6 +40,15 @@ type BranchPerformanceRow = {
   opening_asset: number;
   employee_count: number;
   savings_accounts: number;
+  savings_deposits?: number;
+  fixed_deposit_deposits?: number;
+  investment_deposits?: number;
+  savings_period_deposits?: number;
+  fixed_deposit_period_deposits?: number;
+  investment_period_deposits?: number;
+  savings_interest_expense?: number;
+  fixed_deposit_interest_expense?: number;
+  investment_interest_expense?: number;
   mf_active_loans: number;
   mf_arrears: number;
   mf_outstanding: number;
@@ -48,23 +57,37 @@ type BranchPerformanceRow = {
   mf_interest?: number;
   mf_penalty?: number;
   mf_transactions?: number;
+  mf_document_charges?: number;
+  mf_stamp_charges?: number;
+  mf_insurance_charges?: number;
+  mf_other_charges?: number;
   finance_active: number;
   finance_arrears: number;
   finance_outstanding: number;
   finance_collected: number;
   finance_interest?: number;
   finance_transactions?: number;
+  finance_document_charges?: number;
+  finance_stamp_charges?: number;
+  finance_insurance_charges?: number;
+  finance_other_charges?: number;
   mortgage_active: number;
   mortgage_arrears: number;
   mortgage_collected: number;
   mortgage_profit?: number;
   mortgage_transactions?: number;
+  mortgage_document_charges?: number;
+  mortgage_stamp_charges?: number;
+  mortgage_insurance_charges?: number;
+  mortgage_other_charges?: number;
   instant_active: number;
   instant_outstanding: number;
   instant_collected: number;
   instant_transactions?: number;
   period_collected: number;
   period_profit: number;
+  period_expenses?: number;
+  net_profit_after_expenses?: number;
   total_arrears: number;
   total_outstanding: number;
 };
@@ -73,6 +96,8 @@ type ReportSummary = {
   branch_count: number;
   period_collected: number;
   period_profit: number;
+  period_expenses: number;
+  net_profit_after_expenses: number;
   total_arrears: number;
   total_outstanding: number;
   mf_active_loans: number;
@@ -492,16 +517,40 @@ function BranchPerformanceReportContent() {
         acc.branchCount += 1;
         acc.totalCollection += periodCollection;
         acc.totalProfit += Number(row.period_profit || 0);
+        acc.totalExpenses += Number(row.period_expenses || 0);
+        acc.netProfitAfterExpenses += Number(row.net_profit_after_expenses || 0);
         acc.totalArrears += Number(row.total_arrears || 0);
         acc.totalOutstanding += Number(row.total_outstanding || 0);
 
         acc.mfCollection += Number(row.mf_collected || 0);
         acc.mfProfit += mfProfit;
+        acc.mfDocumentCharges += Number(row.mf_document_charges || 0);
+        acc.mfStampCharges += Number(row.mf_stamp_charges || 0);
+        acc.mfInsuranceCharges += Number(row.mf_insurance_charges || 0);
+        acc.mfOtherCharges += Number(row.mf_other_charges || 0);
         acc.financeCollection += Number(row.finance_collected || 0);
         acc.financeProfit += financeProfit;
+        acc.financeDocumentCharges += Number(row.finance_document_charges || 0);
+        acc.financeStampCharges += Number(row.finance_stamp_charges || 0);
+        acc.financeInsuranceCharges += Number(row.finance_insurance_charges || 0);
+        acc.financeOtherCharges += Number(row.finance_other_charges || 0);
         acc.mortgageCollection += Number(row.mortgage_collected || 0);
         acc.mortgageProfit += mortgageProfit;
+        acc.mortgageDocumentCharges += Number(row.mortgage_document_charges || 0);
+        acc.mortgageStampCharges += Number(row.mortgage_stamp_charges || 0);
+        acc.mortgageInsuranceCharges += Number(row.mortgage_insurance_charges || 0);
+        acc.mortgageOtherCharges += Number(row.mortgage_other_charges || 0);
         acc.instantCollection += Number(row.instant_collected || 0);
+
+        acc.savingsDeposits += Number(row.savings_deposits || 0);
+        acc.fixedDepositDeposits += Number(row.fixed_deposit_deposits || 0);
+        acc.investmentDeposits += Number(row.investment_deposits || 0);
+        acc.savingsPeriodDeposits += Number(row.savings_period_deposits || 0);
+        acc.fixedDepositPeriodDeposits += Number(row.fixed_deposit_period_deposits || 0);
+        acc.investmentPeriodDeposits += Number(row.investment_period_deposits || 0);
+        acc.savingsInterestExpense += Number(row.savings_interest_expense || 0);
+        acc.fixedDepositInterestExpense += Number(row.fixed_deposit_interest_expense || 0);
+        acc.investmentInterestExpense += Number(row.investment_interest_expense || 0);
 
         acc.savingsAccounts += Number(row.savings_accounts || 0);
         acc.staff += Number(row.employee_count || 0);
@@ -511,15 +560,38 @@ function BranchPerformanceReportContent() {
         branchCount: 0,
         totalCollection: 0,
         totalProfit: 0,
+        totalExpenses: 0,
+        netProfitAfterExpenses: 0,
         totalArrears: 0,
         totalOutstanding: 0,
         mfCollection: 0,
         mfProfit: 0,
+        mfDocumentCharges: 0,
+        mfStampCharges: 0,
+        mfInsuranceCharges: 0,
+        mfOtherCharges: 0,
         financeCollection: 0,
         financeProfit: 0,
+        financeDocumentCharges: 0,
+        financeStampCharges: 0,
+        financeInsuranceCharges: 0,
+        financeOtherCharges: 0,
         mortgageCollection: 0,
         mortgageProfit: 0,
+        mortgageDocumentCharges: 0,
+        mortgageStampCharges: 0,
+        mortgageInsuranceCharges: 0,
+        mortgageOtherCharges: 0,
         instantCollection: 0,
+        savingsDeposits: 0,
+        fixedDepositDeposits: 0,
+        investmentDeposits: 0,
+        savingsPeriodDeposits: 0,
+        fixedDepositPeriodDeposits: 0,
+        investmentPeriodDeposits: 0,
+        savingsInterestExpense: 0,
+        fixedDepositInterestExpense: 0,
+        investmentInterestExpense: 0,
         savingsAccounts: 0,
         staff: 0,
       }
@@ -569,6 +641,10 @@ function BranchPerformanceReportContent() {
         title: "Micro Credit",
         collection: executiveTotals.mfCollection,
         profit: executiveTotals.mfProfit,
+        documentCharges: executiveTotals.mfDocumentCharges,
+        stampCharges: executiveTotals.mfStampCharges,
+        insuranceCharges: executiveTotals.mfInsuranceCharges,
+        otherCharges: executiveTotals.mfOtherCharges,
         explanation: "Collection = all received microfinance installments. Profit = microfinance interest + penalty earned.",
       },
       {
@@ -576,6 +652,10 @@ function BranchPerformanceReportContent() {
         title: "Finance",
         collection: executiveTotals.financeCollection,
         profit: executiveTotals.financeProfit,
+        documentCharges: executiveTotals.financeDocumentCharges,
+        stampCharges: executiveTotals.financeStampCharges,
+        insuranceCharges: executiveTotals.financeInsuranceCharges,
+        otherCharges: executiveTotals.financeOtherCharges,
         explanation: "Collection = finance repayment receipts. Profit = interest_paid from finance collections.",
       },
       {
@@ -583,6 +663,10 @@ function BranchPerformanceReportContent() {
         title: "Mortgage",
         collection: executiveTotals.mortgageCollection,
         profit: executiveTotals.mortgageProfit,
+        documentCharges: executiveTotals.mortgageDocumentCharges,
+        stampCharges: executiveTotals.mortgageStampCharges,
+        insuranceCharges: executiveTotals.mortgageInsuranceCharges,
+        otherCharges: executiveTotals.mortgageOtherCharges,
         explanation: "Collection = mortgage payment receipts. Profit = mortgage payment profit_amount.",
       },
     ],
@@ -617,6 +701,45 @@ function BranchPerformanceReportContent() {
       { name: "Micro Profit", value: Number(executiveTotals.mfProfit || 0) },
       { name: "Finance Profit", value: Number(executiveTotals.financeProfit || 0) },
       { name: "Mortgage Profit", value: Number(executiveTotals.mortgageProfit || 0) },
+    ],
+    [executiveTotals]
+  );
+
+  const savingsBookMixData = useMemo(
+    () => [
+      { name: "Savings", value: Number(executiveTotals.savingsDeposits || 0) },
+      { name: "Fixed Deposit", value: Number(executiveTotals.fixedDepositDeposits || 0) },
+      { name: "Investment", value: Number(executiveTotals.investmentDeposits || 0) },
+    ],
+    [executiveTotals]
+  );
+
+  const savingsPeriodMixData = useMemo(
+    () => [
+      { name: "Savings", value: Number(executiveTotals.savingsPeriodDeposits || 0) },
+      { name: "Fixed Deposit", value: Number(executiveTotals.fixedDepositPeriodDeposits || 0) },
+      { name: "Investment", value: Number(executiveTotals.investmentPeriodDeposits || 0) },
+    ],
+    [executiveTotals]
+  );
+
+  const savingsCompareData = useMemo(
+    () => [
+      {
+        type: "Savings",
+        current: Number(executiveTotals.savingsDeposits || 0),
+        period: Number(executiveTotals.savingsPeriodDeposits || 0),
+      },
+      {
+        type: "Fixed Deposit",
+        current: Number(executiveTotals.fixedDepositDeposits || 0),
+        period: Number(executiveTotals.fixedDepositPeriodDeposits || 0),
+      },
+      {
+        type: "Investment",
+        current: Number(executiveTotals.investmentDeposits || 0),
+        period: Number(executiveTotals.investmentPeriodDeposits || 0),
+      },
     ],
     [executiveTotals]
   );
@@ -754,7 +877,7 @@ function BranchPerformanceReportContent() {
           <div className="px-4 sm:px-6 pb-4 sm:pb-6 border-b border-rose-100">
             <div className="rounded-2xl border border-rose-100 bg-gradient-to-br from-rose-50/80 via-white to-orange-50/70 p-4">
               <h3 className="text-sm font-extrabold uppercase tracking-wide text-rose-800">Final Collection Summary</h3>
-              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
                 <div className="rounded-xl border border-rose-100 bg-white p-3">
                   <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">All Branch Full Cash Collection</p>
                   <p className="mt-1 text-lg font-extrabold text-emerald-700 tabular-nums">{loading ? "—" : formatAmount(executiveTotals.totalCollection)}</p>
@@ -762,6 +885,14 @@ function BranchPerformanceReportContent() {
                 <div className="rounded-xl border border-rose-100 bg-white p-3">
                   <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">All Branch Full Profit</p>
                   <p className="mt-1 text-lg font-extrabold text-cyan-700 tabular-nums">{loading ? "—" : formatAmount(executiveTotals.totalProfit)}</p>
+                </div>
+                <div className="rounded-xl border border-rose-100 bg-white p-3">
+                  <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">All Branch Expenses</p>
+                  <p className="mt-1 text-lg font-extrabold text-rose-700 tabular-nums">{loading ? "—" : formatAmount(executiveTotals.totalExpenses)}</p>
+                </div>
+                <div className="rounded-xl border border-rose-100 bg-white p-3">
+                  <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">Net Profit After Expenses</p>
+                  <p className="mt-1 text-lg font-extrabold text-violet-700 tabular-nums">{loading ? "—" : formatAmount(executiveTotals.netProfitAfterExpenses)}</p>
                 </div>
                 <div className="rounded-xl border border-rose-100 bg-white p-3">
                   <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">Total Collection (Core Credit)</p>
@@ -793,6 +924,32 @@ function BranchPerformanceReportContent() {
                       <span className="text-sm font-extrabold text-cyan-700 tabular-nums">{loading ? "—" : formatAmount(item.profit)}</span>
                     </div>
                   </div>
+                  <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50/40 p-2.5">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-rose-700">Charges Preview</p>
+                    <div className="mt-1.5 space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-600">Document Charges</span>
+                        <span className="font-bold text-slate-900 tabular-nums">{loading ? "—" : formatAmount(item.documentCharges)}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-600">Stamp Charges</span>
+                        <span className="font-bold text-slate-900 tabular-nums">{loading ? "—" : formatAmount(item.stampCharges)}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-600">Insurance Charges</span>
+                        <span className="font-bold text-slate-900 tabular-nums">{loading ? "—" : formatAmount(item.insuranceCharges)}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-600">Other Charges</span>
+                        <span className="font-bold text-slate-900 tabular-nums">{loading ? "—" : formatAmount(item.otherCharges)}</span>
+                      </div>
+                      <div className="h-px bg-rose-100" />
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-semibold text-rose-700">Total Charges</span>
+                        <span className="font-extrabold text-rose-800 tabular-nums">{loading ? "—" : formatAmount(Number(item.documentCharges || 0) + Number(item.stampCharges || 0) + Number(item.insuranceCharges || 0) + Number(item.otherCharges || 0))}</span>
+                      </div>
+                    </div>
+                  </div>
                   <p className="mt-3 text-[11px] leading-relaxed text-slate-600">{item.explanation}</p>
                 </div>
               ))}
@@ -806,6 +963,37 @@ function BranchPerformanceReportContent() {
                 <p className="mt-1 text-lg font-extrabold text-slate-900">{loading ? "—" : executiveTotals.savingsAccounts}</p>
               </div>
               <div className="rounded-xl border border-rose-100 bg-white p-3">
+                <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">Savings Deposits</p>
+                <p className="mt-1 text-lg font-extrabold text-emerald-700 tabular-nums">{loading ? "—" : formatAmount(executiveTotals.savingsDeposits)}</p>
+                <p className="mt-1 text-[11px] text-slate-500">Period deposits: <span className="font-semibold tabular-nums text-slate-700">{loading ? "—" : formatAmount(executiveTotals.savingsPeriodDeposits)}</span></p>
+              </div>
+              <div className="rounded-xl border border-rose-100 bg-white p-3">
+                <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">Fixed Deposit (FD)</p>
+                <p className="mt-1 text-lg font-extrabold text-cyan-700 tabular-nums">{loading ? "—" : formatAmount(executiveTotals.fixedDepositDeposits)}</p>
+                <p className="mt-1 text-[11px] text-slate-500">Period deposits: <span className="font-semibold tabular-nums text-slate-700">{loading ? "—" : formatAmount(executiveTotals.fixedDepositPeriodDeposits)}</span></p>
+              </div>
+              <div className="rounded-xl border border-rose-100 bg-white p-3">
+                <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">Investment Deposits</p>
+                <p className="mt-1 text-lg font-extrabold text-violet-700 tabular-nums">{loading ? "—" : formatAmount(executiveTotals.investmentDeposits)}</p>
+                <p className="mt-1 text-[11px] text-slate-500">Period deposits: <span className="font-semibold tabular-nums text-slate-700">{loading ? "—" : formatAmount(executiveTotals.investmentPeriodDeposits)}</span></p>
+              </div>
+              <div className="rounded-xl border border-rose-100 bg-white p-3">
+                <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">Savings Interest Expense</p>
+                <p className="mt-1 text-lg font-extrabold text-amber-700 tabular-nums">{loading ? "—" : formatAmount(executiveTotals.savingsInterestExpense)}</p>
+                <p className="mt-1 text-[11px] text-slate-500">From interest credits (Savings/Current)</p>
+              </div>
+              <div className="rounded-xl border border-rose-100 bg-white p-3">
+                <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">Investment Interest Expense</p>
+                <p className="mt-1 text-lg font-extrabold text-orange-700 tabular-nums">{loading ? "—" : formatAmount(executiveTotals.investmentInterestExpense)}</p>
+                <p className="mt-1 text-[11px] text-slate-500">From interest credits (Investment)</p>
+              </div>
+              <div className="rounded-xl border border-rose-100 bg-white p-3">
+                <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">Total Savings/Deposit Value</p>
+                <p className="mt-1 text-lg font-extrabold text-slate-900 tabular-nums">
+                  {loading ? "—" : formatAmount(executiveTotals.savingsDeposits + executiveTotals.fixedDepositDeposits + executiveTotals.investmentDeposits)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-rose-100 bg-white p-3">
                 <p className="text-[10px] uppercase font-bold tracking-wide text-slate-500">Total Staff</p>
                 <p className="mt-1 text-lg font-extrabold text-slate-900">{loading ? "—" : executiveTotals.staff}</p>
               </div>
@@ -816,6 +1004,90 @@ function BranchPerformanceReportContent() {
                 </p>
               </div>
             </div>
+          </div>
+
+          <div className="px-4 sm:px-6 pb-4 sm:pb-6 border-b border-rose-100">
+            <h3 className="text-sm font-extrabold uppercase tracking-wide text-rose-800 mb-3">Savings & Deposit Graphical Preview</h3>
+
+            {loading ? (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="h-72 animate-pulse rounded-2xl border border-rose-100 bg-rose-50" />
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="rounded-2xl border border-rose-100 bg-white p-4 shadow-sm">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-600 mb-3">Current Book Mix</p>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={savingsBookMixData}
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={98}
+                          dataKey="value"
+                          nameKey="name"
+                          label={false}
+                          labelLine={false}
+                        >
+                          {savingsBookMixData.map((entry, index) => (
+                            <Cell key={`${entry.name}-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value) => formatAmount(Array.isArray(value) ? value[0] : value)} />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-rose-100 bg-white p-4 shadow-sm">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-600 mb-3">Period Deposit Mix</p>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={savingsPeriodMixData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={38}
+                          outerRadius={98}
+                          dataKey="value"
+                          nameKey="name"
+                          label={false}
+                          labelLine={false}
+                        >
+                          {savingsPeriodMixData.map((entry, index) => (
+                            <Cell key={`${entry.name}-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value) => formatAmount(Array.isArray(value) ? value[0] : value)} />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-rose-100 bg-white p-4 shadow-sm">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-600 mb-3">Current vs Period Deposits</p>
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={savingsCompareData} margin={{ top: 10, right: 8, left: 4, bottom: 12 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f3d2d8" />
+                        <XAxis dataKey="type" tick={{ fontSize: 10, fill: "#111111" }} />
+                        <YAxis tick={{ fontSize: 10, fill: "#111111" }} />
+                        <Tooltip formatter={(value) => formatAmount(Array.isArray(value) ? value[0] : value)} />
+                        <Legend />
+                        <Bar dataKey="current" name="Current Book" fill="#8b5cf6" radius={[6, 6, 0, 0]} />
+                        <Bar dataKey="period" name="Period Deposits" fill="#14b8a6" radius={[6, 6, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="px-4 sm:px-6 pb-4 sm:pb-6 border-b border-rose-100">
@@ -940,6 +1212,8 @@ function BranchPerformanceReportContent() {
                       <th className="py-3 pr-3 text-right whitespace-nowrap">Opening Asset</th>
                       <th className="py-3 pr-3 text-right whitespace-nowrap">Collected</th>
                       <th className="py-3 pr-3 text-right whitespace-nowrap">Profit</th>
+                      <th className="py-3 pr-3 text-right whitespace-nowrap">Expenses</th>
+                      <th className="py-3 pr-3 text-right whitespace-nowrap">Net Profit</th>
                       <th className="py-3 pr-3 text-right whitespace-nowrap">MF Profit</th>
                       <th className="py-3 pr-3 text-right whitespace-nowrap">Fin Profit</th>
                       <th className="py-3 pr-3 text-right whitespace-nowrap">Mtge Profit</th>
@@ -968,6 +1242,12 @@ function BranchPerformanceReportContent() {
                         </td>
                         <td className="py-3 pr-3 text-right font-semibold text-black tabular-nums whitespace-nowrap">
                           {formatAmount(row.period_profit)}
+                        </td>
+                        <td className="py-3 pr-3 text-right font-semibold text-black tabular-nums whitespace-nowrap">
+                          {formatAmount(row.period_expenses || 0)}
+                        </td>
+                        <td className="py-3 pr-3 text-right font-semibold text-black tabular-nums whitespace-nowrap">
+                          {formatAmount(row.net_profit_after_expenses || 0)}
                         </td>
                         <td className="py-3 pr-3 text-right font-semibold text-black tabular-nums whitespace-nowrap">
                           {formatAmount(Number(row.mf_interest || 0) + Number(row.mf_penalty || 0))}
@@ -1008,6 +1288,12 @@ function BranchPerformanceReportContent() {
                         </td>
                         <td className="py-3 pr-3 text-right text-black tabular-nums">
                           {formatAmount(summary.period_profit)}
+                        </td>
+                        <td className="py-3 pr-3 text-right text-black tabular-nums">
+                          {formatAmount(summary.period_expenses)}
+                        </td>
+                        <td className="py-3 pr-3 text-right text-black tabular-nums">
+                          {formatAmount(summary.net_profit_after_expenses)}
                         </td>
                         <td className="py-3 pr-3 text-right text-black tabular-nums">
                           {formatAmount(rows.reduce((acc, row) => acc + Number(row.mf_interest || 0) + Number(row.mf_penalty || 0), 0))}

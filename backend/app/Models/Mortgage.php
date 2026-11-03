@@ -25,6 +25,9 @@ class Mortgage extends Model
         'penalty_rate',
         'penalty_scheme',
         'processing_fee',
+        'document_charges',
+        'stamp_charges',
+        'additional_charges',
         'insurance_fee',
         'start_date',
         'previous_mortgages',
@@ -52,6 +55,11 @@ class Mortgage extends Model
         'arrears_amount' => 'decimal:2',
         'due_amount' => 'decimal:2',
         'due_interest_amount' => 'decimal:2',
+        'processing_fee' => 'decimal:2',
+        'document_charges' => 'decimal:2',
+        'stamp_charges' => 'decimal:2',
+        'additional_charges' => 'decimal:2',
+        'insurance_fee' => 'decimal:2',
     ];
 
     public function asset()

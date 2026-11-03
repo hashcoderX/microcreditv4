@@ -33,6 +33,12 @@ type FinanceRow = {
   arrears?: number | string | null;
   due_amount?: number | string | null;
   due_date?: string | null;
+  next_collection_date?: string | null;
+  document_charges?: number | string | null;
+  insurance_charges?: number | string | null;
+  stamp_charges?: number | string | null;
+  processing_fee?: number | string | null;
+  other_charges?: number | string | null;
   installment_amount?: number | string | null;
   installment_frequency?: string | null;
   tenure_months?: number | string | null;
@@ -111,6 +117,16 @@ function daysPastDue(value: unknown): number {
 
   const days = Math.floor((today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
   return Math.max(0, days);
+}
+
+function getEffectiveDueDate(row: FinanceRow): string | null {
+  const nextCollectionDate = String(row.next_collection_date || '').trim();
+  if (nextCollectionDate) return nextCollectionDate;
+
+  const dueDate = String(row.due_date || '').trim();
+  if (dueDate) return dueDate;
+
+  return null;
 }
 
 function getFinancedAmount(row: FinanceRow): number {
@@ -290,6 +306,8 @@ function ReportPanel({
 }
 
 export default function FinanceReportsPage() {
+  const RISK_WATCHLIST_PAGE_SIZE = 10;
+  const MONTHLY_TREND_PAGE_SIZE = 10;
   const router = useRouter();
   const [token, setToken] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -302,6 +320,8 @@ export default function FinanceReportsPage() {
   const [productFilter, setProductFilter] = useState('all');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
+  const [riskWatchlistPage, setRiskWatchlistPage] = useState(1);
+  const [monthlyTrendPage, setMonthlyTrendPage] = useState(1);
 
   useEffect(() => {
     const t = localStorage.getItem('token');
@@ -452,7 +472,7 @@ export default function FinanceReportsPage() {
 
     const atRiskCount = portfolioRows.filter((row) => {
       const arrears = getArrearsAmount(row);
-      const overdueDays = daysPastDue(row.due_date);
+      const overdueDays = daysPastDue(getEffectiveDueDate(row));
       return arrears > 0 || overdueDays > 0;
     }).length;
 
@@ -464,6 +484,49 @@ export default function FinanceReportsPage() {
       totalRefundableTarget > 0
         ? Math.max(0, 100 - (Math.abs(outstandingVariance) / totalRefundableTarget) * 100)
         : 100;
+
+    const totalDocumentCharges = filteredRows.reduce((sum, row) => {
+      const value = toNumber(row.document_charges);
+      return sum + (Number.isFinite(value) ? Math.max(0, value) : 0);
+    }, 0);
+
+    const totalInsuranceCharges = filteredRows.reduce((sum, row) => {
+      const value = toNumber(row.insurance_charges);
+      return sum + (Number.isFinite(value) ? Math.max(0, value) : 0);
+    }, 0);
+
+    const totalStampCharges = filteredRows.reduce((sum, row) => {
+      const value = toNumber(row.stamp_charges);
+      return sum + (Number.isFinite(value) ? Math.max(0, value) : 0);
+    }, 0);
+
+    const totalProcessingFee = filteredRows.reduce((sum, row) => {
+      const value = toNumber(row.processing_fee);
+      return sum + (Number.isFinite(value) ? Math.max(0, value) : 0);
+    }, 0);
+
+    const totalOtherCharges = filteredRows.reduce((sum, row) => {
+      const value = toNumber(row.other_charges);
+      return sum + (Number.isFinite(value) ? Math.max(0, value) : 0);
+    }, 0);
+
+    const totalIssueCharges =
+      totalDocumentCharges
+      + totalInsuranceCharges
+      + totalStampCharges
+      + totalProcessingFee
+      + totalOtherCharges;
+
+    const chargedAccounts = filteredRows.filter((row) => {
+      const chargeTotal =
+        (Number.isFinite(toNumber(row.document_charges)) ? Math.max(0, toNumber(row.document_charges)) : 0)
+        + (Number.isFinite(toNumber(row.insurance_charges)) ? Math.max(0, toNumber(row.insurance_charges)) : 0)
+        + (Number.isFinite(toNumber(row.stamp_charges)) ? Math.max(0, toNumber(row.stamp_charges)) : 0)
+        + (Number.isFinite(toNumber(row.processing_fee)) ? Math.max(0, toNumber(row.processing_fee)) : 0)
+        + (Number.isFinite(toNumber(row.other_charges)) ? Math.max(0, toNumber(row.other_charges)) : 0);
+
+      return chargeTotal > 0;
+    }).length;
 
     return {
       totalAccounts,
@@ -481,6 +544,13 @@ export default function FinanceReportsPage() {
       expectedOutstanding,
       outstandingVariance,
       accuracyPercent,
+      totalDocumentCharges,
+      totalInsuranceCharges,
+      totalStampCharges,
+      totalProcessingFee,
+      totalOtherCharges,
+      totalIssueCharges,
+      chargedAccounts,
     };
   }, [filteredRows]);
 
@@ -544,7 +614,7 @@ export default function FinanceReportsPage() {
     ];
 
     filteredRows.forEach((row) => {
-      const days = daysPastDue(row.due_date);
+      const days = daysPastDue(getEffectiveDueDate(row));
       const arrears = Math.max(0, Number(row.arrears || 0));
 
       if (days <= 0) {
@@ -569,14 +639,21 @@ export default function FinanceReportsPage() {
   }, [filteredRows]);
 
   const riskWatchlist = useMemo(() => {
-    return filteredRows
+    const portfolioRows = filteredRows.filter((row) => isPortfolioBookStatus(row.status));
+
+    return portfolioRows
       .map((row) => {
-        const financed = Number(row.financed_amount ?? row.amount ?? 0);
-        const arrears = Math.max(0, Number(row.arrears || 0));
-        const outstanding = Math.max(0, Number(row.balance_amount || 0));
-        const due = Math.max(0, Number(row.due_amount || 0));
-        const overdueDays = daysPastDue(row.due_date);
-        const riskScore = arrears + overdueDays * 100 + due * 0.1;
+        const financed = getFinancedAmount(row);
+        const arrears = getArrearsAmount(row);
+        const outstanding = getOutstandingAmount(row);
+        const dueRaw = toNumber(row.due_amount);
+        const due = Number.isFinite(dueRaw) ? Math.max(0, dueRaw) : outstanding;
+        const effectiveDueDate = getEffectiveDueDate(row);
+        const overdueDays = daysPastDue(effectiveDueDate);
+        const overdueScorePart = overdueDays * 100;
+        const dueScorePart = due * 0.1;
+        const arrearsScorePart = arrears;
+        const riskScore = arrearsScorePart + overdueScorePart + dueScorePart;
 
         return {
           ...row,
@@ -584,14 +661,41 @@ export default function FinanceReportsPage() {
           arrears,
           outstanding,
           due,
+          effectiveDueDate,
           overdueDays,
+          arrearsScorePart,
+          overdueScorePart,
+          dueScorePart,
           riskScore,
         };
       })
       .filter((row) => row.arrears > 0 || row.overdueDays > 0)
-      .sort((a, b) => b.riskScore - a.riskScore)
-      .slice(0, 10);
+      .sort((a, b) => b.riskScore - a.riskScore);
   }, [filteredRows]);
+
+  const riskWatchlistPageCount = useMemo(
+    () => Math.max(1, Math.ceil(riskWatchlist.length / RISK_WATCHLIST_PAGE_SIZE)),
+    [riskWatchlist.length],
+  );
+
+  const pagedRiskWatchlist = useMemo(() => {
+    const start = (riskWatchlistPage - 1) * RISK_WATCHLIST_PAGE_SIZE;
+    return riskWatchlist.slice(start, start + RISK_WATCHLIST_PAGE_SIZE);
+  }, [riskWatchlist, riskWatchlistPage]);
+
+  const riskWatchlistStart = riskWatchlist.length === 0 ? 0 : (riskWatchlistPage - 1) * RISK_WATCHLIST_PAGE_SIZE + 1;
+  const riskWatchlistEnd = riskWatchlist.length === 0
+    ? 0
+    : Math.min(riskWatchlistPage * RISK_WATCHLIST_PAGE_SIZE, riskWatchlist.length);
+
+  useEffect(() => {
+    setRiskWatchlistPage(1);
+    setMonthlyTrendPage(1);
+  }, [search, statusFilter, productFilter, fromDate, toDate]);
+
+  useEffect(() => {
+    setRiskWatchlistPage((prev) => Math.min(Math.max(prev, 1), riskWatchlistPageCount));
+  }, [riskWatchlistPageCount]);
 
   const monthlyReport = useMemo(() => {
     const rows: MonthlyTrendRow[] = filteredRows
@@ -667,6 +771,25 @@ export default function FinanceReportsPage() {
     };
   }, [monthlyTrendTotals]);
 
+  const monthlyTrendPageCount = useMemo(
+    () => Math.max(1, Math.ceil(monthlyReport.length / MONTHLY_TREND_PAGE_SIZE)),
+    [monthlyReport.length],
+  );
+
+  const pagedMonthlyTrend = useMemo(() => {
+    const start = (monthlyTrendPage - 1) * MONTHLY_TREND_PAGE_SIZE;
+    return monthlyReport.slice(start, start + MONTHLY_TREND_PAGE_SIZE);
+  }, [monthlyReport, monthlyTrendPage]);
+
+  const monthlyTrendStart = monthlyReport.length === 0 ? 0 : (monthlyTrendPage - 1) * MONTHLY_TREND_PAGE_SIZE + 1;
+  const monthlyTrendEnd = monthlyReport.length === 0
+    ? 0
+    : Math.min(monthlyTrendPage * MONTHLY_TREND_PAGE_SIZE, monthlyReport.length);
+
+  useEffect(() => {
+    setMonthlyTrendPage((prev) => Math.min(Math.max(prev, 1), monthlyTrendPageCount));
+  }, [monthlyTrendPageCount]);
+
   const exportPortfolioSnapshot = () => {
     const headers = [
       'Finance ID',
@@ -692,7 +815,7 @@ export default function FinanceReportsPage() {
       formatAmount(row.balance_amount),
       formatAmount(row.arrears),
       formatAmount(row.due_amount),
-      formatDate(row.due_date),
+      formatDate(getEffectiveDueDate(row)),
       formatDate(row.created_at),
     ]);
 
@@ -705,6 +828,7 @@ export default function FinanceReportsPage() {
       'Customer Code',
       'Product',
       'Status',
+      'Due Date',
       'Overdue Days',
       'Arrears',
       'Due Amount',
@@ -717,6 +841,7 @@ export default function FinanceReportsPage() {
       String(row.customer?.customer_code || '-'),
       String(row.product_type || '-'),
       String(row.status || '-'),
+      formatDate(row.effectiveDueDate),
       String(row.overdueDays),
       formatAmount(row.arrears),
       formatAmount(row.due),
@@ -1009,6 +1134,20 @@ export default function FinanceReportsPage() {
               <p className="mt-1 text-sm font-extrabold text-slate-900 tabular-nums">{metrics.accuracyPercent.toFixed(2)}%</p>
             </div>
           </div>
+          <div className="mt-3 rounded-xl border border-fuchsia-100 bg-fuchsia-50/35 p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-fuchsia-700">Charges Preview</p>
+              <p className="text-xs font-semibold text-slate-700">Accounts with charges: <span className="tabular-nums font-bold text-slate-900">{metrics.chargedAccounts}</span></p>
+            </div>
+            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 text-xs">
+              <div className="rounded-lg border border-fuchsia-100 bg-white/80 px-2.5 py-2"><span className="text-slate-500">Document: </span><span className="font-bold text-slate-900 tabular-nums">{formatAmount(metrics.totalDocumentCharges)}</span></div>
+              <div className="rounded-lg border border-fuchsia-100 bg-white/80 px-2.5 py-2"><span className="text-slate-500">Insurance: </span><span className="font-bold text-slate-900 tabular-nums">{formatAmount(metrics.totalInsuranceCharges)}</span></div>
+              <div className="rounded-lg border border-fuchsia-100 bg-white/80 px-2.5 py-2"><span className="text-slate-500">Stamp: </span><span className="font-bold text-slate-900 tabular-nums">{formatAmount(metrics.totalStampCharges)}</span></div>
+              <div className="rounded-lg border border-fuchsia-100 bg-white/80 px-2.5 py-2"><span className="text-slate-500">Processing: </span><span className="font-bold text-slate-900 tabular-nums">{formatAmount(metrics.totalProcessingFee)}</span></div>
+              <div className="rounded-lg border border-fuchsia-100 bg-white/80 px-2.5 py-2"><span className="text-slate-500">Other: </span><span className="font-bold text-slate-900 tabular-nums">{formatAmount(metrics.totalOtherCharges)}</span></div>
+              <div className="rounded-lg border border-fuchsia-200 bg-fuchsia-100/70 px-2.5 py-2"><span className="text-fuchsia-800">Total Charges: </span><span className="font-extrabold text-fuchsia-900 tabular-nums">{formatAmount(metrics.totalIssueCharges)}</span></div>
+            </div>
+          </div>
           <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
             Formula: Collection Rate = Collected / Total Refundable Target. Expected Outstanding = Total Refundable Target - Collected.
           </div>
@@ -1135,7 +1274,7 @@ export default function FinanceReportsPage() {
 
           <ReportPanel
             title="Risk watchlist"
-            description="Top 10 accounts by combined arrears and overdue days."
+            description="Accounts ranked by risk score using arrears, overdue days, and due amount."
             icon={AlertTriangle}
             headerClass="bg-gradient-to-r from-rose-50 to-red-50 border-b border-rose-100 text-rose-900"
             action={
@@ -1149,38 +1288,49 @@ export default function FinanceReportsPage() {
               </button>
             }
           >
+            <div className="mb-3 rounded-xl border border-rose-100 bg-rose-50/40 px-3 py-2.5 text-xs text-rose-900">
+              <p className="font-semibold">Score formula: Arrears + (Overdue Days × 100) + (Due × 0.1)</p>
+              <p className="mt-1 text-rose-800">Showing {riskWatchlistStart} - {riskWatchlistEnd} of {riskWatchlist.length} at-risk accounts.</p>
+            </div>
+
             <div className="overflow-x-auto rounded-2xl border border-rose-100">
-              <table className="min-w-full text-sm text-left">
+              <table className="min-w-full text-sm text-left text-black">
                 <thead>
-                  <tr className="bg-rose-50/80 text-[11px] font-bold uppercase tracking-wide text-slate-600">
+                  <tr className="bg-rose-50/80 text-[11px] font-bold uppercase tracking-wide text-black">
                     <th className="px-4 py-3">Finance</th>
                     <th className="px-4 py-3">Customer</th>
+                    <th className="px-4 py-3">Due Date</th>
                     <th className="px-4 py-3">Overdue</th>
                     <th className="px-4 py-3">Arrears</th>
                     <th className="px-4 py-3">Due</th>
+                    <th className="px-4 py-3">Overdue Part</th>
+                    <th className="px-4 py-3">Due Part</th>
                     <th className="px-4 py-3">Score</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-rose-50">
-                  {riskWatchlist.length === 0 ? (
+                  {pagedRiskWatchlist.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-4 py-10 text-center">
+                      <td colSpan={9} className="px-4 py-10 text-center">
                         <ShieldAlert className="mx-auto h-8 w-8 text-slate-300" />
                         <p className="mt-2 text-sm text-slate-500">No at-risk accounts for selected filters.</p>
                       </td>
                     </tr>
                   ) : (
-                    riskWatchlist.map((item) => (
+                    pagedRiskWatchlist.map((item) => (
                       <tr key={item.id} className="hover:bg-rose-50/30 transition">
                         <td className="px-4 py-3 font-semibold text-slate-900">#{item.id}</td>
-                        <td className="px-4 py-3">{item.customer?.customer_code || '-'}</td>
+                        <td className="px-4 py-3 text-black font-medium">{item.customer?.customer_code || '-'}</td>
+                        <td className="px-4 py-3 text-black font-medium">{formatDate(item.effectiveDueDate)}</td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-bold ${item.overdueDays > 30 ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'}`}>
                             {item.overdueDays}d
                           </span>
                         </td>
                         <td className="px-4 py-3 tabular-nums text-rose-700 font-medium">{formatAmount(item.arrears)}</td>
-                        <td className="px-4 py-3 tabular-nums">{formatAmount(item.due)}</td>
+                        <td className="px-4 py-3 tabular-nums text-black font-medium">{formatAmount(item.due)}</td>
+                        <td className="px-4 py-3 tabular-nums text-black font-medium">{formatAmount(item.overdueScorePart)}</td>
+                        <td className="px-4 py-3 tabular-nums text-black font-medium">{formatAmount(item.dueScorePart)}</td>
                         <td className="px-4 py-3 font-bold text-indigo-800 tabular-nums">{formatAmount(item.riskScore)}</td>
                       </tr>
                     ))
@@ -1188,6 +1338,30 @@ export default function FinanceReportsPage() {
                 </tbody>
               </table>
             </div>
+
+            {riskWatchlistPageCount > 1 ? (
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <p className="text-xs text-slate-600">Page {riskWatchlistPage} of {riskWatchlistPageCount}</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRiskWatchlistPage((prev) => Math.max(1, prev - 1))}
+                    disabled={riskWatchlistPage <= 1}
+                    className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-800 disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRiskWatchlistPage((prev) => Math.min(riskWatchlistPageCount, prev + 1))}
+                    disabled={riskWatchlistPage >= riskWatchlistPageCount}
+                    className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-800 disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </ReportPanel>
         </div>
 
@@ -1197,6 +1371,10 @@ export default function FinanceReportsPage() {
           icon={BarChart3}
           headerClass="bg-gradient-to-r from-cyan-50 via-blue-50 to-teal-50 border-b border-cyan-100 text-cyan-900"
         >
+          <div className="mb-3 rounded-xl border border-cyan-100 bg-cyan-50/40 px-3 py-2.5 text-xs text-cyan-900">
+            Showing {monthlyTrendStart} - {monthlyTrendEnd} of {monthlyReport.length} trend rows.
+          </div>
+
           <div className="overflow-x-auto rounded-2xl border border-cyan-100">
             <table className="min-w-full text-sm text-left text-black">
               <thead>
@@ -1214,7 +1392,7 @@ export default function FinanceReportsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-cyan-50">
-                {monthlyReport.length === 0 ? (
+                {pagedMonthlyTrend.length === 0 ? (
                   <tr>
                     <td colSpan={10} className="px-4 py-10 text-center text-sm text-slate-500">
                       No monthly trend data for selected filters.
@@ -1222,7 +1400,7 @@ export default function FinanceReportsPage() {
                   </tr>
                 ) : (
                   <>
-                    {monthlyReport.map((item) => (
+                    {pagedMonthlyTrend.map((item) => (
                       <tr key={item.key} className="hover:bg-cyan-50/40 transition">
                         <td className="px-4 py-3 font-semibold text-black whitespace-nowrap">{item.month}</td>
                         <td className="px-4 py-3 text-black whitespace-nowrap">{item.customerNo}</td>
@@ -1270,6 +1448,30 @@ export default function FinanceReportsPage() {
               </tbody>
             </table>
           </div>
+
+          {monthlyTrendPageCount > 1 ? (
+            <div className="mt-3 flex items-center justify-between gap-2">
+              <p className="text-xs text-slate-600">Page {monthlyTrendPage} of {monthlyTrendPageCount}</p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMonthlyTrendPage((prev) => Math.max(1, prev - 1))}
+                  disabled={monthlyTrendPage <= 1}
+                  className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-800 disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMonthlyTrendPage((prev) => Math.min(monthlyTrendPageCount, prev + 1))}
+                  disabled={monthlyTrendPage >= monthlyTrendPageCount}
+                  className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-800 disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          ) : null}
         </ReportPanel>
       </div>
     </div>

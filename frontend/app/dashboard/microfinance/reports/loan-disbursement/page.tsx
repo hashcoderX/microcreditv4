@@ -83,6 +83,8 @@ export default function MicrofinanceLoanDisbursementReportPage() {
   const [keyword, setKeyword] = useState('');
   const [officerFilter, setOfficerFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<LoanStatusFilter>('all');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   const [officerOptions, setOfficerOptions] = useState<string[]>([]);
   const [pageSize, setPageSize] = useState(15);
   const [currentPage, setCurrentPage] = useState(1);
@@ -178,6 +180,9 @@ export default function MicrofinanceLoanDisbursementReportPage() {
               Authorization: `Bearer ${token}`,
               Accept: 'application/json',
             },
+            params: {
+              dashboard_summary: 1,
+            },
           }),
           axios.get(`${API_BASE}/microfinance/collections`, {
             headers: {
@@ -270,8 +275,20 @@ export default function MicrofinanceLoanDisbursementReportPage() {
 
   const filteredRows = useMemo(() => {
     const search = keyword.trim().toLowerCase();
+    const from = fromDate ? new Date(`${fromDate}T00:00:00`) : null;
+    const to = toDate ? new Date(`${toDate}T23:59:59`) : null;
 
     return rows.filter((row) => {
+      const rowDate = row.disbursedDate && row.disbursedDate !== '-' ? new Date(`${row.disbursedDate}T00:00:00`) : null;
+
+      if (from && rowDate && !Number.isNaN(rowDate.getTime()) && rowDate < from) {
+        return false;
+      }
+
+      if (to && rowDate && !Number.isNaN(rowDate.getTime()) && rowDate > to) {
+        return false;
+      }
+
       if (officerFilter !== 'all' && row.fieldOfficer.toLowerCase() !== officerFilter) {
         return false;
       }
@@ -311,7 +328,7 @@ export default function MicrofinanceLoanDisbursementReportPage() {
 
       return haystack.includes(search);
     });
-  }, [rows, keyword, officerFilter, statusFilter]);
+  }, [rows, keyword, officerFilter, statusFilter, fromDate, toDate]);
 
   const summary = useMemo(() => {
     const customerKeys = new Set<string>();
@@ -353,7 +370,12 @@ export default function MicrofinanceLoanDisbursementReportPage() {
       }
     });
 
-    const usingDefaultFilters = officerFilter === 'all' && statusFilter === 'all' && keyword.trim() === '';
+    const usingDefaultFilters =
+      officerFilter === 'all' &&
+      statusFilter === 'all' &&
+      keyword.trim() === '' &&
+      fromDate === '' &&
+      toDate === '';
 
     return {
       totalCustomerCount: usingDefaultFilters
@@ -366,11 +388,11 @@ export default function MicrofinanceLoanDisbursementReportPage() {
       totalNetDisbursed,
       totalOutstanding,
     };
-  }, [filteredRows, officerFilter, statusFilter, keyword, totalRegisteredCustomers]);
+  }, [filteredRows, officerFilter, statusFilter, keyword, fromDate, toDate, totalRegisteredCustomers]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [keyword, officerFilter, statusFilter, pageSize, rows.length]);
+  }, [keyword, officerFilter, statusFilter, fromDate, toDate, pageSize, rows.length]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
   const safePage = Math.min(currentPage, totalPages);
@@ -483,11 +505,12 @@ export default function MicrofinanceLoanDisbursementReportPage() {
       completed: 'Completed',
     };
     const statusText = `Status: ${statusMap[statusFilter]}`;
+    const periodText = `Disbursed Date: ${fromDate || 'Any'} to ${toDate || 'Any'}`;
 
     doc.setFontSize(16);
     doc.text('Micro Finance Loan Disbursement Report', 40, 40);
     doc.setFontSize(10);
-    doc.text(`${officerText} | ${statusText} | Generated: ${generatedAt}`, 40, 58);
+    doc.text(`${officerText} | ${statusText} | ${periodText} | Generated: ${generatedAt}`, 40, 58);
 
     autoTable(doc, {
       startY: 72,
@@ -625,7 +648,7 @@ export default function MicrofinanceLoanDisbursementReportPage() {
               </button>
             </WidgetCloseGate>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
               <div>
                 <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Search</label>
                 <input
@@ -665,6 +688,24 @@ export default function MicrofinanceLoanDisbursementReportPage() {
                   <option value="completed">Completed</option>
                 </select>
               </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">From Date</label>
+                <input
+                  type="date"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-cyan-100 bg-white px-3 py-2.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-cyan-200"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">To Date</label>
+                <input
+                  type="date"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-cyan-100 bg-white px-3 py-2.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-cyan-200"
+                />
+              </div>
             </div>
 
             <div className="mt-3 flex justify-end">
@@ -674,6 +715,8 @@ export default function MicrofinanceLoanDisbursementReportPage() {
                   setKeyword('');
                   setOfficerFilter('all');
                   setStatusFilter('all');
+                  setFromDate('');
+                  setToDate('');
                 }}
                 className="rounded-xl border border-cyan-100 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-cyan-50"
               >

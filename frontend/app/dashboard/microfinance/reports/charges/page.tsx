@@ -149,6 +149,8 @@ export default function MicrofinanceChargesReportPage() {
             Accept: 'application/json',
           },
           params: {
+            compact: 1,
+            dashboard_summary: 1,
             branch_id: branchId,
           },
         });

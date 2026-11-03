@@ -220,6 +220,11 @@ type FinanceIssueDraftSnapshot = {
   regInstallmentMode: 'auto' | 'manual';
   regManualInstallmentAmount: string;
   regInstallmentPlan: RepaymentInstallmentRow[];
+  regDocumentCharges: string;
+  regInsuranceCharges: string;
+  regStampCharges: string;
+  regProcessingFee: string;
+  regOtherCharges: string;
   regVehicleNo: string;
   regChassisNo: string;
   regEngineNo: string;
@@ -342,6 +347,11 @@ type EditableFinanceRecord = {
   tenure_months?: number | string | null;
   installment_frequency?: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly' | null;
   installment_amount?: number | string | null;
+  document_charges?: number | string | null;
+  insurance_charges?: number | string | null;
+  stamp_charges?: number | string | null;
+  processing_fee?: number | string | null;
+  other_charges?: number | string | null;
   arrears?: number | string | null;
   penalty?: number | string | null;
   start_date?: string | null;
@@ -470,6 +480,11 @@ export default function IssueFinancePage() {
   const [regInstallmentMode, setRegInstallmentMode] = useState<'auto' | 'manual'>('auto');
   const [regManualInstallmentAmount, setRegManualInstallmentAmount] = useState('');
   const [regInstallmentPlan, setRegInstallmentPlan] = useState<RepaymentInstallmentRow[]>([]);
+  const [regDocumentCharges, setRegDocumentCharges] = useState('0');
+  const [regInsuranceCharges, setRegInsuranceCharges] = useState('0');
+  const [regStampCharges, setRegStampCharges] = useState('0');
+  const [regProcessingFee, setRegProcessingFee] = useState('0');
+  const [regOtherCharges, setRegOtherCharges] = useState('0');
   const [regYear1Amount, setRegYear1Amount] = useState('');
   const [regYear2Amount, setRegYear2Amount] = useState('');
   const [regYear3PlusAmount, setRegYear3PlusAmount] = useState('');
@@ -771,6 +786,11 @@ export default function IssueFinancePage() {
     setRegInstallmentMode((asText(repaymentPlan.installment_mode || 'auto') as 'auto' | 'manual') || 'auto');
     setRegManualInstallmentAmount(asMoneyText(repaymentPlan.manual_installment_amount || finance.installment_amount));
     setRegInstallmentPlan(repaymentInstallments);
+    setRegDocumentCharges(asMoneyText(finance.document_charges ?? 0));
+    setRegInsuranceCharges(asMoneyText(finance.insurance_charges ?? 0));
+    setRegStampCharges(asMoneyText(finance.stamp_charges ?? 0));
+    setRegProcessingFee(asMoneyText(finance.processing_fee ?? 0));
+    setRegOtherCharges(asMoneyText(finance.other_charges ?? 0));
 
     setRegVehicleNo(asText(vehicleDetails.vehicle_no));
     setRegChassisNo(asText(vehicleDetails.chassis_no));
@@ -921,10 +941,11 @@ export default function IssueFinancePage() {
     { id: 3, label: wizardStep3Label, hint: `${wizardStep3Label} and valuation details` },
     { id: 4, label: 'Guarantor', hint: 'Security party details' },
     { id: 5, label: 'Repayment', hint: 'Repayment plan and scheduling' },
-    { id: 6, label: 'Family & Financial', hint: 'Household and financial profile' },
-    { id: 7, label: 'Residence Images', hint: 'Residence environment photos' },
-    { id: 8, label: 'Evaluation', hint: 'Income, liabilities, and recommendation' },
-    { id: 9, label: 'Documents', hint: 'Supporting files upload' },
+    { id: 6, label: 'Charges', hint: 'Document, insurance, stamp, processing, and other charges' },
+    { id: 7, label: 'Family & Financial', hint: 'Household and financial profile' },
+    { id: 8, label: 'Residence Images', hint: 'Residence environment photos' },
+    { id: 9, label: 'Evaluation', hint: 'Income, liabilities, and recommendation' },
+    { id: 10, label: 'Documents', hint: 'Supporting files upload' },
   ];
 
   const activeWizardStep = useMemo(
@@ -1163,6 +1184,11 @@ export default function IssueFinancePage() {
     regInstallmentMode,
     regManualInstallmentAmount,
     regInstallmentPlan,
+    regDocumentCharges,
+    regInsuranceCharges,
+    regStampCharges,
+    regProcessingFee,
+    regOtherCharges,
     regVehicleNo,
     regChassisNo,
     regEngineNo,
@@ -1288,6 +1314,11 @@ export default function IssueFinancePage() {
     setRegInstallmentMode(d.regInstallmentMode || 'auto');
     setRegManualInstallmentAmount(d.regManualInstallmentAmount || '');
     setRegInstallmentPlan(Array.isArray(d.regInstallmentPlan) ? d.regInstallmentPlan : []);
+    setRegDocumentCharges(d.regDocumentCharges || '0');
+    setRegInsuranceCharges(d.regInsuranceCharges || '0');
+    setRegStampCharges(d.regStampCharges || '0');
+    setRegProcessingFee(d.regProcessingFee || '0');
+    setRegOtherCharges(d.regOtherCharges || '0');
     setRegVehicleNo(d.regVehicleNo || '');
     setRegChassisNo(d.regChassisNo || '');
     setRegEngineNo(d.regEngineNo || '');
@@ -2624,7 +2655,7 @@ export default function IssueFinancePage() {
         }
       }
 
-      // Steps 6, 7, and 8 are optional and should not block navigation.
+      // Steps 6, 7, 8, and 9 are optional and should not block navigation.
 
       return true;
     };
@@ -2685,7 +2716,7 @@ export default function IssueFinancePage() {
     if (!token) return;
 
     for (const step of visibleWizardSteps) {
-      if (step.id === 9) {
+      if (step.id === 10) {
         continue;
       }
 
@@ -2802,6 +2833,11 @@ export default function IssueFinancePage() {
       interest_type: regInterestType,
       tenure_months: tenure,
       installment_frequency: regFrequency,
+      document_charges: Number(regDocumentCharges || 0) || 0,
+      insurance_charges: Number(regInsuranceCharges || 0) || 0,
+      stamp_charges: Number(regStampCharges || 0) || 0,
+      processing_fee: Number(regProcessingFee || 0) || 0,
+      other_charges: Number(regOtherCharges || 0) || 0,
       manual_installment_amount: !isDraftLoanSelected && regInstallmentMode === 'manual'
         ? Number(normalizedManualRows[0]?.amount || manualInstallment)
         : undefined,
@@ -4360,6 +4396,39 @@ export default function IssueFinancePage() {
             {registerStep === 6 && (
               <div className="space-y-4">
                 <SectionHeader
+                  icon={Banknote}
+                  title="Charges"
+                  description="Capture document, insurance, stamp, processing, and other charges for this finance issue."
+                />
+
+                <div className="rounded-xl border border-cyan-100 bg-white p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Document Charges</label>
+                    <input value={regDocumentCharges} onChange={(e) => setRegDocumentCharges(e.target.value)} className={inputClass} placeholder="0.00" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Insurance Charges</label>
+                    <input value={regInsuranceCharges} onChange={(e) => setRegInsuranceCharges(e.target.value)} className={inputClass} placeholder="0.00" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Stamp Charges</label>
+                    <input value={regStampCharges} onChange={(e) => setRegStampCharges(e.target.value)} className={inputClass} placeholder="0.00" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Processing Fee</label>
+                    <input value={regProcessingFee} onChange={(e) => setRegProcessingFee(e.target.value)} className={inputClass} placeholder="0.00" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600 mb-2">Other Charges</label>
+                    <input value={regOtherCharges} onChange={(e) => setRegOtherCharges(e.target.value)} className={inputClass} placeholder="0.00" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {registerStep === 7 && (
+              <div className="space-y-4">
+                <SectionHeader
                   icon={User}
                   title="Family & financial"
                   description="Capture household and financial profile similar to microfinance onboarding."
@@ -4406,7 +4475,7 @@ export default function IssueFinancePage() {
               </div>
             )}
 
-            {registerStep === 7 && (
+            {registerStep === 8 && (
               <div className="space-y-4">
                 <SectionHeader
                   icon={Car}
@@ -4453,7 +4522,7 @@ export default function IssueFinancePage() {
               </div>
             )}
 
-            {registerStep === 8 && (
+            {registerStep === 9 && (
               <div className="space-y-4">
                 <SectionHeader
                   icon={Calculator}
@@ -4646,7 +4715,7 @@ export default function IssueFinancePage() {
               </div>
             )}
 
-            {registerStep === 9 && (
+            {registerStep === 10 && (
               <div className="space-y-4">
                 <SectionHeader
                   icon={FileText}

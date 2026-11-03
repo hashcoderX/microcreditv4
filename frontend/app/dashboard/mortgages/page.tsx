@@ -27,6 +27,10 @@ import {
 type MortgageStatusRow = {
   id: number;
   status?: string | null;
+  processing_fee?: number | string | null;
+  document_charges?: number | string | null;
+  stamp_charges?: number | string | null;
+  additional_charges?: number | string | null;
 };
 
 type DashboardStats = {
@@ -59,6 +63,21 @@ type AuthUser = {
   roles?: Array<{ id?: number; name?: string }>;
 };
 
+function toNumber(value: number | string | null | undefined): number {
+  if (typeof value === 'number') return value;
+  if (value == null) return NaN;
+  const parsed = Number.parseFloat(String(value));
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function formatAmount(value: number): string {
+  if (!Number.isFinite(value)) return '0.00';
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 export default function MortgagesDashboard() {
   const router = useRouter();
   const [token, setToken] = useState('');
@@ -67,6 +86,8 @@ export default function MortgagesDashboard() {
   const [hiddenWidgetKeys, setHiddenWidgetKeys] = useState<Set<string>>(new Set());
   const [widgetNotice, setWidgetNotice] = useState('');
   const [loading, setLoading] = useState(true);
+  const [chargeRows, setChargeRows] = useState<MortgageStatusRow[]>([]);
+  const [chargeStatusFilter, setChargeStatusFilter] = useState('all');
   const [stats, setStats] = useState<DashboardStats>({
     total: 0,
     draft: 0,
@@ -156,6 +177,7 @@ export default function MortgagesDashboard() {
         settled: count('settled'),
         released: count('released'),
       });
+      setChargeRows(normalized);
     } catch {
       setStats({
         total: 0,
@@ -167,6 +189,7 @@ export default function MortgagesDashboard() {
         settled: 0,
         released: 0,
       });
+      setChargeRows([]);
     } finally {
       setLoading(false);
     }
@@ -319,7 +342,60 @@ export default function MortgagesDashboard() {
   const visibleQuickActions = quickActions.filter((action) => !hiddenWidgetKeys.has(`${widgetPrefix}${action.key}`));
   const visibleModules = modules.filter((module) => !hiddenWidgetKeys.has(`${widgetPrefix}module_${module.path.replace(/\//g, '_')}`));
   const showWorkspacesWidget = !hiddenWidgetKeys.has(`${widgetPrefix}workspaces`);
-  const isAnyWidgetVisible = showHeroWidget || visibleStatsCards.length > 0 || visibleQuickActions.length > 0 || showWorkspacesWidget;
+  const showChargePreviewWidget = !hiddenWidgetKeys.has(`${widgetPrefix}charge_preview`);
+  const isAnyWidgetVisible =
+    showHeroWidget ||
+    visibleStatsCards.length > 0 ||
+    visibleQuickActions.length > 0 ||
+    showWorkspacesWidget ||
+    showChargePreviewWidget;
+
+  const chargeStatusOptions = useMemo(() => {
+    const base = ['all'];
+    const discovered = Array.from(
+      new Set(
+        chargeRows
+          .map((row) => String(row.status || '').trim().toLowerCase())
+          .filter(Boolean)
+      )
+    ).sort();
+    return [...base, ...discovered];
+  }, [chargeRows]);
+
+  const filteredChargeRows = useMemo(() => {
+    if (chargeStatusFilter === 'all') return chargeRows;
+    return chargeRows.filter(
+      (row) => String(row.status || '').trim().toLowerCase() === chargeStatusFilter
+    );
+  }, [chargeRows, chargeStatusFilter]);
+
+  const chargePreviewTotals = useMemo(() => {
+    const processing = filteredChargeRows.reduce((sum, row) => {
+      const value = toNumber(row.processing_fee);
+      return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+    const document = filteredChargeRows.reduce((sum, row) => {
+      const value = toNumber(row.document_charges);
+      return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+    const stamp = filteredChargeRows.reduce((sum, row) => {
+      const value = toNumber(row.stamp_charges);
+      return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+    const other = filteredChargeRows.reduce((sum, row) => {
+      const value = toNumber(row.additional_charges);
+      return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+
+    return {
+      processing,
+      document,
+      stamp,
+      other,
+      total: processing + document + stamp + other,
+      rows: filteredChargeRows.length,
+    };
+  }, [filteredChargeRows]);
 
   const pageFallback = (
     <div className="flex min-h-screen items-center justify-center bg-[#071a22]">
@@ -654,6 +730,70 @@ export default function MortgagesDashboard() {
               })}
             </div>
             )}
+          </section>
+          ) : null}
+
+          {showChargePreviewWidget ? (
+          <section className="relative overflow-hidden rounded-3xl border border-white/90 bg-white/95 shadow-[0_22px_55px_-34px_rgba(14,116,144,0.45)] backdrop-blur-xl">
+            <WidgetCloseGate>
+              <button
+                type="button"
+                onClick={() => void hideWidget(`${widgetPrefix}charge_preview`)}
+                className="absolute right-3 top-3 z-20 inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-xs font-bold text-slate-600 shadow-sm hover:bg-rose-50 hover:text-rose-700"
+                aria-label="Hide charge preview widget"
+              >
+                ×
+              </button>
+            </WidgetCloseGate>
+
+            <div className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 md:flex-row md:items-end md:justify-between">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-700">Charge Summary</p>
+                <h2 className="mt-1 text-lg font-extrabold text-slate-900">Collected Charges Preview</h2>
+                <p className="text-sm text-slate-500">Preview document, stamp, other, and processing charges with a status filter.</p>
+              </div>
+              <div className="w-full md:w-56">
+                <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-slate-500">Status Filter</label>
+                <select
+                  value={chargeStatusFilter}
+                  onChange={(e) => setChargeStatusFilter(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200/90 bg-white/95 px-3 py-2 text-sm text-slate-900 shadow-sm"
+                >
+                  {chargeStatusOptions.map((status) => (
+                    <option key={status} value={status}>
+                      {status === 'all' ? 'All Statuses' : status.charAt(0).toUpperCase() + status.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-700">Document Charges</p>
+                <p className="mt-2 text-xl font-black text-cyan-900">{formatAmount(chargePreviewTotals.document)}</p>
+              </div>
+              <div className="rounded-2xl border border-indigo-100 bg-indigo-50/70 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-indigo-700">Stamp Charges</p>
+                <p className="mt-2 text-xl font-black text-indigo-900">{formatAmount(chargePreviewTotals.stamp)}</p>
+              </div>
+              <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-amber-700">Other Charges</p>
+                <p className="mt-2 text-xl font-black text-amber-900">{formatAmount(chargePreviewTotals.other)}</p>
+              </div>
+              <div className="rounded-2xl border border-blue-100 bg-blue-50/70 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-blue-700">Processing Charges</p>
+                <p className="mt-2 text-xl font-black text-blue-900">{formatAmount(chargePreviewTotals.processing)}</p>
+              </div>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 p-4">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-emerald-700">Total Charges</p>
+                <p className="mt-2 text-xl font-black text-emerald-900">{formatAmount(chargePreviewTotals.total)}</p>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
+              Rows used in preview: <span className="font-bold text-slate-700">{chargePreviewTotals.rows}</span>
+            </div>
           </section>
           ) : null}
         </div>

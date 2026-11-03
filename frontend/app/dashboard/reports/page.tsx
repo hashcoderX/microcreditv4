@@ -412,6 +412,11 @@ export default function ReportsHubPage() {
             description: 'Recovery priority and difficult portfolio tracking.',
             path: '/dashboard/microfinance/reports/recovery',
           },
+          {
+            title: 'Customer Payment History Report',
+            description: 'Payment timeline with capital, interest, and penalty breakdown by customer.',
+            path: '/dashboard/microfinance/reports/customer-payment-history',
+          },
         ],
       },
       {

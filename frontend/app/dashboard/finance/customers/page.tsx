@@ -20,6 +20,11 @@ type FinanceRow = {
   interest_type?: string | null;
   tenure_months?: number | string | null;
   installment_frequency?: string | null;
+  document_charges?: number | string | null;
+  insurance_charges?: number | string | null;
+  stamp_charges?: number | string | null;
+  processing_fee?: number | string | null;
+  other_charges?: number | string | null;
   start_date?: string | null;
   due_date?: string | null;
   next_collection_date?: string | null;
@@ -250,6 +255,7 @@ function resolveFinanceCustomerSignatureUrl(finance: FinanceRow): string {
 }
 
 export default function FinanceCustomersPage() {
+  const CUSTOMERS_PER_PAGE = 5;
   const RECORDS_PER_PAGE = 5;
   const router = useRouter();
   const [token, setToken] = useState('');
@@ -258,6 +264,7 @@ export default function FinanceCustomersPage() {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<FinanceRow[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [currentCustomerPage, setCurrentCustomerPage] = useState(1);
   const [recordPages, setRecordPages] = useState<Record<number, number>>({});
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -397,6 +404,26 @@ export default function FinanceCustomersPage() {
       || group.phone.toLowerCase().includes(term),
     );
   }, [customerGroups, searchTerm]);
+
+  const customerPageCount = Math.max(1, Math.ceil(filteredGroups.length / CUSTOMERS_PER_PAGE));
+
+  const pagedCustomerGroups = useMemo(() => {
+    const startIndex = (currentCustomerPage - 1) * CUSTOMERS_PER_PAGE;
+    return filteredGroups.slice(startIndex, startIndex + CUSTOMERS_PER_PAGE);
+  }, [filteredGroups, currentCustomerPage]);
+
+  const customerListStart = filteredGroups.length === 0 ? 0 : (currentCustomerPage - 1) * CUSTOMERS_PER_PAGE + 1;
+  const customerListEnd = filteredGroups.length === 0
+    ? 0
+    : Math.min(currentCustomerPage * CUSTOMERS_PER_PAGE, filteredGroups.length);
+
+  useEffect(() => {
+    setCurrentCustomerPage(1);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    setCurrentCustomerPage((prev) => Math.min(Math.max(prev, 1), customerPageCount));
+  }, [customerPageCount]);
 
   const totalCustomers = filteredGroups.length;
   const totalRecords = filteredGroups.reduce((sum, g) => sum + g.records.length, 0);
@@ -605,6 +632,33 @@ export default function FinanceCustomersPage() {
               className="w-full bg-transparent text-sm text-slate-800 placeholder:text-slate-500 outline-none"
             />
           </div>
+
+          {filteredGroups.length > 0 && (
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-slate-600">
+                Showing customers {customerListStart} - {customerListEnd} of {filteredGroups.length}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentCustomerPage((prev) => Math.max(1, prev - 1))}
+                  disabled={currentCustomerPage <= 1}
+                  className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-800 disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <span className="text-xs font-semibold text-slate-600">Page {currentCustomerPage} / {customerPageCount}</span>
+                <button
+                  type="button"
+                  onClick={() => setCurrentCustomerPage((prev) => Math.min(customerPageCount, prev + 1))}
+                  disabled={currentCustomerPage >= customerPageCount}
+                  className="rounded-lg border border-cyan-200 bg-white px-3 py-1.5 text-xs font-semibold text-cyan-800 disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="space-y-4">
@@ -615,7 +669,7 @@ export default function FinanceCustomersPage() {
               <p className="mt-1 text-sm text-slate-600">Try a different search term or create finance records first.</p>
             </div>
           ) : (
-            filteredGroups.map((group) => (
+            pagedCustomerGroups.map((group) => (
               <div key={group.customerId} className="bg-white/90 rounded-3xl border border-cyan-100 p-5 space-y-4">
                 <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
                   <div>
@@ -991,6 +1045,30 @@ export default function FinanceCustomersPage() {
                       <div><span className="text-slate-500">Frequency: </span><span className="font-semibold text-slate-900 capitalize">{selectedRecord.installment_frequency || '-'}</span></div>
                       <div><span className="text-slate-500">Installment: </span><span className="font-semibold text-slate-900">{formatAmount(selectedRecord.installment_amount)}</span></div>
                     </div>
+                  </div>
+
+                  <div className="rounded-xl border border-indigo-100 bg-indigo-50/35 p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-indigo-700 mb-3">Issue Charges</p>
+
+                    {(() => {
+                      const document = Number.isFinite(toNumber(selectedRecord.document_charges)) ? toNumber(selectedRecord.document_charges) : 0;
+                      const insurance = Number.isFinite(toNumber(selectedRecord.insurance_charges)) ? toNumber(selectedRecord.insurance_charges) : 0;
+                      const stamp = Number.isFinite(toNumber(selectedRecord.stamp_charges)) ? toNumber(selectedRecord.stamp_charges) : 0;
+                      const processing = Number.isFinite(toNumber(selectedRecord.processing_fee)) ? toNumber(selectedRecord.processing_fee) : 0;
+                      const other = Number.isFinite(toNumber(selectedRecord.other_charges)) ? toNumber(selectedRecord.other_charges) : 0;
+                      const total = document + insurance + stamp + processing + other;
+
+                      return (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                          <div><span className="text-slate-500">Document Charges: </span><span className="font-semibold text-slate-900">{formatAmount(document)}</span></div>
+                          <div><span className="text-slate-500">Insurance Charges: </span><span className="font-semibold text-slate-900">{formatAmount(insurance)}</span></div>
+                          <div><span className="text-slate-500">Stamp Charges: </span><span className="font-semibold text-slate-900">{formatAmount(stamp)}</span></div>
+                          <div><span className="text-slate-500">Processing Fee: </span><span className="font-semibold text-slate-900">{formatAmount(processing)}</span></div>
+                          <div><span className="text-slate-500">Other Charges: </span><span className="font-semibold text-slate-900">{formatAmount(other)}</span></div>
+                          <div><span className="text-slate-500">Total Charges: </span><span className="font-semibold text-slate-900">{formatAmount(total)}</span></div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className="rounded-xl border border-violet-100 bg-violet-50/35 p-4">

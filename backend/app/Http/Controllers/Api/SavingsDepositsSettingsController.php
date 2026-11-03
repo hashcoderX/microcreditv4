@@ -3,8 +3,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -240,6 +242,47 @@ class SavingsDepositsSettingsController extends Controller
         return response()->json([
             'message' => 'Savings settings updated successfully.',
             'config' => $this->readConfig(),
+        ]);
+    }
+
+    public function applyInterestManual(Request $request): JsonResponse
+    {
+        if (!$this->canManageSavingsSettings($request->user())) {
+            return response()->json([
+                'message' => 'Only authorized operations managers can run manual interest posting.',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'date' => ['nullable', 'date'],
+            'account_types' => ['nullable', 'array', 'min:1'],
+            'account_types.*' => ['required', 'in:savings,current,fixed_deposit,investment'],
+        ]);
+
+        $selectedTypes = array_values(array_unique(array_filter(array_map(
+            static fn ($value): string => strtolower(trim((string) $value)),
+            (array) ($validated['account_types'] ?? ['savings', 'investment'])
+        ))));
+
+        if (count($selectedTypes) === 0) {
+            $selectedTypes = ['savings', 'investment'];
+        }
+
+        $asOfDate = isset($validated['date']) && $validated['date']
+            ? Carbon::parse((string) $validated['date'])->toDateString()
+            : now()->toDateString();
+
+        Artisan::call('savings:apply-monthly-interest', [
+            '--date' => $asOfDate,
+            '--force' => true,
+            '--types' => implode(',', $selectedTypes),
+        ]);
+
+        return response()->json([
+            'message' => 'Manual interest posting completed.',
+            'run_date' => $asOfDate,
+            'account_types' => $selectedTypes,
+            'output' => trim((string) Artisan::output()),
         ]);
     }
 }

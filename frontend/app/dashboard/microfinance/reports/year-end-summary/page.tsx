@@ -268,7 +268,7 @@ export default function YearEndSummaryReportPage() {
               <p className="inline-flex rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-indigo-700">
                 Report Center
               </p>
-              <h1 className="mt-2 text-2xl md:text-3xl font-extrabold text-slate-900">Year End Summary Report</h1>
+              <h1 className="mt-2 text-2xl md:text-3xl font-extrabold text-slate-900">Micro Finance Year End Summary</h1>
               <p className="mt-1 text-sm text-slate-600">Monthly summary from January to December: collection, capital collection, and profit.</p>
             </div>
             <button
